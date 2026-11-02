@@ -12,8 +12,8 @@ use opencabinet_eval::{elevation, front_view, placement_problems};
 use opencabinet_format::Document;
 use opencabinet_model::validate::{Issue, validate};
 use opencabinet_model::{
-    EdgeBand, FrontNode, FrontStyle, Grain, Hardware, Id, Insert, InsertKind, Length, Library,
-    Method, Product, Project, Settings, SheetMaterial, Side, Size, SplitDirection, Standard, Units,
+    FrontNode, FrontStyle, Hardware, Id, Insert, InsertKind, Length, Library, Method, Product,
+    Project, Settings, Side, Size, SplitDirection, Standard, Units,
 };
 use opencabinet_reports::elevations::elevations_dxf;
 use opencabinet_reports::{
@@ -25,9 +25,11 @@ use crate::NAME_AND_VERSION;
 use crate::drawing::{self, Drawing};
 
 mod front;
+mod materials;
 mod room;
 
 pub use front::SectionKind;
+pub use materials::{MaterialRole, RoleChoices};
 pub use room::OpeningKind;
 
 /// A length the window edits: the cabinet's overall dimensions, the edited
@@ -60,11 +62,23 @@ pub enum Dimension {
     BlindWidth,
     /// The edited section of the front, top to bottom.
     SectionHeight,
+    /// The thickness the edited sheet is sold as.
+    SheetNominal,
+    /// The thickness the edited sheet really has.
+    SheetActual,
+    /// The edited sheet, along its grain.
+    SheetLength,
+    /// The edited sheet, across its grain.
+    SheetWidth,
+    /// The edited edge band, how thick it is.
+    BandThickness,
+    /// The edited edge band, how wide it is.
+    BandWidth,
 }
 
 impl Dimension {
     /// Every dimension, in the order the window shows them.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 19] = [
         Self::Width,
         Self::Height,
         Self::Depth,
@@ -78,6 +92,12 @@ impl Dimension {
         Self::PlacementElevation,
         Self::BlindWidth,
         Self::SectionHeight,
+        Self::SheetNominal,
+        Self::SheetActual,
+        Self::SheetLength,
+        Self::SheetWidth,
+        Self::BandThickness,
+        Self::BandWidth,
     ];
 
     /// Whether it may be zero: offsets and heights above the floor may,
@@ -106,6 +126,7 @@ pub struct Designer {
     /// sections it has.
     section: usize,
     room_selection: room::RoomSelection,
+    material_selection: materials::MaterialSelection,
 }
 
 impl Default for Designer {
@@ -127,6 +148,7 @@ impl Designer {
             selected: 0,
             section: 0,
             room_selection: room::RoomSelection::default(),
+            material_selection: materials::MaterialSelection::default(),
         }
     }
 
@@ -147,6 +169,7 @@ impl Designer {
             selected: 0,
             section: 0,
             room_selection: room::RoomSelection::default(),
+            material_selection: materials::MaterialSelection::default(),
         };
         designer.first_selection();
         Ok(designer)
@@ -518,6 +541,7 @@ impl Designer {
                     .map(Length::from_nm)
             }
             Dimension::SectionHeight => self.section_height(),
+            d if d.is_library() => self.library_value(d),
             _ => self.room_value(dimension),
         }
     }
@@ -540,6 +564,9 @@ impl Designer {
             }
         } else if length <= Length::ZERO {
             return Err("Must be greater than zero".into());
+        }
+        if dimension.is_library() {
+            return self.set_library_value(dimension, length);
         }
         if dimension == Dimension::BlindWidth {
             return self.set_blind_width(length);
@@ -585,7 +612,13 @@ impl Designer {
     #[must_use]
     pub fn text(&self, dimension: Dimension) -> String {
         self.get(dimension)
-            .map(|l| self.show(l))
+            .map(|l| {
+                if dimension.is_library() {
+                    self.exact_text(l)
+                } else {
+                    self.show(l)
+                }
+            })
             .unwrap_or_default()
     }
 
@@ -853,17 +886,6 @@ fn inches(numerator: i64, denominator: i64) -> Length {
 /// drawer bottoms, 1/2" plywood for drawer boxes, a 0.5 mm edge band, a cup
 /// hinge and a frameless standard, in that order.
 fn starter_library() -> Library {
-    let sheet = |name: &str, nominal: Length, actual: Length| SheetMaterial {
-        id: Id::new(),
-        version: 1,
-        name: name.into(),
-        nominal_thickness: nominal,
-        actual_thickness: actual,
-        length: Length::from_inches(97),
-        width: Length::from_inches(49),
-        grain: Grain::Length,
-        unknown: BTreeMap::default(),
-    };
     let hinge = Hardware {
         id: Id::new(),
         version: 1,
@@ -879,18 +901,11 @@ fn starter_library() -> Library {
     let rules = starter_rules(hinge.id);
     Library {
         materials: vec![
-            sheet("Plywood 3/4\"", inches(3, 4), Length::from_mm(18)),
-            sheet("Plywood 1/4\"", inches(1, 4), Length::from_mm(6)),
-            sheet("Plywood 1/2\"", inches(1, 2), Length::from_mm(12)),
+            materials::new_sheet("Plywood 3/4\"", inches(3, 4), Length::from_mm(18)),
+            materials::new_sheet("Plywood 1/4\"", inches(1, 4), Length::from_mm(6)),
+            materials::new_sheet("Plywood 1/2\"", inches(1, 2), Length::from_mm(12)),
         ],
-        edge_bands: vec![EdgeBand {
-            id: Id::new(),
-            version: 1,
-            name: "Edge band 0.5 mm".into(),
-            thickness: Length::from_nm(500_000),
-            width: Length::from_mm(22),
-            unknown: BTreeMap::default(),
-        }],
+        edge_bands: vec![materials::new_band("Edge band 0.5 mm")],
         standards: vec![Standard {
             id: Id::new(),
             version: 1,

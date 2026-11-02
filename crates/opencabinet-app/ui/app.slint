@@ -56,12 +56,45 @@ component CountField inherits VerticalLayout {
     }
 }
 
+// A field for a name: a label, the text as typed, and below it why it cannot
+// be used.
+component NameField inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text;
+    in property <string> error;
+    callback edited(text: string);
+    spacing: 4px;
+
+    Text { text: root.label; }
+    LineEdit {
+        accessible-label: root.label;
+        text <=> root.text;
+        edited(text) => { root.edited(text); }
+    }
+    if root.error != "": Text {
+        text: root.error;
+        color: #c62828;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
 // A text in the drawing, centered on a point given in millimeters from
 // the drawing's top left corner.
 export struct DrawingLabel {
     x: float,
     y: float,
     text: string,
+}
+
+// A part of the edited cabinet that takes a material. `choices` says which
+// list it chooses from: 0 sheets; 1 and 2 the same, first offering the doors'
+// or the case's; 3 edge bands.
+export struct MaterialRole {
+    key: string,
+    label: string,
+    choices: int,
+    index: int,
 }
 
 export component AppWindow inherits Window {
@@ -124,7 +157,8 @@ export component AppWindow inherits Window {
     in property <string> width-error;
     in property <string> height-error;
     in property <string> depth-error;
-    // The left panel's tab: 0 for the cabinets, 1 for the walls.
+    // The left panel's tab: 0 for the cabinets, 1 for the walls, 2 for the
+    // materials.
     in-out property <int> tab-index;
     // The room's walls, the edited wall's openings, and the edited
     // cabinet's placements, with which of each is being edited.
@@ -163,6 +197,45 @@ export component AppWindow inherits Window {
     in-out property <string> placement-elevation-text;
     in property <string> placement-elevation-reading;
     in property <string> placement-elevation-error;
+    // The project's sheets and edge bands, with which of each is being edited.
+    in property <[StandardListViewItem]> sheets;
+    in-out property <int> sheet-index;
+    in property <bool> has-sheet;
+    in-out property <string> sheet-name-text;
+    in property <string> sheet-name-error;
+    in-out property <string> sheet-nominal-text;
+    in property <string> sheet-nominal-reading;
+    in property <string> sheet-nominal-error;
+    in-out property <string> sheet-actual-text;
+    in property <string> sheet-actual-reading;
+    in property <string> sheet-actual-error;
+    in-out property <string> sheet-length-text;
+    in property <string> sheet-length-reading;
+    in property <string> sheet-length-error;
+    in-out property <string> sheet-width-text;
+    in property <string> sheet-width-reading;
+    in property <string> sheet-width-error;
+    // 0 for no grain, 1 for a grain along the length.
+    in-out property <int> sheet-grain-index;
+    in property <string> sheet-note;
+    in property <[StandardListViewItem]> bands;
+    in-out property <int> band-index;
+    in property <bool> has-band;
+    in-out property <string> band-name-text;
+    in property <string> band-name-error;
+    in-out property <string> band-thickness-text;
+    in property <string> band-thickness-reading;
+    in property <string> band-thickness-error;
+    in-out property <string> band-width-text;
+    in property <string> band-width-reading;
+    in property <string> band-width-error;
+    // What the edited cabinet's parts are made of, and the lists to choose
+    // from.
+    in-out property <[MaterialRole]> material-roles;
+    in property <[string]> role-sheets;
+    in property <[string]> role-sheets-or-doors;
+    in property <[string]> role-sheets-or-case;
+    in property <[string]> role-bands;
     // The drawing: the elevation of the edited cabinet's wall, or the
     // cabinet alone. Paths and labels are in millimeters; the drawing area
     // scales them to fit.
@@ -227,6 +300,25 @@ export component AppWindow inherits Window {
     callback door-count-chosen(index: int);
     callback hinge-chosen(index: int);
     callback shelves-edited(text: string);
+    callback sheet-chosen(index: int);
+    callback add-sheet();
+    callback duplicate-sheet();
+    callback delete-sheet();
+    callback sheet-name-edited(text: string);
+    callback sheet-nominal-edited(text: string);
+    callback sheet-actual-edited(text: string);
+    callback sheet-length-edited(text: string);
+    callback sheet-width-edited(text: string);
+    callback sheet-grain-chosen(index: int);
+    callback band-chosen(index: int);
+    callback add-band();
+    callback duplicate-band();
+    callback delete-band();
+    callback band-name-edited(text: string);
+    callback band-thickness-edited(text: string);
+    callback band-width-edited(text: string);
+    callback material-role-chosen(key: string, index: int);
+    callback apply-materials-to-all();
     callback new-project();
     callback open-project();
     callback save-project();
@@ -429,6 +521,118 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+
+                Tab {
+                    title: "Materials";
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            alignment: start;
+                            Text { text: "Sheets"; font-weight: 700; }
+                            StandardListView {
+                                accessible-label: "Sheets";
+                                height: 110px;
+                                model: root.sheets;
+                                current-item <=> root.sheet-index;
+                                current-item-changed(index) => { root.sheet-chosen(index); }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Button { text: "Add"; clicked => { root.add-sheet(); } }
+                                Button { text: "Duplicate"; clicked => { root.duplicate-sheet(); } }
+                                Button { text: "Delete"; clicked => { root.delete-sheet(); } }
+                            }
+                            if root.has-sheet: VerticalLayout {
+                                spacing: 8px;
+                                NameField {
+                                    label: "Sheet name";
+                                    text <=> root.sheet-name-text;
+                                    error: root.sheet-name-error;
+                                    edited(text) => { root.sheet-name-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Sold as";
+                                    text <=> root.sheet-nominal-text;
+                                    reading: root.sheet-nominal-reading;
+                                    error: root.sheet-nominal-error;
+                                    edited(text) => { root.sheet-nominal-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Real thickness";
+                                    text <=> root.sheet-actual-text;
+                                    reading: root.sheet-actual-reading;
+                                    error: root.sheet-actual-error;
+                                    edited(text) => { root.sheet-actual-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Sheet length";
+                                    text <=> root.sheet-length-text;
+                                    reading: root.sheet-length-reading;
+                                    error: root.sheet-length-error;
+                                    edited(text) => { root.sheet-length-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Sheet width";
+                                    text <=> root.sheet-width-text;
+                                    reading: root.sheet-width-reading;
+                                    error: root.sheet-width-error;
+                                    edited(text) => { root.sheet-width-edited(text); }
+                                }
+                                if root.sheet-note != "": Text {
+                                    text: root.sheet-note;
+                                    color: Palette.foreground.transparentize(40%);
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                Text { text: "Grain"; }
+                                ComboBox {
+                                    accessible-label: "Grain";
+                                    model: ["None", "Along the length"];
+                                    current-index <=> root.sheet-grain-index;
+                                    selected => { root.sheet-grain-chosen(self.current-index); }
+                                }
+                            }
+                            Text { text: "Edge bands"; font-weight: 700; }
+                            StandardListView {
+                                accessible-label: "Edge bands";
+                                height: 80px;
+                                model: root.bands;
+                                current-item <=> root.band-index;
+                                current-item-changed(index) => { root.band-chosen(index); }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Button { text: "Add"; clicked => { root.add-band(); } }
+                                Button { text: "Duplicate"; clicked => { root.duplicate-band(); } }
+                                Button { text: "Delete"; clicked => { root.delete-band(); } }
+                            }
+                            if root.has-band: VerticalLayout {
+                                spacing: 8px;
+                                NameField {
+                                    label: "Band name";
+                                    text <=> root.band-name-text;
+                                    error: root.band-name-error;
+                                    edited(text) => { root.band-name-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Band thickness";
+                                    text <=> root.band-thickness-text;
+                                    reading: root.band-thickness-reading;
+                                    error: root.band-thickness-error;
+                                    edited(text) => { root.band-thickness-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Band width";
+                                    text <=> root.band-width-text;
+                                    reading: root.band-width-reading;
+                                    error: root.band-width-error;
+                                    edited(text) => { root.band-width-edited(text); }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             ScrollView {
@@ -580,6 +784,24 @@ export component AppWindow inherits Window {
                         edited(text) => { root.shelves-edited(text); }
                     }
                 }
+                Text { text: "Materials"; font-weight: 700; }
+                for role in root.material-roles: VerticalLayout {
+                    spacing: 4px;
+                    Text { text: role.label; }
+                    ComboBox {
+                        accessible-label: role.label;
+                        model: role.choices == 0 ? root.role-sheets
+                            : role.choices == 1 ? root.role-sheets-or-doors
+                            : role.choices == 2 ? root.role-sheets-or-case
+                            : root.role-bands;
+                        current-index <=> role.index;
+                        selected => { root.material-role-chosen(role.key, self.current-index); }
+                    }
+                }
+                Button {
+                    text: "Apply to all cabinets";
+                    clicked => { root.apply-materials-to-all(); }
+                }
                 Text { text: "Placement"; font-weight: 700; }
                 StandardListView {
                     accessible-label: "Placements";
@@ -729,7 +951,7 @@ export component AppWindow inherits Window {
                     }
 
                     Tab {
-                        title: "Materials";
+                        title: "Bill of materials";
                         VerticalLayout {
                             padding: 8px;
                             spacing: 4px;
@@ -740,7 +962,7 @@ export component AppWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             StandardTableView {
-                                accessible-label: "Materials";
+                                accessible-label: "Bill of materials";
                                 columns: [
                                     { title: "Section" }, { title: "Item" },
                                     { title: "Quantity" }, { title: "Detail" },

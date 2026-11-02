@@ -62,7 +62,7 @@ impl BomRow {
 }
 
 /// Stock narrower than this is counted by length, as boards.
-const BOARD_WIDTH: Length = Length::from_inches(12);
+pub const BOARD_WIDTH: Length = Length::from_inches(12);
 
 /// A count that is whole, rounded up; a hair over a whole number is that
 /// number, so floating point never asks for an extra sheet.

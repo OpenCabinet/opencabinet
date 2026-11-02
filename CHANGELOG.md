@@ -39,6 +39,12 @@ follow [Semantic Versioning](https://semver.org/).
   side is kept as it is, but cannot be edited in the window.
 - **Quantity:** how many of a cabinet the job needs when it is not placed
   on a wall. A placed cabinet counts its placements.
+- **Materials:** a Materials tab edits the project's sheets (name, the
+  thickness they are sold as, the real one, length, width and grain) and
+  edge bands. A material in use cannot be deleted, and the message says
+  which cabinets use it. A cabinet chooses the material of each part it
+  has, and can give its choices to every other cabinet. The tab that says
+  what to buy is now called Bill of materials.
 
 ### Known limitations
 

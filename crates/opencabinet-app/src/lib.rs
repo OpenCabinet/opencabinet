@@ -16,10 +16,11 @@ use std::rc::Rc;
 
 use opencabinet_model::{Side, Units};
 use slint::{
-    CloseRequestResponse, ComponentHandle, ModelRc, SharedString, StandardListViewItem, VecModel,
+    CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, StandardListViewItem,
+    VecModel,
 };
 
-use crate::designer::{CabinetKind, Designer, Dimension, OpeningKind};
+use crate::designer::{CabinetKind, Designer, Dimension, OpeningKind, RoleChoices};
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
 use opencabinet_reports::Separator;
 
@@ -30,7 +31,7 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::AppWindow;
+pub use ui::{AppWindow, MaterialRole};
 
 /// The name and version shown to users and written into saved files.
 pub const NAME_AND_VERSION: &str = concat!("OpenCabinet Designer ", env!("CARGO_PKG_VERSION"));
@@ -63,6 +64,7 @@ pub fn create_with(dialogs: Rc<dyn Dialogs>) -> Result<AppWindow, slint::Platfor
     }
     connect_room(&window, &app);
     connect_front(&window, &app);
+    connect_materials(&window, &app);
     let handle = Rc::clone(&app);
     window.on_units_chosen(move |metric| handle.choose_units(metric));
     let handle = Rc::clone(&app);
@@ -252,6 +254,65 @@ impl App {
         let result = self.designer.borrow_mut().set_quantity(text);
         window.set_quantity_error(result.err().unwrap_or_default().into());
         self.show(&window, false);
+    }
+
+    /// Edits another sheet, unless it is the one being edited: the list
+    /// also reports the sheet the window has just set.
+    fn choose_sheet(&self, index: i32) {
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        if self.designer.borrow().selected_sheet() != Some(index) {
+            self.update(|designer| {
+                designer.select_sheet(index);
+            });
+        }
+    }
+
+    /// Edits another edge band, unless it is the one being edited, as for
+    /// the sheets.
+    fn choose_band(&self, index: i32) {
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        if self.designer.borrow().selected_band() != Some(index) {
+            self.update(|designer| {
+                designer.select_band(index);
+            });
+        }
+    }
+
+    fn edit_sheet_name(&self, text: &str) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let result = self.designer.borrow_mut().set_sheet_name(text);
+        window.set_sheet_name_error(result.err().unwrap_or_default().into());
+        self.show(&window, false);
+    }
+
+    fn edit_band_name(&self, text: &str) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let result = self.designer.borrow_mut().set_band_name(text);
+        window.set_band_name_error(result.err().unwrap_or_default().into());
+        self.show(&window, false);
+    }
+
+    /// Gives every other cabinet the edited cabinet's materials, and says
+    /// how many changed.
+    fn apply_materials_to_all(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let changed = self.designer.borrow_mut().apply_materials_to_all();
+        self.show(&window, false);
+        self.status(&match changed {
+            0 => "The other cabinets already have these materials".to_owned(),
+            1 => "1 other cabinet took these materials".to_owned(),
+            n => format!("{n} other cabinets took these materials"),
+        });
     }
 
     fn choose_style(&self, five_piece: bool) {
@@ -457,6 +518,7 @@ impl App {
         }
         show_room(window, &designer);
         show_front(window, &designer, texts);
+        show_materials(window, &designer, texts);
         show_drawing(window, &designer);
         let list = designer.cut_list();
         let rows: Vec<ModelRc<StandardListViewItem>> = list
@@ -600,6 +662,18 @@ fields! {
         on_blind_width_edited;
     SectionHeight: set_section_height_text, set_section_height_reading,
         set_section_height_error, on_section_height_edited;
+    SheetNominal: set_sheet_nominal_text, set_sheet_nominal_reading, set_sheet_nominal_error,
+        on_sheet_nominal_edited;
+    SheetActual: set_sheet_actual_text, set_sheet_actual_reading, set_sheet_actual_error,
+        on_sheet_actual_edited;
+    SheetLength: set_sheet_length_text, set_sheet_length_reading, set_sheet_length_error,
+        on_sheet_length_edited;
+    SheetWidth: set_sheet_width_text, set_sheet_width_reading, set_sheet_width_error,
+        on_sheet_width_edited;
+    BandThickness: set_band_thickness_text, set_band_thickness_reading, set_band_thickness_error,
+        on_band_thickness_edited;
+    BandWidth: set_band_width_text, set_band_width_reading, set_band_width_error,
+        on_band_width_edited;
     WallLength: set_wall_length_text, set_wall_length_reading, set_wall_length_error,
         on_wall_length_edited;
     WallHeight: set_wall_height_text, set_wall_height_reading, set_wall_height_error,
@@ -719,6 +793,104 @@ fn connect_front(window: &AppWindow, app: &Rc<App>) {
     window.on_quantity_edited(move |text| handle.edit_quantity(&text));
 }
 
+/// Connects the Materials tab and the cabinet's Materials section to `app`.
+fn connect_materials(window: &AppWindow, app: &Rc<App>) {
+    let handle = Rc::clone(app);
+    window.on_sheet_chosen(move |index| handle.choose_sheet(index));
+    let handle = Rc::clone(app);
+    window.on_add_sheet(move || handle.update(Designer::add_sheet));
+    let handle = Rc::clone(app);
+    window.on_duplicate_sheet(move || handle.update(Designer::duplicate_sheet));
+    let handle = Rc::clone(app);
+    window.on_delete_sheet(move || handle.change_room(Designer::delete_sheet));
+    let handle = Rc::clone(app);
+    window.on_sheet_name_edited(move |text| handle.edit_sheet_name(&text));
+    let handle = Rc::clone(app);
+    window.on_sheet_grain_chosen(move |index| handle.update(|d| d.set_sheet_grain(index == 1)));
+    let handle = Rc::clone(app);
+    window.on_band_chosen(move |index| handle.choose_band(index));
+    let handle = Rc::clone(app);
+    window.on_add_band(move || handle.update(Designer::add_band));
+    let handle = Rc::clone(app);
+    window.on_duplicate_band(move || handle.update(Designer::duplicate_band));
+    let handle = Rc::clone(app);
+    window.on_delete_band(move || handle.change_room(Designer::delete_band));
+    let handle = Rc::clone(app);
+    window.on_band_name_edited(move |text| handle.edit_band_name(&text));
+    let handle = Rc::clone(app);
+    window.on_material_role_chosen(move |key, index| {
+        if let Ok(index) = usize::try_from(index) {
+            handle.update(|d| d.set_material_role(&key, index));
+        }
+    });
+    let handle = Rc::clone(app);
+    window.on_apply_materials_to_all(move || handle.apply_materials_to_all());
+}
+
+/// The project's sheets and edge bands, and what the edited cabinet is made
+/// of; with `texts`, also rewrites the names.
+fn show_materials(window: &AppWindow, designer: &Designer, texts: bool) {
+    let list = |items: Vec<String>| {
+        let items: Vec<StandardListViewItem> = items
+            .iter()
+            .map(|i| StandardListViewItem::from(i.as_str()))
+            .collect();
+        ModelRc::new(VecModel::from(items))
+    };
+    let names = |choices: RoleChoices| {
+        let names: Vec<SharedString> = designer
+            .role_choices(choices)
+            .iter()
+            .map(SharedString::from)
+            .collect();
+        ModelRc::new(VecModel::from(names))
+    };
+    let position = |i: Option<usize>| i.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1);
+    window.set_sheets(list(designer.sheets()));
+    window.set_sheet_index(position(designer.selected_sheet()));
+    window.set_has_sheet(designer.selected_sheet().is_some());
+    window.set_sheet_grain_index(i32::from(designer.sheet_has_grain() == Some(true)));
+    window.set_sheet_note(designer.sheet_note().into());
+    window.set_bands(list(designer.bands()));
+    window.set_band_index(position(designer.selected_band()));
+    window.set_has_band(designer.selected_band().is_some());
+    window.set_role_sheets(names(RoleChoices::Sheets));
+    window.set_role_sheets_or_doors(names(RoleChoices::SheetsOrDoors));
+    window.set_role_sheets_or_case(names(RoleChoices::SheetsOrCase));
+    window.set_role_bands(names(RoleChoices::Bands));
+    if texts {
+        window.set_sheet_name_text(designer.sheet_name().into());
+        window.set_band_name_text(designer.band_name().into());
+    }
+    let rows: Vec<ui::MaterialRole> = designer
+        .material_roles()
+        .into_iter()
+        .map(|role| ui::MaterialRole {
+            key: role.key.into(),
+            label: role.label.into(),
+            choices: match role.choices {
+                RoleChoices::Sheets => 0,
+                RoleChoices::SheetsOrDoors => 1,
+                RoleChoices::SheetsOrCase => 2,
+                RoleChoices::Bands => 3,
+            },
+            index: position(role.chosen),
+        })
+        .collect();
+    // The same rows keep their lists, so that a list being used keeps the
+    // keyboard: this runs after every keystroke and every choice.
+    let shown = window.get_material_roles();
+    if shown.row_count() == rows.len() {
+        for (i, row) in rows.into_iter().enumerate() {
+            if shown.row_data(i).as_ref() != Some(&row) {
+                shown.set_row_data(i, row);
+            }
+        }
+    } else {
+        window.set_material_roles(ModelRc::new(VecModel::from(rows)));
+    }
+}
+
 /// The edited cabinet's sections and quantity; with `texts`, also rewrites
 /// their count fields.
 fn show_front(window: &AppWindow, designer: &Designer, texts: bool) {
@@ -803,4 +975,6 @@ fn clear_errors(window: &AppWindow) {
     window.set_label_error(slint::SharedString::new());
     window.set_shelves_error(SharedString::new());
     window.set_quantity_error(SharedString::new());
+    window.set_sheet_name_error(SharedString::new());
+    window.set_band_name_error(SharedString::new());
 }

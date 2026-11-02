@@ -16,7 +16,7 @@ use std::rc::Rc;
 use i_slint_backend_testing::ElementHandle;
 use opencabinet_app::AppWindow;
 use opencabinet_app::dialogs::{Dialogs, FileKind};
-use slint::Model;
+use slint::{ComponentHandle, Model};
 
 /// Answers the dialogs from the test, and counts the questions.
 #[derive(Default)]
@@ -158,6 +158,7 @@ fn the_window_edits_saves_and_reopens_a_project() {
     walls_and_placements(&window);
     blind_corner(&window);
     front_and_quantity(&window);
+    materials(&window);
 
     window.invoke_about();
     assert!(window.get_status().contains("GNU GPL"));
@@ -251,6 +252,167 @@ fn front_and_quantity(window: &AppWindow) {
     assert_eq!(window.get_quantity_text(), "1");
     assert_eq!(window.get_placed_note(), "1 placed on walls");
     assert_eq!(window.get_quantity_error(), "");
+}
+
+/// The Materials tab and the cabinet's Materials section. The fields are out
+/// of view, so they are edited through their callbacks.
+fn materials(window: &AppWindow) {
+    let items = |model: slint::ModelRc<slint::StandardListViewItem>| -> Vec<String> {
+        (0..model.row_count())
+            .map(|i| model.row_data(i).unwrap().text.to_string())
+            .collect()
+    };
+    window.set_tab_index(2);
+    window.invoke_tab_chosen(2);
+    assert_eq!(
+        items(window.get_sheets()),
+        [
+            "Plywood 3/4\" · 3/4\"",
+            "Plywood 1/4\" · 1/4\"",
+            "Plywood 1/2\" · 1/2\""
+        ]
+    );
+    assert_eq!(window.get_sheet_index(), 0);
+    assert_eq!(window.get_sheet_name_text(), "Plywood 3/4\"");
+    assert_eq!(window.get_sheet_actual_text(), "18 mm");
+    assert_eq!(window.get_sheet_actual_reading(), "≈ 23/32\"");
+    assert_eq!(window.get_sheet_grain_index(), 1);
+
+    // A name in use is refused; another sheet's fields show when chosen.
+    window.invoke_sheet_name_edited("Plywood 1/4\"".into());
+    assert_eq!(
+        window.get_sheet_name_error(),
+        "Another material is already named Plywood 1/4\""
+    );
+    window.invoke_sheet_chosen(1);
+    assert_eq!(window.get_sheet_name_error(), "");
+    assert_eq!(window.get_sheet_actual_text(), "6 mm");
+    window.invoke_sheet_chosen(0);
+
+    // The real thickness reaches the cut list at once: the new base's
+    // bottom goes from 726 to 762 - 2 × 19.05 = 723.9, or 28-1/2".
+    window.invoke_sheet_actual_edited("3/4".into());
+    assert_eq!(window.get_sheet_actual_reading(), "= 3/4\"");
+    assert_eq!(bottom_length(window), "28-1/2\"");
+
+    // A material in use says who uses it.
+    window.invoke_delete_sheet();
+    assert!(
+        window
+            .get_status()
+            .starts_with("Cannot delete Plywood 3/4\":"),
+        "{}",
+        window.get_status()
+    );
+    assert_eq!(window.get_sheets().row_count(), 3);
+
+    material_choices(window);
+
+    // Edge bands work like sheets.
+    assert_eq!(window.get_band_thickness_text(), "0.5 mm");
+    window.invoke_add_band();
+    assert_eq!(window.get_band_name_text(), "New edge band");
+    window.invoke_band_width_edited("13/16".into());
+    assert_eq!(window.get_band_width_reading(), "= 13/16\"");
+    window.invoke_delete_band();
+    assert_eq!(window.get_bands().row_count(), 1);
+
+    window.set_tab_index(0);
+    window.invoke_tab_chosen(0);
+}
+
+/// What the edited base cabinet's parts are made of.
+fn material_choices(window: &AppWindow) {
+    // A new sheet is edited, and can make the case.
+    window.invoke_add_sheet();
+    assert_eq!(window.get_sheet_index(), 1);
+    assert_eq!(window.get_sheet_name_text(), "New sheet");
+    window.invoke_sheet_actual_edited("5/8".into());
+    let case = role(window, "case");
+    assert_eq!(case.choices, 0);
+    assert_eq!(case.index, 0);
+    assert_eq!(items_of(&window.get_role_sheets())[1], "New sheet");
+    window.invoke_material_role_chosen("case".into(), 1);
+    assert_eq!(role(window, "case").index, 1);
+    // 762 - 2 × 15.875 = 730.25, or 28-3/4".
+    assert_eq!(bottom_length(window), "28-3/4\"");
+
+    // Each list shows the edited cabinet's choice, also when the next
+    // cabinet offers the same parts, which keeps the lists in place.
+    // The lists are out of view at the usual size: a tall window shows them.
+    let usual_size = window.window().size();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1280.0, 4000.0));
+    let shown = |window: &AppWindow| {
+        ElementHandle::find_by_accessible_label(window, "Case")
+            .find_map(|e| e.accessible_value())
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(shown(window), "New sheet");
+    let edited = window.get_cabinet_index();
+    window.invoke_add_cabinet();
+    window.invoke_material_role_chosen("case".into(), 0);
+    assert_eq!(shown(window), "Plywood 3/4\"");
+    window.invoke_cabinet_chosen(edited);
+    assert_eq!(role(window, "case").index, 1);
+    assert_eq!(shown(window), "New sheet");
+    window.window().set_size(usual_size);
+
+    // Drawer fronts have none of their own at first, and bands may be none.
+    let fronts = role(window, "drawerFronts");
+    assert_eq!((fronts.choices, fronts.index), (1, 0));
+    assert_eq!(
+        items_of(&window.get_role_sheets_or_doors())[0],
+        "Same as doors"
+    );
+    assert_eq!(items_of(&window.get_role_bands())[0], "None");
+
+    // Every other cabinet takes the same materials.
+    window.invoke_apply_materials_to_all();
+    assert!(
+        window.get_status().ends_with("took these materials"),
+        "{}",
+        window.get_status()
+    );
+    window.invoke_apply_materials_to_all();
+    assert_eq!(
+        window.get_status(),
+        "The other cabinets already have these materials"
+    );
+}
+
+/// The material row of the edited cabinet's part `key`.
+fn role(window: &AppWindow, key: &str) -> opencabinet_app::MaterialRole {
+    let model = window.get_material_roles();
+    (0..model.row_count())
+        .map(|i| model.row_data(i).unwrap())
+        .find(|r| r.key == key)
+        .unwrap_or_else(|| panic!("no role {key}"))
+}
+
+/// The edited cabinet's bottom's length in the cut list.
+fn bottom_length(window: &AppWindow) -> String {
+    let rows = window.get_cut_rows();
+    (0..rows.row_count())
+        .map(|r| rows.row_data(r).unwrap())
+        .find(|row| {
+            row.row_data(0).unwrap().text == window.get_cabinet_label()
+                && row.row_data(1).unwrap().text == "Bottom"
+        })
+        .unwrap()
+        .row_data(4)
+        .unwrap()
+        .text
+        .to_string()
+}
+
+/// The texts of a list of names.
+fn items_of(model: &slint::ModelRc<slint::SharedString>) -> Vec<String> {
+    (0..model.row_count())
+        .map(|i| model.row_data(i).unwrap().to_string())
+        .collect()
 }
 
 /// A blind corner's own fields, shown only for blind corners.
