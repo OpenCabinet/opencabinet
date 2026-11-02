@@ -97,6 +97,19 @@ export struct MaterialRole {
     index: int,
 }
 
+// A row of the Standard tab. `kind` is 0 for the title of a group, 1 for the
+// title of a group the standard does not have, 2 for a field and 3 for a list.
+export struct RuleRow {
+    key: string,
+    label: string,
+    kind: int,
+    text: string,
+    reading: string,
+    error: string,
+    options: [string],
+    index: int,
+}
+
 export component AppWindow inherits Window {
     in property <string> window-title: "OpenCabinet Designer";
     title: root.window-title;
@@ -158,7 +171,7 @@ export component AppWindow inherits Window {
     in property <string> height-error;
     in property <string> depth-error;
     // The left panel's tab: 0 for the cabinets, 1 for the walls, 2 for the
-    // materials.
+    // materials, 3 for the standard.
     in-out property <int> tab-index;
     // The room's walls, the edited wall's openings, and the edited
     // cabinet's placements, with which of each is being edited.
@@ -236,6 +249,15 @@ export component AppWindow inherits Window {
     in property <[string]> role-sheets-or-doors;
     in property <[string]> role-sheets-or-case;
     in property <[string]> role-bands;
+    // The project's standards, the one the Standard tab edits, its rules, and
+    // the one the edited cabinet is built by.
+    in property <[string]> standard-names;
+    in-out property <int> standard-index;
+    in-out property <int> cabinet-standard-index;
+    in property <string> standard-note;
+    in-out property <string> standard-name-text;
+    in property <string> standard-name-error;
+    in-out property <[RuleRow]> rule-rows;
     // The drawing: the elevation of the edited cabinet's wall, or the
     // cabinet alone. Paths and labels are in millimeters; the drawing area
     // scales them to fit.
@@ -319,7 +341,14 @@ export component AppWindow inherits Window {
     callback band-width-edited(text: string);
     callback material-role-chosen(key: string, index: int);
     callback apply-materials-to-all();
-    callback new-project();
+    callback standard-chosen(index: int);
+    callback cabinet-standard-chosen(index: int);
+    callback standard-name-edited(text: string);
+    callback rule-edited(key: string, text: string);
+    callback rule-chosen(key: string, index: int);
+    callback add-rule-group(key: string);
+    // `true` for a face frame project, `false` for a frameless one.
+    callback new-project(face-frame: bool);
     callback open-project();
     callback save-project();
     callback save-project-as();
@@ -337,7 +366,14 @@ export component AppWindow inherits Window {
     MenuBar {
         Menu {
             title: "File";
-            MenuItem { title: "New project"; activated => { root.new-project(); } }
+            MenuItem {
+                title: "New frameless project";
+                activated => { root.new-project(false); }
+            }
+            MenuItem {
+                title: "New face frame project";
+                activated => { root.new-project(true); }
+            }
             MenuItem { title: "Open…"; activated => { root.open-project(); } }
             MenuItem { title: "Save"; activated => { root.save-project(); } }
             MenuItem { title: "Save as…"; activated => { root.save-project-as(); } }
@@ -412,7 +448,8 @@ export component AppWindow inherits Window {
             vertical-stretch: 1;
 
             TabWidget {
-                width: 250px;
+                // Four tabs have to fit their titles.
+                width: 320px;
                 current-index <=> root.tab-index;
                 changed current-index => { root.tab-chosen(self.current-index); }
 
@@ -633,6 +670,74 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+
+                Tab {
+                    title: "Standard";
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            alignment: start;
+                            Text { text: "Standard to edit"; }
+                            ComboBox {
+                                accessible-label: "Standard to edit";
+                                model: root.standard-names;
+                                current-index <=> root.standard-index;
+                                selected => { root.standard-chosen(self.current-index); }
+                            }
+                            Text {
+                                text: root.standard-note;
+                                color: Palette.foreground.transparentize(40%);
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            NameField {
+                                label: "Standard name";
+                                text <=> root.standard-name-text;
+                                error: root.standard-name-error;
+                                edited(text) => { root.standard-name-edited(text); }
+                            }
+                            for row in root.rule-rows: VerticalLayout {
+                                spacing: 4px;
+                                if row.kind == 0: Text {
+                                    text: row.label;
+                                    font-weight: 700;
+                                }
+                                if row.kind == 1: HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: row.label + ": none";
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    Button {
+                                        text: "Add";
+                                        clicked => { root.add-rule-group(row.key); }
+                                    }
+                                }
+                                if row.kind == 2: LengthField {
+                                    label: row.label;
+                                    text <=> row.text;
+                                    reading: row.reading;
+                                    error: row.error;
+                                    edited(text) => { root.rule-edited(row.key, text); }
+                                }
+                                if row.kind == 3: VerticalLayout {
+                                    spacing: 4px;
+                                    Text { text: row.label; }
+                                    ComboBox {
+                                        accessible-label: row.label;
+                                        model: row.options;
+                                        current-index <=> row.index;
+                                        selected => {
+                                            root.rule-chosen(row.key, self.current-index);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             ScrollView {
@@ -663,6 +768,13 @@ export component AppWindow inherits Window {
                     model: root.kinds;
                     current-index <=> root.kind-index;
                     selected => { root.kind-chosen(self.current-index); }
+                }
+                Text { text: "Standard"; }
+                ComboBox {
+                    accessible-label: "Standard";
+                    model: root.standard-names;
+                    current-index <=> root.cabinet-standard-index;
+                    selected => { root.cabinet-standard-chosen(self.current-index); }
                 }
                 Text { text: "Doors and fronts"; }
                 ComboBox {

@@ -12,8 +12,8 @@ use opencabinet_eval::{elevation, front_view, placement_problems};
 use opencabinet_format::Document;
 use opencabinet_model::validate::{Issue, validate};
 use opencabinet_model::{
-    FrontNode, FrontStyle, Hardware, Id, Insert, InsertKind, Length, Library, Method, Product,
-    Project, Settings, Side, Size, SplitDirection, Standard, Units,
+    FrontNode, FrontStyle, Id, Insert, InsertKind, Length, Library, Method, Product, Project,
+    Settings, SheetMaterial, Side, Size, SplitDirection, Standard, Units,
 };
 use opencabinet_reports::elevations::elevations_dxf;
 use opencabinet_reports::{
@@ -27,10 +27,12 @@ use crate::drawing::{self, Drawing};
 mod front;
 mod materials;
 mod room;
+mod standard;
 
 pub use front::SectionKind;
 pub use materials::{MaterialRole, RoleChoices};
 pub use room::OpeningKind;
+pub use standard::{RuleKind, RuleRow};
 
 /// A length the window edits: the cabinet's overall dimensions, the edited
 /// wall's and opening's, and where the edited placement puts the cabinet.
@@ -127,6 +129,9 @@ pub struct Designer {
     section: usize,
     room_selection: room::RoomSelection,
     material_selection: materials::MaterialSelection,
+    /// The standard the Standard tab edits, read within the ones the
+    /// project has.
+    standard: usize,
 }
 
 impl Default for Designer {
@@ -141,15 +146,25 @@ impl Designer {
     /// shown in `units`.
     #[must_use]
     pub fn new(units: Units) -> Self {
-        Self {
-            document: new_document(units),
+        Self::with_method(units, Method::Frameless)
+    }
+
+    /// A new, unsaved project with both starter standards, whose first
+    /// cabinet is built by `method`.
+    #[must_use]
+    pub fn with_method(units: Units, method: Method) -> Self {
+        let mut designer = Self {
+            document: new_document(units, method),
             path: None,
             modified: false,
             selected: 0,
             section: 0,
             room_selection: room::RoomSelection::default(),
             material_selection: materials::MaterialSelection::default(),
-        }
+            standard: 0,
+        };
+        designer.follow_cabinet_standard();
+        designer
     }
 
     /// Opens a project file.
@@ -170,8 +185,10 @@ impl Designer {
             section: 0,
             room_selection: room::RoomSelection::default(),
             material_selection: materials::MaterialSelection::default(),
+            standard: 0,
         };
         designer.first_selection();
+        designer.follow_cabinet_standard();
         Ok(designer)
     }
 
@@ -852,11 +869,18 @@ fn usual_precision(units: Units) -> Length {
     }
 }
 
-/// A project with the materials, edge band and frameless standard a base
-/// cabinet needs, and one base cabinet: a drawer over a pair of doors.
-fn new_document(units: Units) -> Document {
+/// A project with the materials, edge band and standards a base cabinet
+/// needs, and one base cabinet built by `method`: a drawer over a pair of
+/// doors.
+fn new_document(units: Units, method: Method) -> Document {
     let library = starter_library();
-    let product = base_cabinet(&library);
+    let standard = library
+        .standards
+        .iter()
+        .find(|s| s.method == method)
+        .expect("the starter library has both standards")
+        .id;
+    let product = base_cabinet(&library, standard);
     let project = Project {
         id: Id::new(),
         name: "Untitled".into(),
@@ -864,7 +888,7 @@ fn new_document(units: Units) -> Document {
         settings: Settings {
             units,
             precision: usual_precision(units),
-            default_standard: library.standards[0].id,
+            default_standard: standard,
             unknown: BTreeMap::default(),
         },
         rooms: Vec::new(),
@@ -883,108 +907,50 @@ fn inches(numerator: i64, denominator: i64) -> Length {
 }
 
 /// 3/4" plywood for the case and fronts, 1/4" plywood for the back and
-/// drawer bottoms, 1/2" plywood for drawer boxes, a 0.5 mm edge band, a cup
-/// hinge and a frameless standard, in that order.
+/// drawer bottoms, 1/2" plywood for drawer boxes, solid wood for face frames,
+/// a 0.5 mm edge band, a cup hinge and a frameless and a face frame standard,
+/// in that order.
 fn starter_library() -> Library {
-    let hinge = Hardware {
+    let hinge = standard::new_hinge();
+    let standard = |name: &str, method: Method| Standard {
         id: Id::new(),
         version: 1,
-        category: "hinge".into(),
-        name: "Cup hinge 35 mm".into(),
-        dimensions: [
-            ("cupDiameter".to_owned(), Length::from_mm(35)),
-            ("cupDepth".to_owned(), Length::from_mm(13)),
-        ]
-        .into(),
+        name: name.into(),
+        derived_from: None,
+        method,
+        rules: serde_json::from_value(standard::usual_rules(method, hinge.id))
+            .expect("rules are a JSON object"),
         unknown: BTreeMap::default(),
     };
-    let rules = starter_rules(hinge.id);
+    let solid_wood = SheetMaterial {
+        length: Length::from_inches(96),
+        width: inches(11, 2),
+        ..materials::new_sheet("Solid wood 3/4\"", inches(3, 4), inches(3, 4))
+    };
     Library {
         materials: vec![
             materials::new_sheet("Plywood 3/4\"", inches(3, 4), Length::from_mm(18)),
             materials::new_sheet("Plywood 1/4\"", inches(1, 4), Length::from_mm(6)),
             materials::new_sheet("Plywood 1/2\"", inches(1, 2), Length::from_mm(12)),
+            solid_wood,
         ],
         edge_bands: vec![materials::new_band("Edge band 0.5 mm")],
-        standards: vec![Standard {
-            id: Id::new(),
-            version: 1,
-            name: "Frameless".into(),
-            derived_from: None,
-            method: Method::Frameless,
-            rules: serde_json::from_value(rules).expect("rules are a JSON object"),
-            unknown: BTreeMap::default(),
-        }],
+        standards: vec![
+            standard("Frameless", Method::Frameless),
+            standard("Face frame", Method::FaceFrame),
+        ],
         hardware: vec![hinge],
         unknown: BTreeMap::default(),
     }
 }
 
-/// The rules of the starter library's frameless standard, with `hinge`
-/// for its doors.
-fn starter_rules(hinge: Id) -> serde_json::Value {
-    // The drawer slides the shop stocks, 12" to 22" by 2".
-    let slides = [12, 14, 16, 18, 20, 22].map(Length::from_inches);
-    serde_json::json!({
-        "back": {
-            "construction": "grooved",
-            "grooveDepth": inches(3, 8),
-            "setback": inches(1, 4),
-        },
-        "case": { "stretcherWidth": Length::from_inches(4) },
-        "drawers": {
-            "sideClearance": inches(1, 2),
-            "verticalClearance": inches(3, 2),
-            "rearClearance": Length::from_inches(1),
-            "slideLengths": slides,
-            "bottomGrooveDepth": inches(1, 4),
-            "bottomGrooveSetback": inches(1, 2),
-        },
-        "fivePiece": {
-            "stileWidth": inches(9, 4),
-            "railWidth": inches(9, 4),
-            "jointDepth": inches(3, 8),
-            "panelGrooveDepth": inches(3, 8),
-            "panelClearance": inches(1, 8),
-        },
-        "fronts": { "overlay": "full", "gap": inches(1, 8) },
-        "shelves": {
-            "sideClearance": inches(1, 16),
-            "frontSetback": inches(1, 4),
-            "backAllowance": inches(3, 4),
-        },
-        "toeKick": { "height": Length::from_inches(4) },
-        "billOfMaterials": {
-            "wastePercent": 15,
-            "edgeBandAllowance": Length::from_inches(1),
-        },
-        "systemHoles": {
-            "frontSetback": Length::from_mm(37),
-            "rearSetback": Length::from_mm(37),
-            "spacing": Length::from_mm(32),
-            "diameter": Length::from_mm(5),
-            "depth": Length::from_mm(12),
-            "endClearance": Length::from_inches(2),
-        },
-        "hinges": {
-            "hardware": hinge,
-            "boringDistance": Length::from_mm(4),
-            "endDistance": Length::from_inches(3),
-            "counts": [
-                { "upTo": Length::from_inches(40), "count": 2 },
-                { "upTo": Length::from_inches(60), "count": 3 },
-                { "upTo": Length::from_inches(80), "count": 4 },
-            ],
-        },
-    })
-}
-
 /// A 30" × 34-1/2" × 24" base cabinet from the starter library.
-fn base_cabinet(library: &Library) -> Product {
-    let (plywood, thin, box_sides, band) = (
+fn base_cabinet(library: &Library, standard: Id) -> Product {
+    let (plywood, thin, box_sides, solid, band) = (
         library.materials[0].id,
         library.materials[1].id,
         library.materials[2].id,
+        library.materials[3].id,
         library.edge_bands[0].id,
     );
     let (height, depth) = CabinetKind::Base.usual_height_and_depth();
@@ -992,7 +958,7 @@ fn base_cabinet(library: &Library) -> Product {
         id: Id::new(),
         label: "B1".into(),
         product_type: CabinetKind::Base.product_type().into(),
-        standard: library.standards[0].id,
+        standard,
         width: Length::from_inches(30),
         height,
         depth,
@@ -1005,6 +971,7 @@ fn base_cabinet(library: &Library) -> Product {
             ("drawerBox", box_sides),
             ("drawerBottom", thin),
             ("frontPanels", thin),
+            ("faceFrame", solid),
             ("edgeBandCase", band),
             ("edgeBandFronts", band),
         ]

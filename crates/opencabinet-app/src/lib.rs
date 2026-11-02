@@ -14,13 +14,13 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-use opencabinet_model::{Side, Units};
+use opencabinet_model::{Method, Side, Units};
 use slint::{
     CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, StandardListViewItem,
     VecModel,
 };
 
-use crate::designer::{CabinetKind, Designer, Dimension, OpeningKind, RoleChoices};
+use crate::designer::{CabinetKind, Designer, Dimension, OpeningKind, RoleChoices, RuleKind};
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
 use opencabinet_reports::Separator;
 
@@ -31,7 +31,7 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::{AppWindow, MaterialRole};
+pub use ui::{AppWindow, MaterialRole, RuleRow};
 
 /// The name and version shown to users and written into saved files.
 pub const NAME_AND_VERSION: &str = concat!("OpenCabinet Designer ", env!("CARGO_PKG_VERSION"));
@@ -65,6 +65,7 @@ pub fn create_with(dialogs: Rc<dyn Dialogs>) -> Result<AppWindow, slint::Platfor
     connect_room(&window, &app);
     connect_front(&window, &app);
     connect_materials(&window, &app);
+    connect_standard(&window, &app);
     let handle = Rc::clone(&app);
     window.on_units_chosen(move |metric| handle.choose_units(metric));
     let handle = Rc::clone(&app);
@@ -99,7 +100,7 @@ pub fn create_with(dialogs: Rc<dyn Dialogs>) -> Result<AppWindow, slint::Platfor
     let handle = Rc::clone(&app);
     window.on_blind_side_chosen(move |index| handle.choose_blind_side(index));
     let handle = Rc::clone(&app);
-    window.on_new_project(move || handle.new_project());
+    window.on_new_project(move |face_frame| handle.new_project(face_frame));
     let handle = Rc::clone(&app);
     window.on_open_project(move || handle.open());
     let handle = Rc::clone(&app);
@@ -315,6 +316,33 @@ impl App {
         });
     }
 
+    fn edit_standard_name(&self, text: &str) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let result = self.designer.borrow_mut().set_standard_name(text);
+        window.set_standard_name_error(result.err().unwrap_or_default().into());
+        self.show(&window, false);
+    }
+
+    /// Stores what was typed into a rule; the line under it says if it could
+    /// not be, and everything else keeps what is being typed.
+    fn edit_rule(&self, key: &str, text: &str) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let result = self.designer.borrow_mut().edit_rule(key, text);
+        self.show(&window, false);
+        let rows = window.get_rule_rows();
+        for i in 0..rows.row_count() {
+            if let Some(mut row) = rows.row_data(i).filter(|r| r.key == key) {
+                row.error = result.err().unwrap_or_default().into();
+                rows.set_row_data(i, row);
+                break;
+            }
+        }
+    }
+
     fn choose_style(&self, five_piece: bool) {
         let Some(window) = self.window.upgrade() else {
             return;
@@ -323,12 +351,17 @@ impl App {
         self.show(&window, false);
     }
 
-    fn new_project(&self) {
+    fn new_project(&self, face_frame: bool) {
         if !self.may_discard() {
             return;
         }
         let units = self.designer.borrow().units();
-        self.replace(Designer::new(units));
+        let method = if face_frame {
+            Method::FaceFrame
+        } else {
+            Method::Frameless
+        };
+        self.replace(Designer::with_method(units, method));
     }
 
     fn open(&self) {
@@ -519,6 +552,7 @@ impl App {
         show_room(window, &designer);
         show_front(window, &designer, texts);
         show_materials(window, &designer, texts);
+        show_standard(window, &designer, texts);
         show_drawing(window, &designer);
         let list = designer.cut_list();
         let rows: Vec<ModelRc<StandardListViewItem>> = list
@@ -891,6 +925,103 @@ fn show_materials(window: &AppWindow, designer: &Designer, texts: bool) {
     }
 }
 
+/// Connects the Standard tab and the cabinet's standard to `app`.
+fn connect_standard(window: &AppWindow, app: &Rc<App>) {
+    let handle = Rc::clone(app);
+    window.on_standard_chosen(move |index| {
+        if let Ok(index) = usize::try_from(index) {
+            handle.update(|d| d.select_standard(index));
+        }
+    });
+    let handle = Rc::clone(app);
+    window.on_cabinet_standard_chosen(move |index| {
+        if let Ok(index) = usize::try_from(index) {
+            handle.update(|d| d.set_cabinet_standard(index));
+        }
+    });
+    let handle = Rc::clone(app);
+    window.on_standard_name_edited(move |text| handle.edit_standard_name(&text));
+    let handle = Rc::clone(app);
+    window.on_rule_edited(move |key, text| handle.edit_rule(&key, &text));
+    let handle = Rc::clone(app);
+    window.on_rule_chosen(move |key, index| {
+        if let Ok(index) = usize::try_from(index) {
+            handle.update(|d| d.choose_rule(&key, index));
+        }
+    });
+    let handle = Rc::clone(app);
+    window.on_add_rule_group(move |key| handle.update(|d| d.add_rule_group(&key)));
+}
+
+/// The project's standards and the edited one's rules; with `texts`, also
+/// rewrites the fields and clears their errors.
+fn show_standard(window: &AppWindow, designer: &Designer, texts: bool) {
+    let position = |i: Option<usize>| i.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1);
+    let names: Vec<SharedString> = designer
+        .standards()
+        .iter()
+        .map(SharedString::from)
+        .collect();
+    window.set_standard_names(ModelRc::new(VecModel::from(names)));
+    window.set_standard_index(position(designer.selected_standard()));
+    window.set_cabinet_standard_index(position(designer.cabinet_standard()));
+    window.set_standard_note(designer.standard_note().into());
+    if texts {
+        window.set_standard_name_text(designer.standard_name().into());
+    }
+    let rows: Vec<ui::RuleRow> = designer
+        .rule_rows()
+        .into_iter()
+        .map(|row| {
+            let (kind, options, index) = match row.kind {
+                RuleKind::Group => (0, Vec::new(), -1),
+                RuleKind::MissingGroup => (1, Vec::new(), -1),
+                RuleKind::Field => (2, Vec::new(), -1),
+                RuleKind::Choice { options, chosen } => (3, options.to_vec(), position(chosen)),
+            };
+            let options: Vec<SharedString> = options.into_iter().map(SharedString::from).collect();
+            ui::RuleRow {
+                key: row.key.into(),
+                label: row.label.into(),
+                kind,
+                text: row.text.into(),
+                reading: row.reading.into(),
+                error: SharedString::new(),
+                options: ModelRc::new(VecModel::from(options)),
+                index,
+            }
+        })
+        .collect();
+    // The same rows keep their fields, so that a field being typed in keeps
+    // the keyboard and what is typed: this runs after every keystroke.
+    let shown = window.get_rule_rows();
+    let same = shown.row_count() == rows.len()
+        && rows
+            .iter()
+            .enumerate()
+            .all(|(i, row)| shown.row_data(i).is_some_and(|old| old.key == row.key));
+    if !same {
+        window.set_rule_rows(ModelRc::new(VecModel::from(rows)));
+        return;
+    }
+    for (i, mut row) in rows.into_iter().enumerate() {
+        let Some(old) = shown.row_data(i) else {
+            continue;
+        };
+        if !texts {
+            row.text = old.text.clone();
+            row.error = old.error.clone();
+        }
+        let changed = row.text != old.text
+            || row.reading != old.reading
+            || row.error != old.error
+            || row.index != old.index;
+        if changed {
+            shown.set_row_data(i, row);
+        }
+    }
+}
+
 /// The edited cabinet's sections and quantity; with `texts`, also rewrites
 /// their count fields.
 fn show_front(window: &AppWindow, designer: &Designer, texts: bool) {
@@ -977,4 +1108,5 @@ fn clear_errors(window: &AppWindow) {
     window.set_quantity_error(SharedString::new());
     window.set_sheet_name_error(SharedString::new());
     window.set_band_name_error(SharedString::new());
+    window.set_standard_name_error(SharedString::new());
 }

@@ -151,6 +151,7 @@ impl Designer {
         let placed = !self.placement_indexes().is_empty();
         self.room_selection.placement = placed.then_some(0);
         self.room_selection.showing_walls = false;
+        self.follow_cabinet_standard();
     }
 
     /// The selection a project starts with: its first wall, and the first

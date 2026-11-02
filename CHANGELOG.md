@@ -45,6 +45,15 @@ follow [Semantic Versioning](https://semver.org/).
   which cabinets use it. A cabinet chooses the material of each part it
   has, and can give its choices to every other cabinet. The tab that says
   what to buy is now called Bill of materials.
+- **Construction standards:** a Standard tab edits every rule the
+  evaluator reads, by group: toe kick, case, back, fronts, face frame,
+  drawers, shelves, five-piece fronts, line boring, hinges and the bill of
+  materials. Rules it does not show stay in the file. Values that cannot be
+  read are refused in the field.
+- **Frameless or face frame:** new projects carry both standards, the File
+  menu starts either kind, and each cabinet chooses its own. The face frame
+  values are general ones to adjust: stiles and rails of 1-1/2", a partial
+  overlay of 1/2" and solid wood 3/4" × 5-1/2" × 96".
 
 ### Known limitations
 
