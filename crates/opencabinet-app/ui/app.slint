@@ -30,6 +30,32 @@ component LengthField inherits VerticalLayout {
     }
 }
 
+// A field for a whole number: a label, the text as typed, and below it why
+// it cannot be read, or a note.
+component CountField inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text;
+    in property <string> error;
+    in property <string> note;
+    in property <bool> enabled: true;
+    callback edited(text: string);
+    spacing: 4px;
+
+    Text { text: root.label; }
+    LineEdit {
+        accessible-label: root.label;
+        enabled: root.enabled;
+        text <=> root.text;
+        edited(text) => { root.edited(text); }
+    }
+    if root.error != "" || root.note != "": Text {
+        text: root.error != "" ? root.error : root.note;
+        color: root.error != "" ? #c62828 : Palette.foreground.transparentize(40%);
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
 // A text in the drawing, centered on a point given in millimeters from
 // the drawing's top left corner.
 export struct DrawingLabel {
@@ -66,6 +92,28 @@ export component AppWindow inherits Window {
     in-out property <string> blind-width-text;
     in property <string> blind-width-reading;
     in property <string> blind-width-error;
+    // How many the job needs, and how many are placed on walls instead.
+    in-out property <string> quantity-text;
+    in property <string> quantity-error;
+    in property <bool> cabinet-placed;
+    in property <string> placed-note;
+    // The sections of the front, from top to bottom, and the edited one;
+    // the note says why a front cannot be edited here.
+    in property <[StandardListViewItem]> sections;
+    in-out property <int> section-index;
+    in property <string> front-note;
+    in property <[string]> section-kinds;
+    in-out property <int> section-kind-index;
+    in-out property <string> section-height-text;
+    in property <string> section-height-reading;
+    in property <string> section-height-error;
+    in property <bool> section-has-doors;
+    in property <bool> section-single-door;
+    in-out property <int> door-count-index;
+    in-out property <int> hinge-index;
+    in property <bool> section-has-shelves;
+    in-out property <string> shelves-text;
+    in property <string> shelves-error;
     in property <string> status;
     in-out property <string> width-text;
     in-out property <string> height-text;
@@ -169,6 +217,16 @@ export component AppWindow inherits Window {
     callback style-chosen(five-piece: bool);
     callback blind-side-chosen(index: int);
     callback blind-width-edited(text: string);
+    callback quantity-edited(text: string);
+    callback section-chosen(index: int);
+    callback add-section();
+    callback delete-section();
+    callback move-section(up: bool);
+    callback section-kind-chosen(index: int);
+    callback section-height-edited(text: string);
+    callback door-count-chosen(index: int);
+    callback hinge-chosen(index: int);
+    callback shelves-edited(text: string);
     callback new-project();
     callback open-project();
     callback save-project();
@@ -448,6 +506,78 @@ export component AppWindow inherits Window {
                         reading: root.blind-width-reading;
                         error: root.blind-width-error;
                         edited(text) => { root.blind-width-edited(text); }
+                    }
+                }
+                CountField {
+                    label: "Quantity";
+                    text <=> root.quantity-text;
+                    error: root.quantity-error;
+                    note: root.placed-note;
+                    enabled: !root.cabinet-placed;
+                    edited(text) => { root.quantity-edited(text); }
+                }
+                Text { text: "Front"; font-weight: 700; }
+                if root.front-note != "": Text {
+                    text: root.front-note;
+                    color: #b26a00;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if root.front-note == "": VerticalLayout {
+                    spacing: 8px;
+                    StandardListView {
+                        accessible-label: "Sections";
+                        height: 90px;
+                        model: root.sections;
+                        current-item <=> root.section-index;
+                        current-item-changed(index) => { root.section-chosen(index); }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Button { text: "Add"; clicked => { root.add-section(); } }
+                        Button { text: "Delete"; clicked => { root.delete-section(); } }
+                        Button { text: "Up"; clicked => { root.move-section(true); } }
+                        Button { text: "Down"; clicked => { root.move-section(false); } }
+                    }
+                    Text { text: "Section"; }
+                    ComboBox {
+                        accessible-label: "Section";
+                        model: root.section-kinds;
+                        current-index <=> root.section-kind-index;
+                        selected => { root.section-kind-chosen(self.current-index); }
+                    }
+                    LengthField {
+                        label: "Section height, empty for the rest";
+                        text <=> root.section-height-text;
+                        reading: root.section-height-reading;
+                        error: root.section-height-error;
+                        edited(text) => { root.section-height-edited(text); }
+                    }
+                    if root.section-has-doors: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Doors"; }
+                        ComboBox {
+                            accessible-label: "Doors";
+                            model: ["1 door", "2 doors"];
+                            current-index <=> root.door-count-index;
+                            selected => { root.door-count-chosen(self.current-index); }
+                        }
+                    }
+                    if root.section-single-door: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Hinges"; }
+                        ComboBox {
+                            accessible-label: "Hinges";
+                            model: ["Left", "Right"];
+                            current-index <=> root.hinge-index;
+                            selected => { root.hinge-chosen(self.current-index); }
+                        }
+                    }
+                    if root.section-has-shelves: CountField {
+                        label: "Shelves";
+                        text <=> root.shelves-text;
+                        error: root.shelves-error;
+                        edited(text) => { root.shelves-edited(text); }
                     }
                 }
                 Text { text: "Placement"; font-weight: 700; }

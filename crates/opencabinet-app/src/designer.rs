@@ -24,8 +24,10 @@ use opencabinet_reports::{
 use crate::NAME_AND_VERSION;
 use crate::drawing::{self, Drawing};
 
+mod front;
 mod room;
 
+pub use front::SectionKind;
 pub use room::OpeningKind;
 
 /// A length the window edits: the cabinet's overall dimensions, the edited
@@ -56,11 +58,13 @@ pub enum Dimension {
     PlacementElevation,
     /// How much of a blind corner's front is hidden, from its blind side.
     BlindWidth,
+    /// The edited section of the front, top to bottom.
+    SectionHeight,
 }
 
 impl Dimension {
     /// Every dimension, in the order the window shows them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Width,
         Self::Height,
         Self::Depth,
@@ -73,6 +77,7 @@ impl Dimension {
         Self::PlacementOffset,
         Self::PlacementElevation,
         Self::BlindWidth,
+        Self::SectionHeight,
     ];
 
     /// Whether it may be zero: offsets and heights above the floor may,
@@ -97,6 +102,9 @@ pub struct Designer {
     modified: bool,
     /// The index of the product being edited; a project always has one.
     selected: usize,
+    /// The edited section of its front, from the top; read within the
+    /// sections it has.
+    section: usize,
     room_selection: room::RoomSelection,
 }
 
@@ -117,6 +125,7 @@ impl Designer {
             path: None,
             modified: false,
             selected: 0,
+            section: 0,
             room_selection: room::RoomSelection::default(),
         }
     }
@@ -136,6 +145,7 @@ impl Designer {
             path: Some(path.to_owned()),
             modified: false,
             selected: 0,
+            section: 0,
             room_selection: room::RoomSelection::default(),
         };
         designer.first_selection();
@@ -389,6 +399,8 @@ impl Designer {
         }
         product.front = Some(kind.usual_front());
         product.label = label;
+        self.section = 0;
+        let product = self.product_mut();
         // Only a blind corner has a blind part, on the right at first.
         product.parameters.remove(BLIND_SIDE);
         product.parameters.remove(BLIND_WIDTH);
@@ -505,17 +517,22 @@ impl Designer {
                     .and_then(serde_json::Value::as_i64)
                     .map(Length::from_nm)
             }
+            Dimension::SectionHeight => self.section_height(),
             _ => self.room_value(dimension),
         }
     }
 
-    /// Reads what the user typed into a dimension and stores it.
+    /// Reads what the user typed into a dimension and stores it. An empty
+    /// section height lets the section take the rest of the front.
     ///
     /// # Errors
     /// A message for the user when the text is not a length, is not
     /// positive (zero is fine for offsets and heights above the floor), or
     /// has nothing to apply to; the stored value is then left unchanged.
     pub fn edit(&mut self, dimension: Dimension, text: &str) -> Result<(), String> {
+        if dimension == Dimension::SectionHeight && text.trim().is_empty() {
+            return self.set_section_height(None);
+        }
         let length = Length::parse(text, self.units()).map_err(|e| capitalize(&e.to_string()))?;
         if dimension.may_be_zero() {
             if length < Length::ZERO {
@@ -526,6 +543,9 @@ impl Designer {
         }
         if dimension == Dimension::BlindWidth {
             return self.set_blind_width(length);
+        }
+        if dimension == Dimension::SectionHeight {
+            return self.set_section_height(Some(length));
         }
         let product = self.product_mut();
         let field = match dimension {
@@ -574,7 +594,11 @@ impl Designer {
     #[must_use]
     pub fn reading(&self, dimension: Dimension) -> String {
         let Some(length) = self.get(dimension) else {
-            return String::new();
+            return if dimension == Dimension::SectionHeight {
+                self.section_rest_reading()
+            } else {
+                String::new()
+            };
         };
         let shown = length.show(self.units(), self.precision());
         let sign = if shown.exact { '=' } else { '≈' };

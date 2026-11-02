@@ -147,6 +147,7 @@ impl Designer {
 
     /// After the edited cabinet changes, edit its first placement.
     pub(super) fn cabinet_changed(&mut self) {
+        self.section = 0;
         let placed = !self.placement_indexes().is_empty();
         self.room_selection.placement = placed.then_some(0);
         self.room_selection.showing_walls = false;
@@ -495,9 +496,53 @@ impl Designer {
             rotation: None,
             unknown: BTreeMap::default(),
         });
+        // A placed cabinet counts its placements (RFC-0001 §6).
+        self.product_mut().quantity = None;
         self.room_selection.placement = Some(self.placement_indexes().len() - 1);
         self.room_selection.showing_walls = false;
         self.modified = true;
+        Ok(())
+    }
+
+    /// How many times the edited cabinet is placed, in all the rooms.
+    #[must_use]
+    pub fn placed_count(&self) -> usize {
+        let id = self.product().id;
+        self.document
+            .project
+            .rooms
+            .iter()
+            .flat_map(|r| &r.placements)
+            .filter(|p| p.product == id)
+            .count()
+    }
+
+    /// How many of the edited cabinet the job needs, when it is not placed.
+    #[must_use]
+    pub fn quantity(&self) -> u32 {
+        self.product().quantity.unwrap_or(1)
+    }
+
+    /// Reads what the user typed as how many of the edited cabinet the job
+    /// needs.
+    ///
+    /// # Errors
+    /// A message for the user when it is not a whole number from 1 to 999
+    /// or the cabinet is placed; nothing then changes.
+    pub fn set_quantity(&mut self, text: &str) -> Result<(), String> {
+        if self.placed_count() > 0 {
+            return Err("A placed cabinet counts its placements".into());
+        }
+        let quantity = text
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|q| (1..=999).contains(q))
+            .ok_or("Must be a whole number from 1 to 999")?;
+        if quantity != self.quantity() {
+            self.product_mut().quantity = (quantity > 1).then_some(quantity);
+            self.modified = true;
+        }
         Ok(())
     }
 
@@ -565,7 +610,11 @@ impl Designer {
             Dimension::PlacementElevation => {
                 self.placement().filter(|p| p.wall.is_some())?.elevation
             }
-            Dimension::Width | Dimension::Height | Dimension::Depth | Dimension::BlindWidth => None,
+            Dimension::Width
+            | Dimension::Height
+            | Dimension::Depth
+            | Dimension::BlindWidth
+            | Dimension::SectionHeight => None,
         }
     }
 
@@ -594,9 +643,11 @@ impl Designer {
             Dimension::PlacementElevation => {
                 self.placement_mut().ok_or_else(missing)?.elevation = Some(length);
             }
-            Dimension::Width | Dimension::Height | Dimension::Depth | Dimension::BlindWidth => {
-                return Err(missing());
-            }
+            Dimension::Width
+            | Dimension::Height
+            | Dimension::Depth
+            | Dimension::BlindWidth
+            | Dimension::SectionHeight => return Err(missing()),
         }
         self.modified = true;
         Ok(())
@@ -632,6 +683,45 @@ mod tests {
             (inches(wall.start.x), inches(wall.start.y)),
             (inches(wall.end.x), inches(wall.end.y)),
         ]
+    }
+
+    #[test]
+    fn a_cabinet_not_placed_has_a_quantity_and_a_placed_one_counts_its_placements() {
+        let mut designer = Designer::default();
+        assert_eq!(designer.quantity(), 1);
+        designer.set_quantity(" 3 ").unwrap();
+        assert_eq!(designer.quantity(), 3);
+        assert!(designer.modified());
+        assert_eq!(designer.cut_list().rows[0].quantity, "3");
+
+        for text in ["0", "1000", "many", ""] {
+            assert_eq!(
+                designer.set_quantity(text),
+                Err("Must be a whole number from 1 to 999".into())
+            );
+        }
+        assert_eq!(designer.quantity(), 3);
+
+        // A copy needs as many.
+        designer.duplicate();
+        assert_eq!(designer.quantity(), 3);
+        designer.set_quantity("1").unwrap();
+        assert_eq!(designer.product().quantity, None);
+
+        // Placing it clears the quantity, which would be a validation error.
+        designer.select(0);
+        designer.add_wall();
+        designer.place().unwrap();
+        assert_eq!(designer.product().quantity, None);
+        assert_eq!(designer.placed_count(), 1);
+        assert_eq!(designer.issues(), []);
+        assert_eq!(
+            designer.set_quantity("2"),
+            Err("A placed cabinet counts its placements".into())
+        );
+        designer.place().unwrap();
+        assert_eq!(designer.placed_count(), 2);
+        assert_eq!(designer.cut_list().rows[0].quantity, "2");
     }
 
     #[test]
