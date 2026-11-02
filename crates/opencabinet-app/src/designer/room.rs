@@ -614,7 +614,13 @@ impl Designer {
             | Dimension::Height
             | Dimension::Depth
             | Dimension::BlindWidth
-            | Dimension::SectionHeight => None,
+            | Dimension::SectionHeight
+            | Dimension::SheetNominal
+            | Dimension::SheetActual
+            | Dimension::SheetLength
+            | Dimension::SheetWidth
+            | Dimension::BandThickness
+            | Dimension::BandWidth => None,
         }
     }
 
@@ -647,7 +653,13 @@ impl Designer {
             | Dimension::Height
             | Dimension::Depth
             | Dimension::BlindWidth
-            | Dimension::SectionHeight => return Err(missing()),
+            | Dimension::SectionHeight
+            | Dimension::SheetNominal
+            | Dimension::SheetActual
+            | Dimension::SheetLength
+            | Dimension::SheetWidth
+            | Dimension::BandThickness
+            | Dimension::BandWidth => return Err(missing()),
         }
         self.modified = true;
         Ok(())
