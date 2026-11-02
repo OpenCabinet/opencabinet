@@ -62,6 +62,7 @@ pub fn create_with(dialogs: Rc<dyn Dialogs>) -> Result<AppWindow, slint::Platfor
         on_edited(&window, dimension, move |text| app.edit(dimension, &text));
     }
     connect_room(&window, &app);
+    connect_front(&window, &app);
     let handle = Rc::clone(&app);
     window.on_units_chosen(move |metric| handle.choose_units(metric));
     let handle = Rc::clone(&app);
@@ -219,6 +220,37 @@ impl App {
         };
         let side = if index == 0 { Side::Left } else { Side::Right };
         self.designer.borrow_mut().set_blind_side(side);
+        self.show(&window, false);
+    }
+
+    /// Edits another section, unless it is the one being edited: the
+    /// list also reports the section the window has just set.
+    fn choose_section(&self, index: i32) {
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        if self.designer.borrow().selected_section() != Some(index) {
+            self.update(|designer| {
+                designer.select_section(index);
+            });
+        }
+    }
+
+    fn edit_shelves(&self, text: &str) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let result = self.designer.borrow_mut().set_shelves(text);
+        window.set_shelves_error(result.err().unwrap_or_default().into());
+        self.show(&window, false);
+    }
+
+    fn edit_quantity(&self, text: &str) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let result = self.designer.borrow_mut().set_quantity(text);
+        window.set_quantity_error(result.err().unwrap_or_default().into());
         self.show(&window, false);
     }
 
@@ -424,6 +456,7 @@ impl App {
             set_reading(window, dimension, designer.reading(dimension).into());
         }
         show_room(window, &designer);
+        show_front(window, &designer, texts);
         show_drawing(window, &designer);
         let list = designer.cut_list();
         let rows: Vec<ModelRc<StandardListViewItem>> = list
@@ -565,6 +598,8 @@ fields! {
     Depth: set_depth_text, set_depth_reading, set_depth_error, on_depth_edited;
     BlindWidth: set_blind_width_text, set_blind_width_reading, set_blind_width_error,
         on_blind_width_edited;
+    SectionHeight: set_section_height_text, set_section_height_reading,
+        set_section_height_error, on_section_height_edited;
     WallLength: set_wall_length_text, set_wall_length_reading, set_wall_length_error,
         on_wall_length_edited;
     WallHeight: set_wall_height_text, set_wall_height_reading, set_wall_height_error,
@@ -649,6 +684,90 @@ fn connect_room(window: &AppWindow, app: &Rc<App>) {
     window.on_placement_wall_chosen(move |i| handle.update(|d| choose(d, i)));
 }
 
+/// Connects the Front and Quantity sections to `app`.
+fn connect_front(window: &AppWindow, app: &Rc<App>) {
+    let handle = Rc::clone(app);
+    window.on_section_chosen(move |index| handle.choose_section(index));
+    let handle = Rc::clone(app);
+    window.on_add_section(move || handle.change_room(Designer::add_section));
+    let handle = Rc::clone(app);
+    window.on_delete_section(move || handle.change_room(Designer::delete_section));
+    let handle = Rc::clone(app);
+    window.on_move_section(move |up| handle.update(|d| d.move_section(up)));
+    let handle = Rc::clone(app);
+    window.on_section_kind_chosen(move |index| {
+        handle.update(|d| {
+            let kinds = d.section_kinds();
+            if let Some(&kind) = usize::try_from(index).ok().and_then(|i| kinds.get(i)) {
+                d.set_section_kind(kind);
+            }
+        });
+    });
+    let handle = Rc::clone(app);
+    window.on_door_count_chosen(move |index| {
+        handle.update(|d| d.set_door_count(if index == 0 { 1 } else { 2 }));
+    });
+    let handle = Rc::clone(app);
+    window.on_hinge_chosen(move |index| {
+        handle.update(|d| {
+            d.set_hinge_side(if index == 0 { Side::Left } else { Side::Right });
+        });
+    });
+    let handle = Rc::clone(app);
+    window.on_shelves_edited(move |text| handle.edit_shelves(&text));
+    let handle = Rc::clone(app);
+    window.on_quantity_edited(move |text| handle.edit_quantity(&text));
+}
+
+/// The edited cabinet's sections and quantity; with `texts`, also rewrites
+/// their count fields.
+fn show_front(window: &AppWindow, designer: &Designer, texts: bool) {
+    let sections: Vec<StandardListViewItem> = designer
+        .sections()
+        .iter()
+        .map(|s| StandardListViewItem::from(s.as_str()))
+        .collect();
+    window.set_sections(ModelRc::new(VecModel::from(sections)));
+    let position = |i: Option<usize>| i.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1);
+    window.set_section_index(position(designer.selected_section()));
+    window.set_front_note(designer.front_note().unwrap_or_default().into());
+    let kinds = designer.section_kinds();
+    let names: Vec<SharedString> = kinds.iter().map(|k| k.name().into()).collect();
+    window.set_section_kinds(ModelRc::new(VecModel::from(names)));
+    let kind = designer
+        .section_kind()
+        .and_then(|k| kinds.iter().position(|&c| c == k));
+    window.set_section_kind_index(position(kind));
+    let doors = designer.door_count();
+    window.set_section_has_doors(doors.is_some());
+    window.set_door_count_index(i32::from(doors == Some(2)));
+    window.set_section_single_door(doors == Some(1));
+    window.set_hinge_index(match designer.hinge_side() {
+        Some(Side::Left) => 0,
+        Some(Side::Right) => 1,
+        None => -1,
+    });
+    let shelves = designer.shelves();
+    window.set_section_has_shelves(shelves.is_some());
+    let placed = designer.placed_count();
+    window.set_cabinet_placed(placed > 0);
+    window.set_placed_note(match placed {
+        0 => SharedString::new(),
+        1 => "1 placed on walls".into(),
+        count => format!("{count} placed on walls").into(),
+    });
+    if texts {
+        let shelves = shelves.map_or_else(String::new, |s| s.to_string());
+        window.set_shelves_text(shelves.into());
+        let quantity = if placed > 0 {
+            placed.to_string()
+        } else {
+            designer.quantity().to_string()
+        };
+        window.set_quantity_text(quantity.into());
+    }
+}
+
 /// The Walls tab's lists and the edited cabinet's placements.
 fn show_room(window: &AppWindow, designer: &Designer) {
     let list = |items: Vec<String>| {
@@ -682,4 +801,6 @@ fn clear_errors(window: &AppWindow) {
         set_error(window, dimension, String::new());
     }
     window.set_label_error(slint::SharedString::new());
+    window.set_shelves_error(SharedString::new());
+    window.set_quantity_error(SharedString::new());
 }

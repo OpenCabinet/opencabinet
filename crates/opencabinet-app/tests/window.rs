@@ -157,9 +157,100 @@ fn the_window_edits_saves_and_reopens_a_project() {
     cabinet_list(&window);
     walls_and_placements(&window);
     blind_corner(&window);
+    front_and_quantity(&window);
 
     window.invoke_about();
     assert!(window.get_status().contains("GNU GPL"));
+}
+
+/// The Front and Quantity sections of a new base cabinet: a drawer over a
+/// pair of doors. They are below the visible part of the panel, so they
+/// are edited through their callbacks.
+fn front_and_quantity(window: &AppWindow) {
+    let sections = |window: &AppWindow| -> Vec<String> {
+        let model = window.get_sections();
+        (0..model.row_count())
+            .map(|i| model.row_data(i).unwrap().text.to_string())
+            .collect()
+    };
+    window.invoke_add_cabinet();
+    assert_eq!(window.get_front_note(), "");
+    assert_eq!(
+        sections(window),
+        ["Drawer · 6\"", "2 doors · rest, 24-1/2\""]
+    );
+    assert_eq!(window.get_section_index(), 0);
+    assert_eq!(window.get_section_height_text(), "6\"");
+    assert!(!window.get_section_has_doors());
+
+    // The other section's fields are shown, and reporting the same section
+    // again changes nothing.
+    window.invoke_section_chosen(1);
+    assert_eq!(window.get_section_index(), 1);
+    assert_eq!(window.get_section_height_text(), "");
+    assert_eq!(
+        window.get_section_height_reading(),
+        "takes the rest: 24-1/2\""
+    );
+    assert!(window.get_section_has_doors());
+    assert!(!window.get_section_single_door());
+    window.invoke_shelves_edited("2".into());
+    window.set_shelves_text("2 ".into());
+    window.invoke_section_chosen(1);
+    assert_eq!(window.get_shelves_text(), "2 ");
+
+    window.invoke_door_count_chosen(0);
+    assert!(window.get_section_single_door());
+    assert_eq!(window.get_hinge_index(), 0);
+    window.invoke_hinge_chosen(1);
+    assert_eq!(window.get_hinge_index(), 1);
+    assert_eq!(
+        sections(window)[1],
+        "1 door, hinged right, 2 shelves · rest, 24-1/2\""
+    );
+    window.invoke_shelves_edited("many".into());
+    assert_eq!(
+        window.get_shelves_error(),
+        "Must be a whole number from 0 to 20"
+    );
+
+    // A new section goes below the edited one, and is edited.
+    window.invoke_add_section();
+    assert_eq!(window.get_section_index(), 2);
+    assert_eq!(window.get_shelves_error(), "");
+    window.invoke_section_kind_chosen(3);
+    assert_eq!(window.get_section_kind_index(), 3);
+    assert_eq!(sections(window)[2], "Open · 6\"");
+    window.invoke_section_height_edited("40".into());
+    assert_eq!(
+        window.get_section_height_error(),
+        "The front's fixed sizes are larger than the opening"
+    );
+    window.invoke_section_height_edited("8".into());
+    assert_eq!(window.get_section_height_error(), "");
+    assert_eq!(sections(window)[2], "Open · 8\"");
+
+    window.invoke_move_section(true);
+    assert_eq!(window.get_section_index(), 1);
+    assert_eq!(sections(window)[1], "Open · 8\"");
+    window.invoke_delete_section();
+    assert_eq!(sections(window).len(), 2);
+
+    // The quantity is the job's until the cabinet is placed.
+    assert_eq!(window.get_quantity_text(), "1");
+    assert!(!window.get_cabinet_placed());
+    window.invoke_quantity_edited("3".into());
+    assert_eq!(window.get_quantity_error(), "");
+    window.invoke_quantity_edited("0".into());
+    assert_eq!(
+        window.get_quantity_error(),
+        "Must be a whole number from 1 to 999"
+    );
+    window.invoke_place_cabinet();
+    assert!(window.get_cabinet_placed());
+    assert_eq!(window.get_quantity_text(), "1");
+    assert_eq!(window.get_placed_note(), "1 placed on walls");
+    assert_eq!(window.get_quantity_error(), "");
 }
 
 /// A blind corner's own fields, shown only for blind corners.

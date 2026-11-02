@@ -32,6 +32,13 @@ follow [Semantic Versioning](https://semver.org/).
   wide, 12" blind), labeled BC and WBC, with fields for the blind side and
   width; hiding the other side rehangs a single door away from it.
 - The sample kitchen's blind corner has a back, so it is evaluated.
+- **Front editor:** the window edits a cabinet's front as sections stacked
+  from top to bottom: doors, drawers, false fronts, open sections and
+  appliance spaces, each a fixed height or taking the rest, with the number
+  of doors, the hinge side and the shelves. A front with sections side by
+  side is kept as it is, but cannot be edited in the window.
+- **Quantity:** how many of a cabinet the job needs when it is not placed
+  on a wall. A placed cabinet counts its placements.
 
 ### Known limitations
 

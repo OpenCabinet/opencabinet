@@ -4,7 +4,7 @@
 //! What a product looks like from the front, for elevations: its outline,
 //! toe kick, face frame and fronts, laid out by the same rules as its parts.
 
-use opencabinet_model::{InsertKind, Length, Library, Product, Side};
+use opencabinet_model::{Id, InsertKind, Length, Library, Product, Side};
 
 use crate::front::Rect;
 use crate::rules::Rules;
@@ -47,6 +47,40 @@ pub enum FrontKind {
     FalseFront,
     /// A blind corner's fixed panel, behind the adjoining cabinet.
     BlindPanel,
+}
+
+/// Where the openings of `product`'s front come out, each with its node's
+/// identity, in the tree's order: for a stack, from top to bottom.
+///
+/// # Errors
+/// When its type cannot be evaluated or its front cannot be laid out.
+pub fn front_openings(product: &Product, library: &Library) -> Result<Vec<(Id, Rect)>, String> {
+    let (kind, _) = Kind::of(&product.product_type).ok_or("this product type has no view yet")?;
+    let blind = Blind::of(product)?;
+    let standard = library
+        .standards
+        .iter()
+        .find(|s| s.id == product.standard)
+        .ok_or("the standard is not in the library")?;
+    let rules = Rules::of(standard)?;
+    let face_frame = face_frame(standard.method, &rules)?;
+    let toe_kick = match kind {
+        Kind::Wall => Length::ZERO,
+        Kind::Base | Kind::Tall => rules.toe_kick.height,
+    };
+    let face = Rect {
+        x: Length::ZERO,
+        y: toe_kick,
+        width: product.width,
+        height: product.height - toe_kick,
+    };
+    let plan = lay_out_front(product, face_frame, face, &rules.fronts, blind)?;
+    Ok(plan
+        .layout
+        .openings
+        .iter()
+        .map(|opening| (opening.node.id, opening.rect))
+        .collect())
 }
 
 /// How `product` looks from the front.
