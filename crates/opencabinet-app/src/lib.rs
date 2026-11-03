@@ -11,7 +11,7 @@ pub mod fonts;
 pub mod perf;
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use opencabinet_model::{Method, Side, Units};
@@ -20,7 +20,9 @@ use slint::{
     VecModel,
 };
 
-use crate::designer::{CabinetKind, Designer, Dimension, OpeningKind, RoleChoices, RuleKind};
+use crate::designer::{
+    CabinetKind, Designer, Dimension, OpeningKind, RoleChoices, RuleKind, template,
+};
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
 use opencabinet_reports::Separator;
 
@@ -41,22 +43,31 @@ pub const NAME_AND_VERSION: &str = concat!("OpenCabinet Designer ", env!("CARGO_
 /// # Errors
 /// When the platform cannot create a window.
 pub fn create() -> Result<AppWindow, slint::PlatformError> {
-    create_with(Rc::new(SystemDialogs))
+    create_with(Rc::new(SystemDialogs), template::usual_path())
 }
 
 /// Creates the window and connects it to a new [`Designer`], asking the
-/// user through `dialogs`.
+/// user through `dialogs`, with the shop template at `template_path`.
 ///
 /// # Errors
 /// When the platform cannot create a window.
-pub fn create_with(dialogs: Rc<dyn Dialogs>) -> Result<AppWindow, slint::PlatformError> {
+pub fn create_with(
+    dialogs: Rc<dyn Dialogs>,
+    template_path: Option<PathBuf>,
+) -> Result<AppWindow, slint::PlatformError> {
     let window = AppWindow::new()?;
+    let (designer, told) = Designer::starting(template_path.as_deref(), Units::Imperial, None);
     let app = Rc::new(App {
         window: window.as_weak(),
-        designer: RefCell::new(Designer::default()),
+        designer: RefCell::new(designer),
         dialogs,
+        template_path,
     });
     app.show(&window, true);
+    app.show_template(&window);
+    if !told.is_empty() {
+        app.status(&told);
+    }
 
     for dimension in Dimension::ALL {
         let app = Rc::clone(&app);
@@ -113,6 +124,10 @@ pub fn create_with(dialogs: Rc<dyn Dialogs>) -> Result<AppWindow, slint::Platfor
     });
     connect_exports(&window, &app);
     let handle = Rc::clone(&app);
+    window.on_save_shop_template(move || handle.save_template());
+    let handle = Rc::clone(&app);
+    window.on_remove_shop_template(move || handle.remove_template());
+    let handle = Rc::clone(&app);
     window.on_about(move || {
         handle.status(&format!(
             "{NAME_AND_VERSION} — free software under the GNU GPL, version 3 or later"
@@ -141,6 +156,9 @@ struct App {
     window: slint::Weak<AppWindow>,
     designer: RefCell<Designer>,
     dialogs: Rc<dyn Dialogs>,
+    /// Where the shop template lives; `None` when the system does not say
+    /// where the user's folder is.
+    template_path: Option<PathBuf>,
 }
 
 impl App {
@@ -361,7 +379,68 @@ impl App {
         } else {
             Method::Frameless
         };
-        self.replace(Designer::with_method(units, method));
+        let (designer, told) =
+            Designer::starting(self.template_path.as_deref(), units, Some(method));
+        self.replace(designer);
+        if !told.is_empty() {
+            self.status(&told);
+        }
+    }
+
+    fn save_template(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let Some(path) = &self.template_path else {
+            self.status("Cannot save the shop template: no user folder was found");
+            return;
+        };
+        if path.exists()
+            && !self.dialogs.confirm(
+                "Replace shop template",
+                "Replace your shop template with this project's materials and standards? \
+                 The current one is kept as a backup.",
+            )
+        {
+            return;
+        }
+        let designer = self.designer.borrow();
+        match designer.save_template(path) {
+            Ok(()) => self.status(&format!(
+                "Shop template saved, with the materials of {}",
+                designer.label()
+            )),
+            Err(message) => self.status(&message),
+        }
+        self.show_template(&window);
+    }
+
+    fn remove_template(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let Some(path) = self.template_path.as_ref().filter(|p| p.exists()) else {
+            return;
+        };
+        if !self.dialogs.confirm(
+            "Remove shop template",
+            "Remove your shop template? New projects will start from the general values. \
+             The current one is kept as a backup.",
+        ) {
+            return;
+        }
+        match template::remove(path) {
+            Ok(()) => {
+                self.status("Shop template removed. New projects start from the general values");
+            }
+            Err(message) => self.status(&message),
+        }
+        self.show_template(&window);
+    }
+
+    fn show_template(&self, window: &AppWindow) {
+        let found = self.template_path.as_ref().is_some_and(|p| p.exists());
+        window.set_has_shop_template(found);
     }
 
     fn open(&self) {

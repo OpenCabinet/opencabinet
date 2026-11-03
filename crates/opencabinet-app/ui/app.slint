@@ -347,6 +347,8 @@ export component AppWindow inherits Window {
     callback rule-edited(key: string, text: string);
     callback rule-chosen(key: string, index: int);
     callback add-rule-group(key: string);
+    // Whether the user's folder holds a shop template.
+    in property <bool> has-shop-template;
     // `true` for a face frame project, `false` for a frameless one.
     callback new-project(face-frame: bool);
     callback open-project();
@@ -360,6 +362,8 @@ export component AppWindow inherits Window {
     callback export-parts-dxf();
     callback export-elevations-pdf();
     callback export-elevations-dxf();
+    callback save-shop-template();
+    callback remove-shop-template();
     callback about();
     callback quit();
 
@@ -377,6 +381,16 @@ export component AppWindow inherits Window {
             MenuItem { title: "Open…"; activated => { root.open-project(); } }
             MenuItem { title: "Save"; activated => { root.save-project(); } }
             MenuItem { title: "Save as…"; activated => { root.save-project-as(); } }
+            MenuSeparator { }
+            MenuItem {
+                title: "Save as shop template";
+                activated => { root.save-shop-template(); }
+            }
+            MenuItem {
+                title: "Remove shop template";
+                enabled: root.has-shop-template;
+                activated => { root.remove-shop-template(); }
+            }
             MenuSeparator { }
             Menu {
                 title: "Export cut list";

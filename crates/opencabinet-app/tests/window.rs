@@ -24,6 +24,8 @@ struct Answers {
     path: RefCell<Option<PathBuf>>,
     discard: Cell<bool>,
     asked_to_discard: Cell<u32>,
+    confirm: Cell<bool>,
+    asked_to_confirm: Cell<u32>,
 }
 
 impl Dialogs for Answers {
@@ -51,6 +53,11 @@ impl Dialogs for Answers {
         self.asked_to_discard.set(self.asked_to_discard.get() + 1);
         self.discard.get()
     }
+
+    fn confirm(&self, _title: &str, _question: &str) -> bool {
+        self.asked_to_confirm.set(self.asked_to_confirm.get() + 1);
+        self.confirm.get()
+    }
 }
 
 fn field(window: &AppWindow, label: &str) -> ElementHandle {
@@ -63,7 +70,7 @@ fn field(window: &AppWindow, label: &str) -> ElementHandle {
 fn the_window_edits_saves_and_reopens_a_project() {
     i_slint_backend_testing::init_integration_test_with_system_time();
     let answers = Rc::new(Answers::default());
-    let window = opencabinet_app::create_with(answers.clone()).unwrap();
+    let window = opencabinet_app::create_with(answers.clone(), None).unwrap();
     assert_eq!(window.get_width_text(), "30\"");
     assert_eq!(window.get_window_title(), "Untitled — OpenCabinet Designer");
     // A cabinet that is not placed on a wall is drawn alone.
@@ -180,6 +187,71 @@ fn the_window_edits_saves_and_reopens_a_project() {
 
     window.invoke_about();
     assert!(window.get_status().contains("GNU GPL"));
+
+    shop_template(&answers, &dir);
+}
+
+/// A shop template saved from one window starts new projects, in that window
+/// and in the next one, until it is removed.
+fn shop_template(answers: &Rc<Answers>, dir: &std::path::Path) {
+    let path = dir.join("user folder").join("shop-template.ocab");
+    let create = || opencabinet_app::create_with(answers.clone(), Some(path.clone())).unwrap();
+    let window = create();
+    assert!(!window.get_has_shop_template());
+    assert_eq!(window.get_standard_name_text(), "Frameless");
+
+    // The first template asks nothing.
+    window.invoke_standard_name_edited("Our frameless".into());
+    window.invoke_units_chosen(true);
+    window.invoke_save_shop_template();
+    assert_eq!(answers.asked_to_confirm.get(), 0);
+    assert!(window.get_has_shop_template());
+    assert_eq!(
+        window.get_status(),
+        "Shop template saved, with the materials of B1"
+    );
+
+    // New projects start from it, here and in a window opened later.
+    answers.discard.set(true);
+    window.invoke_new_project(false);
+    assert_eq!(window.get_status(), "New project from your shop template");
+    assert_eq!(window.get_standard_name_text(), "Our frameless");
+    assert!(window.get_metric());
+    window.invoke_new_project(true);
+    assert_eq!(window.get_standard_name_text(), "Face frame");
+    let later = create();
+    assert_eq!(later.get_standard_name_text(), "Our frameless");
+    assert!(later.get_metric());
+    assert!(later.get_has_shop_template());
+    assert_eq!(later.get_status(), "New project from your shop template");
+
+    // Saying no keeps the template that is there.
+    let before = std::fs::read(&path).unwrap();
+    answers.confirm.set(false);
+    window.invoke_standard_name_edited("Not this one".into());
+    window.invoke_save_shop_template();
+    assert_eq!(answers.asked_to_confirm.get(), 1);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    window.invoke_remove_shop_template();
+    assert_eq!(answers.asked_to_confirm.get(), 2);
+    assert!(path.exists());
+
+    // A file that cannot be read is told and left alone.
+    std::fs::write(&path, b"not a project").unwrap();
+    window.invoke_new_project(false);
+    assert!(window.get_status().contains("cannot be read"));
+    assert_eq!(window.get_standard_name_text(), "Frameless");
+    assert!(create().get_status().contains("cannot be read"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"not a project");
+
+    // Removing goes back to the general values and keeps a backup.
+    answers.confirm.set(true);
+    window.invoke_remove_shop_template();
+    assert!(!path.exists());
+    assert!(path.with_extension("bak.ocab").exists());
+    assert!(!window.get_has_shop_template());
+    assert!(window.get_status().contains("removed"));
+    assert!(!create().get_status().contains("template"));
 }
 
 /// The Front and Quantity sections of a new base cabinet: a drawer over a
