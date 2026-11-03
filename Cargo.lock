@@ -3333,7 +3333,7 @@ dependencies = [
 
 [[package]]
 name = "opencabinet-app"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "i-slint-backend-testing",
  "opencabinet-eval",
@@ -3348,7 +3348,7 @@ dependencies = [
 
 [[package]]
 name = "opencabinet-eval"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "opencabinet-model",
  "serde",
@@ -3357,7 +3357,7 @@ dependencies = [
 
 [[package]]
 name = "opencabinet-format"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "opencabinet-model",
  "serde",
@@ -3367,7 +3367,7 @@ dependencies = [
 
 [[package]]
 name = "opencabinet-model"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3376,7 +3376,7 @@ dependencies = [
 
 [[package]]
 name = "opencabinet-reports"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "chrono",
  "dxf",
