@@ -1419,6 +1419,18 @@ mod tests {
     }
 
     #[test]
+    fn the_kitchen_users_get_opens_without_a_problem() {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sample-kitchen.ocab");
+        let designer = Designer::open(&fixture).unwrap();
+        assert_eq!(designer.issues().len(), 0);
+        let problems =
+            opencabinet_eval::evaluate(&designer.document.project, &designer.document.library)
+                .problems;
+        assert_eq!(problems, []);
+    }
+
+    #[test]
     fn opening_something_that_is_not_a_project_explains_why() {
         let path = scratch("open").join("notes.ocab");
         std::fs::write(&path, "not a project").unwrap();

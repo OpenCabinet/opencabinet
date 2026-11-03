@@ -1,0 +1,14 @@
+{
+  "formatVersion": "0.1",
+  "generator": "OpenCabinet",
+  "entries": [
+    {
+      "path": "project.json",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "library.json",
+      "mediaType": "application/json"
+    }
+  ]
+}
