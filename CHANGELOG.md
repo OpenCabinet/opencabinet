@@ -54,6 +54,11 @@ follow [Semantic Versioning](https://semver.org/).
   menu starts either kind, and each cabinet chooses its own. The face frame
   values are general ones to adjust: stiles and rails of 1-1/2", a partial
   overlay of 1/2" and solid wood 3/4" × 5-1/2" × 96".
+- **Shop template:** the File menu saves the project's materials, edge bands,
+  standards, hardware and units as the shop's template in the user's folder,
+  with the materials of the selected cabinet for each part. New projects
+  start from it; projects already saved do not change. Nothing of the job
+  goes in it, and a template that is replaced or removed stays as a backup.
 
 ### Known limitations
 

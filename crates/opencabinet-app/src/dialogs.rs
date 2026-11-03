@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The questions the window asks the user in the system's own dialogs:
-//! which file to open, where to save, which folder to export into, and
-//! whether to discard changes.
+//! which file to open, where to save, which folder to export into, whether
+//! to discard changes, and whether to go on with something that replaces
+//! what the user had.
 //! Tests replace them with fixed answers.
 
 use std::path::PathBuf;
@@ -25,6 +26,9 @@ pub trait Dialogs {
 
     /// Whether the user agrees to lose the changes that are not saved.
     fn discard_changes(&self) -> bool;
+
+    /// Whether the user agrees to `question`, shown under `title`.
+    fn confirm(&self, title: &str, question: &str) -> bool;
 }
 
 /// What kind of file is being saved.
@@ -96,6 +100,16 @@ impl Dialogs for SystemDialogs {
             .set_level(MessageLevel::Warning)
             .set_title("Unsaved changes")
             .set_description("The project has changes that are not saved. Discard them?")
+            .set_buttons(MessageButtons::YesNo)
+            .show();
+        answer == MessageDialogResult::Yes
+    }
+
+    fn confirm(&self, title: &str, question: &str) -> bool {
+        let answer = MessageDialog::new()
+            .set_level(MessageLevel::Warning)
+            .set_title(title)
+            .set_description(question)
             .set_buttons(MessageButtons::YesNo)
             .show();
         answer == MessageDialogResult::Yes

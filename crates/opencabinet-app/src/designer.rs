@@ -28,6 +28,7 @@ mod front;
 mod materials;
 mod room;
 mod standard;
+pub mod template;
 
 pub use front::SectionKind;
 pub use materials::{MaterialRole, RoleChoices};
@@ -153,8 +154,13 @@ impl Designer {
     /// cabinet is built by `method`.
     #[must_use]
     pub fn with_method(units: Units, method: Method) -> Self {
+        Self::around(new_document(units, method))
+    }
+
+    /// A new, unsaved project holding `document`.
+    fn around(document: Document) -> Self {
         let mut designer = Self {
-            document: new_document(units, method),
+            document,
             path: None,
             modified: false,
             selected: 0,
@@ -912,16 +918,6 @@ fn inches(numerator: i64, denominator: i64) -> Length {
 /// in that order.
 fn starter_library() -> Library {
     let hinge = standard::new_hinge();
-    let standard = |name: &str, method: Method| Standard {
-        id: Id::new(),
-        version: 1,
-        name: name.into(),
-        derived_from: None,
-        method,
-        rules: serde_json::from_value(standard::usual_rules(method, hinge.id))
-            .expect("rules are a JSON object"),
-        unknown: BTreeMap::default(),
-    };
     let solid_wood = SheetMaterial {
         length: Length::from_inches(96),
         width: inches(11, 2),
@@ -936,10 +932,24 @@ fn starter_library() -> Library {
         ],
         edge_bands: vec![materials::new_band("Edge band 0.5 mm")],
         standards: vec![
-            standard("Frameless", Method::Frameless),
-            standard("Face frame", Method::FaceFrame),
+            new_standard("Frameless", Method::Frameless, hinge.id),
+            new_standard("Face frame", Method::FaceFrame, hinge.id),
         ],
         hardware: vec![hinge],
+        unknown: BTreeMap::default(),
+    }
+}
+
+/// A standard built by `method` with the usual rules and `hinge` for its doors.
+fn new_standard(name: &str, method: Method, hinge: Id) -> Standard {
+    Standard {
+        id: Id::new(),
+        version: 1,
+        name: name.into(),
+        derived_from: None,
+        method,
+        rules: serde_json::from_value(standard::usual_rules(method, hinge))
+            .expect("rules are a JSON object"),
         unknown: BTreeMap::default(),
     }
 }
@@ -953,18 +963,9 @@ fn base_cabinet(library: &Library, standard: Id) -> Product {
         library.materials[3].id,
         library.edge_bands[0].id,
     );
-    let (height, depth) = CabinetKind::Base.usual_height_and_depth();
-    Product {
-        id: Id::new(),
-        label: "B1".into(),
-        product_type: CabinetKind::Base.product_type().into(),
+    usual_cabinet(
         standard,
-        width: Length::from_inches(30),
-        height,
-        depth,
-        quantity: None,
-        parameters: BTreeMap::default(),
-        materials: [
+        [
             ("case", plywood),
             ("back", thin),
             ("doors", plywood),
@@ -978,6 +979,23 @@ fn base_cabinet(library: &Library, standard: Id) -> Product {
         .into_iter()
         .map(|(role, id)| (role.to_owned(), id))
         .collect(),
+    )
+}
+
+/// A new project's 30" × 34-1/2" × 24" base cabinet, with `materials`.
+fn usual_cabinet(standard: Id, materials: BTreeMap<String, Id>) -> Product {
+    let (height, depth) = CabinetKind::Base.usual_height_and_depth();
+    Product {
+        id: Id::new(),
+        label: "B1".into(),
+        product_type: CabinetKind::Base.product_type().into(),
+        standard,
+        width: Length::from_inches(30),
+        height,
+        depth,
+        quantity: None,
+        parameters: BTreeMap::default(),
+        materials,
         front: Some(CabinetKind::Base.usual_front()),
         overrides: Vec::new(),
         extensions: BTreeMap::default(),
