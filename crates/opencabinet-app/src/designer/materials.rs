@@ -11,11 +11,11 @@
 use std::collections::BTreeMap;
 
 use opencabinet_model::{
-    EdgeBand, FrontStyle, Grain, Id, InsertKind, Length, Method, SheetMaterial, Units,
+    EdgeBand, FrontStyle, Grain, Id, InsertKind, Length, Method, Product, SheetMaterial, Units,
 };
 use opencabinet_reports::BOARD_WIDTH;
 
-use super::{Designer, Dimension, inches, visit};
+use super::{CabinetKind, Designer, Dimension, inches, visit};
 
 /// What a part of a cabinet can be made of. The first choice of all but
 /// `Sheets` is to have none of its own.
@@ -232,7 +232,9 @@ impl Designer {
             return Ok(());
         };
         let sheet = &self.document.library.materials[index];
-        self.refuse_if_used(sheet.id, &sheet.name)?;
+        let id = sheet.id;
+        self.refuse_if_used(id, &sheet.name)?;
+        self.forget_material(id);
         self.document.library.materials.remove(index);
         self.modified = true;
         Ok(())
@@ -358,7 +360,9 @@ impl Designer {
             return Ok(());
         };
         let band = &self.document.library.edge_bands[index];
-        self.refuse_if_used(band.id, &band.name)?;
+        let id = band.id;
+        self.refuse_if_used(id, &band.name)?;
+        self.forget_material(id);
         self.document.library.edge_bands.remove(index);
         self.modified = true;
         Ok(())
@@ -393,7 +397,7 @@ impl Designer {
     /// for parts it no longer has stays in the file.
     #[must_use]
     pub fn material_roles(&self) -> Vec<MaterialRole> {
-        let features = self.cabinet_features();
+        let features = self.features_of(self.product());
         ROLES
             .iter()
             .filter(|role| role.needs.is_none_or(|f| features.contains(&f)))
@@ -586,7 +590,17 @@ impl Designer {
         Ok(name.to_owned())
     }
 
-    /// Says which cabinets use the item `id`, when any does.
+    /// Removes the item `id` from parts cabinets no longer have, which kept
+    /// it only in case they came back.
+    fn forget_material(&mut self, id: Id) {
+        for product in &mut self.document.project.products {
+            product.materials.retain(|_, material| *material != id);
+        }
+    }
+
+    /// Says which cabinets use the item `id`, when any does: for a part they
+    /// have, or a part the window does not know, so never for one that is
+    /// out of sight.
     fn refuse_if_used(&self, id: Id, name: &str) -> Result<(), String> {
         let text = id.to_string();
         let users: Vec<&str> = self
@@ -595,7 +609,16 @@ impl Designer {
             .products
             .iter()
             .filter(|p| {
-                p.materials.values().any(|m| *m == id)
+                let features = self.features_of(p);
+                let in_sight = |key: &str| {
+                    ROLES
+                        .iter()
+                        .find(|role| role.key == key)
+                        .is_none_or(|role| role.needs.is_none_or(|f| features.contains(&f)))
+                };
+                p.materials
+                    .iter()
+                    .any(|(key, material)| *material == id && in_sight(key))
                     || p.overrides.iter().any(|o| {
                         o.value
                             .as_ref()
@@ -616,10 +639,11 @@ impl Designer {
         }
     }
 
-    fn cabinet_features(&self) -> Vec<Feature> {
-        let product = self.product();
+    fn features_of(&self, product: &Product) -> Vec<Feature> {
         let mut features = Vec::new();
-        if self.blind_side().is_some() {
+        let blind =
+            CabinetKind::of(&product.product_type).is_some_and(|k| k.usual_blind_width().is_some());
+        if blind {
             features.extend([Feature::Blind, Feature::Fronts]);
         }
         let library = &self.document.library;
@@ -684,7 +708,7 @@ mod tests {
     use opencabinet_eval::{Part, evaluate};
     use opencabinet_format::Document;
 
-    use super::super::{CabinetKind, SectionKind};
+    use super::super::SectionKind;
     use super::*;
 
     /// Millimeters with only the decimals they need.
@@ -897,7 +921,7 @@ mod tests {
             designer.delete_sheet(),
             Err("Cannot delete Plywood 3/4\": B1 uses it".into())
         );
-        assert_eq!(library(&designer), 3);
+        assert_eq!(library(&designer), 4);
 
         designer.add();
         designer.add();
@@ -910,7 +934,7 @@ mod tests {
         designer.add_sheet();
         assert_eq!(designer.selected_sheet(), Some(1));
         designer.delete_sheet().unwrap();
-        assert_eq!(library(&designer), 3);
+        assert_eq!(library(&designer), 4);
         assert_eq!(designer.selected_sheet(), Some(1));
 
         assert_eq!(
@@ -920,6 +944,30 @@ mod tests {
         designer.add_band();
         designer.delete_band().unwrap();
         assert_eq!(designer.selected_band(), Some(0));
+    }
+
+    #[test]
+    fn a_part_out_of_sight_never_stops_a_delete() {
+        let mut designer = Designer::default();
+        // Only the frameless cabinet's hidden face frame role uses it.
+        designer.select_sheet(3);
+        assert_eq!(designer.sheet_name(), "Solid wood 3/4\"");
+        assert!(!keys(&designer).contains(&"faceFrame"));
+        designer.delete_sheet().unwrap();
+        assert!(!designer.product().materials.contains_key("faceFrame"));
+
+        // Once it matters, the list is empty and the evaluator says so.
+        designer.set_cabinet_standard(1);
+        assert_eq!(role(&designer, "faceFrame").chosen, None);
+        let evaluation = evaluate(&designer.document.project, &designer.document.library);
+        assert!(
+            evaluation
+                .problems
+                .iter()
+                .any(|p| p.blocking && p.message.contains("faceFrame")),
+            "{:?}",
+            evaluation.problems
+        );
     }
 
     #[test]

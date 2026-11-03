@@ -111,7 +111,7 @@ fn the_window_edits_saves_and_reopens_a_project() {
     assert_eq!(window.get_depth_reading(), "≈ 23-5/8\"");
 
     // Refusing to discard changes keeps the project.
-    window.invoke_new_project();
+    window.invoke_new_project(false);
     assert_eq!(answers.asked_to_discard.get(), 1);
     assert_eq!(window.get_width_text(), "30-1/2\"");
 
@@ -129,7 +129,7 @@ fn the_window_edits_saves_and_reopens_a_project() {
     assert_eq!(window.get_status(), "Saved test-cabinet.ocab");
 
     // A saved project starts over without asking, and reopens as saved.
-    window.invoke_new_project();
+    window.invoke_new_project(false);
     assert_eq!(answers.asked_to_discard.get(), 1);
     assert_eq!(window.get_width_text(), "30\"");
     window.invoke_open_project();
@@ -159,6 +159,24 @@ fn the_window_edits_saves_and_reopens_a_project() {
     blind_corner(&window);
     front_and_quantity(&window);
     materials(&window);
+    standard(&window);
+
+    // A new face frame project starts on that standard, and its cabinet has
+    // a face frame.
+    answers.discard.set(true);
+    window.invoke_new_project(true);
+    assert_eq!(window.get_standard_name_text(), "Face frame");
+    assert_eq!(window.get_cabinet_standard_index(), 1);
+    assert!(!window.get_cut_problems().contains("cannot"));
+    let rows = window.get_cut_rows();
+    assert!((0..rows.row_count()).any(|r| {
+        rows.row_data(r)
+            .unwrap()
+            .row_data(1)
+            .unwrap()
+            .text
+            .contains("stile")
+    }));
 
     window.invoke_about();
     assert!(window.get_status().contains("GNU GPL"));
@@ -269,7 +287,8 @@ fn materials(window: &AppWindow) {
         [
             "Plywood 3/4\" · 3/4\"",
             "Plywood 1/4\" · 1/4\"",
-            "Plywood 1/2\" · 1/2\""
+            "Plywood 1/2\" · 1/2\"",
+            "Solid wood 3/4\" · 3/4\""
         ]
     );
     assert_eq!(window.get_sheet_index(), 0);
@@ -304,7 +323,7 @@ fn materials(window: &AppWindow) {
         "{}",
         window.get_status()
     );
-    assert_eq!(window.get_sheets().row_count(), 3);
+    assert_eq!(window.get_sheets().row_count(), 4);
 
     material_choices(window);
 
@@ -381,6 +400,86 @@ fn material_choices(window: &AppWindow) {
         window.get_status(),
         "The other cabinets already have these materials"
     );
+}
+
+/// The Standard tab and the cabinet's standard, which are out of view, so
+/// they are edited through their callbacks.
+fn standard(window: &AppWindow) {
+    let row = |window: &AppWindow, key: &str| {
+        let rows = window.get_rule_rows();
+        (0..rows.row_count())
+            .map(|i| rows.row_data(i).unwrap())
+            .find(|r| r.key == key)
+            .unwrap_or_else(|| panic!("no rule {key}"))
+    };
+    window.set_tab_index(3);
+    window.invoke_tab_chosen(3);
+    assert_eq!(
+        items_of(&window.get_standard_names()),
+        ["Frameless", "Face frame"]
+    );
+    assert_eq!(window.get_standard_name_text(), "Frameless");
+    assert!(
+        window
+            .get_standard_note()
+            .starts_with("Frameless · used by")
+    );
+    assert_eq!(row(window, "toeKick.height").text, "4\"");
+
+    // A rule reaches the cut list at once; a wrong one says why below the
+    // field, keeps what was typed and changes nothing.
+    window.invoke_rule_edited("fronts.gap".into(), "1/4".into());
+    assert_eq!(row(window, "fronts.gap").reading, "= 1/4\"");
+    window.invoke_rule_edited("fronts.gap".into(), "wide".into());
+    assert_eq!(row(window, "fronts.gap").error, "Not a length");
+    assert_eq!(row(window, "fronts.gap").reading, "= 1/4\"");
+    // Another edit leaves that message alone.
+    window.invoke_rule_edited("toeKick.height".into(), "3".into());
+    assert_eq!(row(window, "fronts.gap").error, "Not a length");
+    window.invoke_rule_edited("fronts.gap".into(), "1/8".into());
+    assert_eq!(row(window, "fronts.gap").error, "");
+
+    // Choosing the face frame standard for the cabinet edits that one, and
+    // its frame reaches the cut list. The frame rows show only there.
+    let rows = window.get_cut_rows();
+    let stiles = |rows: &slint::ModelRc<slint::ModelRc<slint::StandardListViewItem>>| {
+        (0..rows.row_count())
+            .filter(|&r| {
+                let name = rows.row_data(r).unwrap().row_data(1).unwrap().text;
+                name.contains("stile")
+            })
+            .count()
+    };
+    assert_eq!(stiles(&rows), 0);
+    window.invoke_cabinet_standard_chosen(1);
+    assert_eq!(window.get_cabinet_standard_index(), 1);
+    assert_eq!(window.get_standard_index(), 1);
+    assert_eq!(window.get_standard_name_text(), "Face frame");
+    assert_eq!(row(window, "faceFrame.stileWidth").text, "1-1/2\"");
+    assert!(stiles(&window.get_cut_rows()) > 0);
+
+    // A list of choices is a list, and rows come and go with it.
+    let overlay = row(window, "fronts.overlay");
+    assert_eq!((overlay.kind, overlay.index), (3, 0));
+    assert_eq!(items_of(&overlay.options), ["Partial overlay", "Inset"]);
+    window.invoke_rule_chosen("fronts.overlay".into(), 1);
+    assert_eq!(row(window, "fronts.overlay").index, 1);
+    let rows = window.get_rule_rows();
+    assert!((0..rows.row_count()).all(|i| rows.row_data(i).unwrap().key != "fronts.overlayAmount"));
+    window.invoke_rule_chosen("fronts.overlay".into(), 0);
+
+    // Names are checked like any other.
+    window.invoke_standard_name_edited("Frameless".into());
+    assert_eq!(
+        window.get_standard_name_error(),
+        "Another standard is already named Frameless"
+    );
+    window.invoke_standard_chosen(0);
+    assert_eq!(window.get_standard_name_error(), "");
+    assert_eq!(window.get_standard_name_text(), "Frameless");
+
+    window.set_tab_index(0);
+    window.invoke_tab_chosen(0);
 }
 
 /// The material row of the edited cabinet's part `key`.
