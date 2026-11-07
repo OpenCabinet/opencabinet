@@ -1,0 +1,254 @@
+{
+  "materials": [
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000101",
+      "version": 1,
+      "name": "Maple plywood 3/4\"",
+      "nominalThickness": 19050000,
+      "actualThickness": 18000000,
+      "length": 2463800000,
+      "width": 1244600000,
+      "grain": "length"
+    },
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000102",
+      "version": 1,
+      "name": "White melamine 3/4\"",
+      "nominalThickness": 19050000,
+      "actualThickness": 18000000,
+      "length": 2463800000,
+      "width": 1244600000,
+      "grain": "none"
+    },
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000103",
+      "version": 1,
+      "name": "Birch plywood 1/2\"",
+      "nominalThickness": 12700000,
+      "actualThickness": 12000000,
+      "length": 2463800000,
+      "width": 1244600000,
+      "grain": "length"
+    },
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000104",
+      "version": 1,
+      "name": "Birch plywood 1/4\"",
+      "nominalThickness": 6350000,
+      "actualThickness": 6000000,
+      "length": 2463800000,
+      "width": 1244600000,
+      "grain": "length"
+    },
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000105",
+      "version": 1,
+      "name": "Hard maple 3/4\" S4S",
+      "nominalThickness": 19050000,
+      "actualThickness": 19050000,
+      "length": 2438400000,
+      "width": 139700000,
+      "grain": "length"
+    }
+  ],
+  "edgeBands": [
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000111",
+      "version": 1,
+      "name": "Maple veneer 13/16\"",
+      "thickness": 500000,
+      "width": 22000000
+    },
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000112",
+      "version": 1,
+      "name": "White melamine 13/16\"",
+      "thickness": 500000,
+      "width": 22000000
+    }
+  ],
+  "hardware": [
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000121",
+      "version": 1,
+      "category": "hinge",
+      "name": "110° clip hinge, full overlay",
+      "dimensions": {
+        "cupDepth": 13000000,
+        "cupDiameter": 35000000
+      }
+    }
+  ],
+  "standards": [
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000131",
+      "version": 1,
+      "name": "Sample frameless",
+      "method": "frameless",
+      "rules": {
+        "back": {
+          "construction": "grooved",
+          "grooveDepth": 9525000,
+          "setback": 6350000
+        },
+        "billOfMaterials": {
+          "edgeBandAllowance": 25400000,
+          "wastePercent": 15
+        },
+        "case": {
+          "stretcherWidth": 101600000
+        },
+        "drawers": {
+          "bottomGrooveDepth": 6350000,
+          "bottomGrooveSetback": 12700000,
+          "rearClearance": 25400000,
+          "sideClearance": 12700000,
+          "slideLengths": [
+            304800000,
+            355600000,
+            406400000,
+            457200000,
+            508000000,
+            558800000
+          ],
+          "verticalClearance": 38100000
+        },
+        "fivePiece": {
+          "jointDepth": 9525000,
+          "panelClearance": 3175000,
+          "panelGrooveDepth": 9525000,
+          "railWidth": 57150000,
+          "stileWidth": 57150000
+        },
+        "fronts": {
+          "gap": 3175000,
+          "overlay": "full"
+        },
+        "hinges": {
+          "boringDistance": 4000000,
+          "counts": [
+            {
+              "count": 2,
+              "upTo": 1016000000
+            },
+            {
+              "count": 3,
+              "upTo": 1524000000
+            },
+            {
+              "count": 4,
+              "upTo": 2032000000
+            }
+          ],
+          "endDistance": 76200000,
+          "hardware": "0199f8b0-0000-7000-8000-000000000121"
+        },
+        "shelves": {
+          "backAllowance": 19050000,
+          "frontSetback": 6350000,
+          "sideClearance": 1587500
+        },
+        "systemHoles": {
+          "depth": 12000000,
+          "diameter": 5000000,
+          "endClearance": 50800000,
+          "frontSetback": 37000000,
+          "rearSetback": 37000000,
+          "spacing": 32000000
+        },
+        "toeKick": {
+          "height": 101600000,
+          "recess": 76200000
+        }
+      }
+    },
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000132",
+      "version": 1,
+      "name": "Sample face frame",
+      "method": "faceFrame",
+      "rules": {
+        "back": {
+          "construction": "grooved",
+          "grooveDepth": 9525000,
+          "setback": 6350000
+        },
+        "billOfMaterials": {
+          "edgeBandAllowance": 25400000,
+          "wastePercent": 15
+        },
+        "case": {
+          "stretcherWidth": 101600000
+        },
+        "drawers": {
+          "bottomGrooveDepth": 6350000,
+          "bottomGrooveSetback": 12700000,
+          "rearClearance": 25400000,
+          "sideClearance": 12700000,
+          "slideLengths": [
+            304800000,
+            355600000,
+            406400000,
+            457200000,
+            508000000,
+            558800000
+          ],
+          "verticalClearance": 38100000
+        },
+        "faceFrame": {
+          "joinery": "butt",
+          "railWidth": 38100000,
+          "stileWidth": 38100000
+        },
+        "fivePiece": {
+          "jointDepth": 9525000,
+          "panelClearance": 3175000,
+          "panelGrooveDepth": 9525000,
+          "railWidth": 57150000,
+          "stileWidth": 57150000
+        },
+        "fronts": {
+          "gap": 3175000,
+          "overlay": "partial",
+          "overlayAmount": 12700000
+        },
+        "hinges": {
+          "boringDistance": 4000000,
+          "counts": [
+            {
+              "count": 2,
+              "upTo": 1016000000
+            },
+            {
+              "count": 3,
+              "upTo": 1524000000
+            },
+            {
+              "count": 4,
+              "upTo": 2032000000
+            }
+          ],
+          "endDistance": 76200000,
+          "hardware": "0199f8b0-0000-7000-8000-000000000121"
+        },
+        "shelves": {
+          "backAllowance": 19050000,
+          "frontSetback": 6350000,
+          "sideClearance": 1587500
+        },
+        "systemHoles": {
+          "depth": 12000000,
+          "diameter": 5000000,
+          "endClearance": 50800000,
+          "frontSetback": 37000000,
+          "rearSetback": 37000000,
+          "spacing": 32000000
+        },
+        "toeKick": {
+          "height": 101600000,
+          "recess": 76200000
+        }
+      }
+    }
+  ]
+}
