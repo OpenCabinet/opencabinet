@@ -11,7 +11,7 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.0-beta.2] - 2026-11-03
+## [0.1.0-beta.2] - 2026-11-07
 
 The first published test release of OpenCabinet Designer, for shops willing
 to try it on a real job and tell us what is wrong. It is a beta: check every
@@ -74,15 +74,15 @@ Please do not attach anything you are not free to share.
   wall to a page, and as DXF at full size.
 - **Windows installer** that installs for the current user, without
   administrator rights.
+- **A sample kitchen,** `sample-kitchen.ocab`, to try the program with:
+  base, wall and tall cabinets on two walls, with every material chosen.
 
 ### Known limitations
 
 - **The file format can still change.** Comments on its design are open until
   2026-11-08. A project saved with this beta may not open in a later version,
   so keep what you need from it as PDF and CSV too.
-- Sink, filler and vanity cabinets show as "cannot be evaluated yet". The
-  sample kitchen includes them on purpose, so it reports those errors, an
-  island with no material chosen for its back, and some edges left bare.
+- Sink, filler and vanity cabinets show as "cannot be evaluated yet".
 - Drawers in blind corner cabinets are not supported yet.
 - Drawer slides in face frame cabinets mount on blocking out to the frame, and
   that blocking is not in the cut list yet. A note says so.
