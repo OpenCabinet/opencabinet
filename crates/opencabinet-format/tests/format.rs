@@ -71,7 +71,7 @@ fn the_sample_kitchen_is_valid() {
 
 #[test]
 fn saving_reproduces_the_fixtures_byte_for_byte() {
-    for name in ["kitchen.ocab", "future-minor.ocab"] {
+    for name in ["kitchen.ocab", "sample-kitchen.ocab", "future-minor.ocab"] {
         let document = Document::load(&fixture(name)).unwrap();
         let saved = scratch(&format!("canonical-{name}"));
         let saved = saved.join(name);
