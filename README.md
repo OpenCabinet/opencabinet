@@ -37,8 +37,9 @@ comes much later, once a community exists to sustain it.
 
 ## Status
 
-**OpenCabinet Designer 0.1.0-beta.1** is the first test release: cabinets,
-cut lists, machining, walls and elevations, exported as CSV, PDF and DXF.
+**OpenCabinet Designer 0.1.0-beta.2** is the first published test release:
+cabinets, your shop's materials and construction standards, cut lists, a bill
+of materials, machining, walls and elevations, exported as CSV, PDF and DXF.
 It is for shops willing to try it on a real job and
 [report what is wrong](https://github.com/OpenCabinet/opencabinet/issues/new/choose);
 download it from the [releases](https://github.com/OpenCabinet/opencabinet/releases),
