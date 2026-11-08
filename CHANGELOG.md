@@ -11,6 +11,14 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Light and dark themes:** **View → Theme** chooses light, dark or the
+  same as the system, which is the usual choice. The program remembers it in
+  the user's folder, beside the shop template, and exported PDF and DXF files
+  do not change. Errors and warnings now have colors that are easy to read on
+  either background.
+
 ## [0.1.0-beta.2] - 2026-11-07
 
 The first published test release of OpenCabinet Designer, for shops willing

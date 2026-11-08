@@ -6,6 +6,18 @@ import {
     TabWidget,
 } from "std-widgets.slint";
 
+// The colors of errors and warnings, which the style's palette does not have.
+// Each has a version for a light and for a dark background, so that the text
+// keeps a contrast of at least 4.5:1 on the window's backgrounds (#FAFAFA and
+// #F0F0F0 light, #1C1C1C and #2C2C2C dark): 4.93 and 5.02 light, 6.12 and
+// 8.07 dark. The background tells which applies, also when the window follows
+// the system.
+global Signal {
+    out property <bool> dark: Palette.background.to-oklch().lightness < 0.5;
+    out property <color> error: dark ? #ff8a80 : #c62828;
+    out property <color> warning: dark ? #ffb74d : #9a5500;
+}
+
 // A length field: a label, the text as typed, and below it either the value
 // read back in the display precision or why it cannot be read.
 component LengthField inherits VerticalLayout {
@@ -24,7 +36,7 @@ component LengthField inherits VerticalLayout {
     }
     Text {
         text: root.error != "" ? root.error : root.reading;
-        color: root.error != "" ? #c62828 : Palette.foreground.transparentize(40%);
+        color: root.error != "" ? Signal.error : Palette.foreground.transparentize(40%);
         font-size: 12px;
         wrap: word-wrap;
     }
@@ -50,7 +62,7 @@ component CountField inherits VerticalLayout {
     }
     if root.error != "" || root.note != "": Text {
         text: root.error != "" ? root.error : root.note;
-        color: root.error != "" ? #c62828 : Palette.foreground.transparentize(40%);
+        color: root.error != "" ? Signal.error : Palette.foreground.transparentize(40%);
         font-size: 12px;
         wrap: word-wrap;
     }
@@ -73,7 +85,7 @@ component NameField inherits VerticalLayout {
     }
     if root.error != "": Text {
         text: root.error;
-        color: #c62828;
+        color: Signal.error;
         font-size: 12px;
         wrap: word-wrap;
     }
@@ -111,6 +123,17 @@ export struct RuleRow {
 }
 
 export component AppWindow inherits Window {
+    // 0 follows the system, 1 is light and 2 is dark.
+    in property <int> theme-index;
+    in property <string> system-theme-title: "Same as the system";
+    callback theme-chosen(index: int);
+    // Whether the window shows dark backgrounds now, for the tests.
+    out property <bool> dark-shown: Signal.dark;
+    changed theme-index => {
+        // Unknown leaves the choice to the system, as when nothing is set.
+        Palette.color-scheme = root.theme-index == 1 ? ColorScheme.light
+            : root.theme-index == 2 ? ColorScheme.dark : ColorScheme.unknown;
+    }
     in property <string> window-title: "OpenCabinet Designer";
     title: root.window-title;
     // Usable on the 1366 × 768 screen of the reference computer (ADR-0014).
@@ -452,6 +475,30 @@ export component AppWindow inherits Window {
             }
         }
         Menu {
+            title: "View";
+            Menu {
+                title: "Theme";
+                MenuItem {
+                    title: root.system-theme-title;
+                    checkable: true;
+                    checked: root.theme-index == 0;
+                    activated => { root.theme-chosen(0); }
+                }
+                MenuItem {
+                    title: "Light";
+                    checkable: true;
+                    checked: root.theme-index == 1;
+                    activated => { root.theme-chosen(1); }
+                }
+                MenuItem {
+                    title: "Dark";
+                    checkable: true;
+                    checked: root.theme-index == 2;
+                    activated => { root.theme-chosen(2); }
+                }
+            }
+        }
+        Menu {
             title: "Help";
             MenuItem { title: "About OpenCabinet"; activated => { root.about(); } }
         }
@@ -771,7 +818,7 @@ export component AppWindow inherits Window {
                     }
                     if root.label-error != "": Text {
                         text: root.label-error;
-                        color: #c62828;
+                        color: Signal.error;
                         font-size: 12px;
                         wrap: word-wrap;
                     }
@@ -849,7 +896,7 @@ export component AppWindow inherits Window {
                 Text { text: "Front"; font-weight: 700; }
                 if root.front-note != "": Text {
                     text: root.front-note;
-                    color: #b26a00;
+                    color: Signal.warning;
                     font-size: 12px;
                     wrap: word-wrap;
                 }
@@ -1043,7 +1090,7 @@ export component AppWindow inherits Window {
                         y: parent.height - self.height - 8px;
                         width: parent.width - 24px;
                         text: root.placement-problems;
-                        color: #b26a00;
+                        color: Signal.warning;
                         font-size: 12px;
                         wrap: word-wrap;
                     }
@@ -1059,7 +1106,7 @@ export component AppWindow inherits Window {
                             spacing: 4px;
                             if root.cut-problems != "": Text {
                                 text: root.cut-problems;
-                                color: #b26a00;
+                                color: Signal.warning;
                                 font-size: 12px;
                                 wrap: word-wrap;
                             }

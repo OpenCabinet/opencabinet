@@ -189,13 +189,55 @@ fn the_window_edits_saves_and_reopens_a_project() {
     assert!(window.get_status().contains("GNU GPL"));
 
     shop_template(&answers, &dir);
+    theme(&answers, &dir);
+}
+
+/// A theme chosen in one window is shown at once and remembered for the next
+/// one, and choosing the system's again lets the system decide.
+fn theme(answers: &Rc<Answers>, dir: &std::path::Path) {
+    let folder = dir.join("theme folder");
+    let create = || opencabinet_app::create_with(answers.clone(), Some(&folder)).unwrap();
+    // Let the window run what follows a change.
+    let settle = || slint::platform::update_timers_and_animations();
+    let window = create();
+    assert_eq!(window.get_theme_index(), 0);
+    assert!(!window.get_status().contains("preferences"));
+
+    for (index, dark) in [(2, true), (1, false), (2, true)] {
+        window.invoke_theme_chosen(index);
+        settle();
+        assert_eq!(window.get_theme_index(), index);
+        assert_eq!(window.get_dark_shown(), dark, "theme {index}");
+    }
+    let file = folder.join("preferences.json");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("\"dark\""));
+
+    let next = create();
+    settle();
+    assert_eq!(next.get_theme_index(), 2);
+    assert!(next.get_dark_shown());
+    next.invoke_theme_chosen(0);
+    settle();
+    assert_eq!(next.get_theme_index(), 0);
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("\"system\"")
+    );
+
+    // A damaged file opens the window anyway, and says so.
+    std::fs::write(&file, "{ damaged").unwrap();
+    let damaged = create();
+    assert_eq!(damaged.get_theme_index(), 0);
+    assert!(damaged.get_status().contains("preferences cannot be read"));
 }
 
 /// A shop template saved from one window starts new projects, in that window
 /// and in the next one, until it is removed.
 fn shop_template(answers: &Rc<Answers>, dir: &std::path::Path) {
-    let path = dir.join("user folder").join("shop-template.ocab");
-    let create = || opencabinet_app::create_with(answers.clone(), Some(path.clone())).unwrap();
+    let folder = dir.join("user folder");
+    let path = folder.join("shop-template.ocab");
+    let create = || opencabinet_app::create_with(answers.clone(), Some(&folder)).unwrap();
     let window = create();
     assert!(!window.get_has_shop_template());
     assert_eq!(window.get_standard_name_text(), "Frameless");
