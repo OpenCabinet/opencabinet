@@ -9,6 +9,8 @@ pub mod dialogs;
 pub mod drawing;
 pub mod fonts;
 pub mod perf;
+pub mod preferences;
+pub mod user_folder;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -24,6 +26,7 @@ use crate::designer::{
     CabinetKind, Designer, Dimension, OpeningKind, RoleChoices, RuleKind, template,
 };
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
+use crate::preferences::{Preferences, Theme};
 use opencabinet_reports::Separator;
 
 /// The code Slint generates from `ui/app.slint`, which follows Slint's
@@ -43,31 +46,21 @@ pub const NAME_AND_VERSION: &str = concat!("OpenCabinet Designer ", env!("CARGO_
 /// # Errors
 /// When the platform cannot create a window.
 pub fn create() -> Result<AppWindow, slint::PlatformError> {
-    create_with(Rc::new(SystemDialogs), template::usual_path())
+    create_with(Rc::new(SystemDialogs), user_folder::usual().as_deref())
 }
 
 /// Creates the window and connects it to a new [`Designer`], asking the
-/// user through `dialogs`, with the shop template at `template_path`.
+/// user through `dialogs`, with the shop template and the preferences in the
+/// user's `folder`; `None` when there is no such folder.
 ///
 /// # Errors
 /// When the platform cannot create a window.
 pub fn create_with(
     dialogs: Rc<dyn Dialogs>,
-    template_path: Option<PathBuf>,
+    folder: Option<&Path>,
 ) -> Result<AppWindow, slint::PlatformError> {
     let window = AppWindow::new()?;
-    let (designer, told) = Designer::starting(template_path.as_deref(), Units::Imperial, None);
-    let app = Rc::new(App {
-        window: window.as_weak(),
-        designer: RefCell::new(designer),
-        dialogs,
-        template_path,
-    });
-    app.show(&window, true);
-    app.show_template(&window);
-    if !told.is_empty() {
-        app.status(&told);
-    }
+    let app = App::starting(&window, dialogs, folder);
 
     for dimension in Dimension::ALL {
         let app = Rc::clone(&app);
@@ -128,6 +121,8 @@ pub fn create_with(
     let handle = Rc::clone(&app);
     window.on_remove_shop_template(move || handle.remove_template());
     let handle = Rc::clone(&app);
+    window.on_theme_chosen(move |index| handle.choose_theme(index));
+    let handle = Rc::clone(&app);
     window.on_about(move || {
         handle.status(&format!(
             "{NAME_AND_VERSION} — free software under the GNU GPL, version 3 or later"
@@ -151,6 +146,21 @@ pub fn create_with(
     Ok(window)
 }
 
+/// What the window says when it opens: what came of the shop template, and
+/// why the preferences could not be read.
+fn starting_message(template: String, preferences: Option<String>) -> String {
+    let Some(why) = preferences else {
+        return template;
+    };
+    let preferences =
+        format!("Your preferences cannot be read, so the window follows the system: {why}");
+    if template.is_empty() {
+        preferences
+    } else {
+        format!("{template}. {preferences}")
+    }
+}
+
 /// The window's state and what it does with it.
 struct App {
     window: slint::Weak<AppWindow>,
@@ -159,9 +169,47 @@ struct App {
     /// Where the shop template lives; `None` when the system does not say
     /// where the user's folder is.
     template_path: Option<PathBuf>,
+    /// Where the preferences live, for the same reason optional.
+    preferences_path: Option<PathBuf>,
+    preferences: RefCell<Preferences>,
 }
 
 impl App {
+    /// The state of a window that opens, from what the user's `folder` holds.
+    fn starting(window: &AppWindow, dialogs: Rc<dyn Dialogs>, folder: Option<&Path>) -> Rc<Self> {
+        let template_path = folder.map(template::path_in);
+        let preferences_path = folder.map(preferences::path_in);
+        let (designer, told) = Designer::starting(template_path.as_deref(), Units::Imperial, None);
+        let (preferences, unreadable) = preferences_path
+            .as_deref()
+            .map(Preferences::read)
+            .unwrap_or_default();
+        let app = Rc::new(Self {
+            window: window.as_weak(),
+            designer: RefCell::new(designer),
+            dialogs,
+            template_path,
+            preferences_path,
+            preferences: RefCell::new(preferences),
+        });
+        window.set_system_theme_title(
+            if cfg!(windows) {
+                "Same as Windows"
+            } else {
+                "Same as the system"
+            }
+            .into(),
+        );
+        app.show(window, true);
+        app.show_template(window);
+        app.show_theme(window);
+        let told = starting_message(told, unreadable);
+        if !told.is_empty() {
+            app.status(&told);
+        }
+        app
+    }
+
     fn edit(&self, dimension: Dimension, text: &str) {
         let Some(window) = self.window.upgrade() else {
             return;
@@ -436,6 +484,36 @@ impl App {
             Err(message) => self.status(&message),
         }
         self.show_template(&window);
+    }
+
+    fn choose_theme(&self, index: i32) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let Some(&theme) = usize::try_from(index).ok().and_then(|i| Theme::ALL.get(i)) else {
+            return;
+        };
+        self.preferences.borrow_mut().theme = theme;
+        self.show_theme(&window);
+        let saved = match &self.preferences_path {
+            None => Err("no user folder was found".to_owned()),
+            Some(path) => self
+                .preferences
+                .borrow()
+                .save(path)
+                .map_err(|e| e.to_string()),
+        };
+        if let Err(why) = saved {
+            self.status(&format!(
+                "The theme lasts until the program closes, because it cannot be remembered: {why}"
+            ));
+        }
+    }
+
+    fn show_theme(&self, window: &AppWindow) {
+        let theme = self.preferences.borrow().theme;
+        let index = Theme::ALL.iter().position(|&t| t == theme).unwrap_or(0);
+        window.set_theme_index(i32::try_from(index).unwrap_or(0));
     }
 
     fn show_template(&self, window: &AppWindow) {

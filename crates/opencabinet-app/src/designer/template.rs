@@ -7,7 +7,6 @@
 //! takes, and nothing of a job: no other cabinets, walls, notes or name.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -27,30 +26,10 @@ fn general_name(method: Method) -> &'static str {
     }
 }
 
-/// Where this user's template lives; `None` when the system does not say
-/// where the user's folder is.
+/// Where the template lives in the user's `folder`.
 #[must_use]
-pub fn usual_path() -> Option<PathBuf> {
-    path_from(|name| std::env::var_os(name))
-}
-
-/// The template's path, given the environment variables.
-fn path_from(variable: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    let absolute = |name: &str| {
-        variable(name)
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    };
-    let folder = if cfg!(windows) {
-        absolute("APPDATA")?.join("OpenCabinet")
-    } else if cfg!(target_os = "macos") {
-        absolute("HOME")?.join("Library/Application Support/OpenCabinet")
-    } else {
-        absolute("XDG_CONFIG_HOME")
-            .or_else(|| absolute("HOME").map(|home| home.join(".config")))?
-            .join("opencabinet")
-    };
-    Some(folder.join(FILE_NAME))
+pub fn path_in(folder: &Path) -> PathBuf {
+    folder.join(FILE_NAME)
 }
 
 /// Where the template a save or a removal replaces is kept.
@@ -565,16 +544,5 @@ mod tests {
         );
         // Nothing left to remove.
         assert!(remove(&path).is_err());
-    }
-
-    #[test]
-    fn the_template_lives_in_the_users_folder() {
-        let folder = std::env::temp_dir();
-        let path = path_from(|_| Some(folder.clone().into_os_string())).unwrap();
-        assert!(path.starts_with(&folder));
-        assert!(path.ends_with(FILE_NAME));
-        assert_eq!(path_from(|_| None), None);
-        // A relative folder would depend on where the program was started.
-        assert_eq!(path_from(|_| Some("relative".into())), None);
     }
 }
