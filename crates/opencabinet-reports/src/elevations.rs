@@ -258,7 +258,10 @@ pub fn elevations_dxf(
     elevations
         .iter()
         .map(|elevation| {
-            let base = safe_file_name(&format!("Elevation - {}", elevation.name));
+            let base = safe_file_name(&format!(
+                "Elevation - {} - {}",
+                elevation.room, elevation.name
+            ));
             let mut name = format!("{base}.dxf");
             let mut n = 2;
             while !names.insert(name.clone()) {

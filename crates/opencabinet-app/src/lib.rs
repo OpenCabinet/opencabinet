@@ -268,6 +268,41 @@ impl App {
         self.show(&window, false);
     }
 
+    fn edit_room_name(&self, text: &str) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let result = self.designer.borrow_mut().set_room_name(text);
+        window.set_room_name_error(result.err().unwrap_or_default().into());
+        self.show(&window, false);
+    }
+
+    /// Deletes the edited room, asking first when something goes with it.
+    fn delete_room(&self) {
+        let (name, (walls, placements)) = {
+            let designer = self.designer.borrow();
+            (designer.room_name(), designer.room_contents())
+        };
+        if walls + placements > 0 {
+            let count = |n: usize, one: &str| {
+                if n == 1 {
+                    format!("1 {one}")
+                } else {
+                    format!("{n} {one}s")
+                }
+            };
+            let question = format!(
+                "Delete {name}, with its {} and {}? The cabinets stay in the project.",
+                count(walls, "wall"),
+                count(placements, "placed cabinet")
+            );
+            if !self.dialogs.confirm("Delete room", &question) {
+                return;
+            }
+        }
+        self.change_room(Designer::delete_room);
+    }
+
     fn choose_kind(&self, index: i32) {
         let Some(window) = self.window.upgrade() else {
             return;
@@ -699,6 +734,7 @@ impl App {
         let designer = self.designer.borrow();
         if texts {
             window.set_label_text(designer.label().into());
+            window.set_room_name_text(designer.room_name().into());
         }
         for dimension in Dimension::ALL {
             if texts {
@@ -925,6 +961,14 @@ fn connect_room(window: &AppWindow, app: &Rc<App>) {
     }
     let handle = Rc::clone(app);
     window.on_tab_chosen(move |tab| handle.update(|d| d.show_walls(tab == 1)));
+    let (handle, choose) = (Rc::clone(app), chosen(Designer::select_room));
+    window.on_room_chosen(move |i| handle.update(|d| choose(d, i)));
+    let handle = Rc::clone(app);
+    window.on_add_room(move || handle.update(Designer::add_room));
+    let handle = Rc::clone(app);
+    window.on_delete_room(move || handle.delete_room());
+    let handle = Rc::clone(app);
+    window.on_room_name_edited(move |text| handle.edit_room_name(&text));
     let (handle, choose) = (Rc::clone(app), chosen(Designer::select_wall));
     window.on_wall_chosen(move |i| handle.update(|d| choose(d, i)));
     let handle = Rc::clone(app);
@@ -1238,6 +1282,10 @@ fn show_room(window: &AppWindow, designer: &Designer) {
         ModelRc::new(VecModel::from(items))
     };
     let position = |i: Option<usize>| i.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1);
+    let rooms: Vec<SharedString> = designer.rooms().into_iter().map(Into::into).collect();
+    window.set_room_names(ModelRc::new(VecModel::from(rooms)));
+    window.set_room_index(position(designer.selected_room()));
+    window.set_has_room(designer.selected_room().is_some());
     let walls = designer.walls();
     let names: Vec<SharedString> = walls
         .iter()
@@ -1261,6 +1309,7 @@ fn clear_errors(window: &AppWindow) {
         set_error(window, dimension, String::new());
     }
     window.set_label_error(slint::SharedString::new());
+    window.set_room_name_error(SharedString::new());
     window.set_shelves_error(SharedString::new());
     window.set_quantity_error(SharedString::new());
     window.set_sheet_name_error(SharedString::new());

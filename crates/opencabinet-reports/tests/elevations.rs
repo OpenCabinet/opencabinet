@@ -49,7 +49,13 @@ fn each_wall_has_a_dxf_with_its_layers() {
     let (project, library) = kitchen();
     let files = elevations_dxf(&project, &library, &show).unwrap();
     let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
-    assert_eq!(names, ["Elevation - North.dxf", "Elevation - East.dxf"]);
+    assert_eq!(
+        names,
+        [
+            "Elevation - Kitchen - North.dxf",
+            "Elevation - Kitchen - East.dxf"
+        ]
+    );
     assert_eq!(files, elevations_dxf(&project, &library, &show).unwrap());
 
     let north = Drawing::load(&mut files[0].contents.as_slice()).unwrap();

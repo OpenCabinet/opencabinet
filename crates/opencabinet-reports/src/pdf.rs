@@ -371,7 +371,7 @@ pub fn elevations_pdf(
             &fonts.bold,
             (MARGIN, MARGIN + 5.0),
             TITLE_SIZE,
-            &format!("Elevation — {}", elevation.name),
+            &format!("Elevation — {} - {}", elevation.room, elevation.name),
         );
         pen.text(&fonts.regular, (MARGIN, MARGIN + 10.0), TEXT_SIZE, title);
         let corner = format!("{scale_label} · Page {} of {pages}", index + 1);

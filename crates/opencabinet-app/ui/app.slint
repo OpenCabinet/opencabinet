@@ -196,6 +196,13 @@ export component AppWindow inherits Window {
     // The left panel's tab: 0 for the cabinets, 1 for the walls, 2 for the
     // materials, 3 for the standard.
     in-out property <int> tab-index;
+    // The project's rooms and which one is being edited, with its name as
+    // typed and why it cannot be used.
+    in property <[string]> room-names;
+    in-out property <int> room-index;
+    in property <bool> has-room;
+    in-out property <string> room-name-text;
+    in property <string> room-name-error;
     // The room's walls, the edited wall's openings, and the edited
     // cabinet's placements, with which of each is being edited.
     in property <[StandardListViewItem]> walls;
@@ -315,6 +322,10 @@ export component AppWindow inherits Window {
     callback placement-offset-edited(text: string);
     callback placement-elevation-edited(text: string);
     callback tab-chosen(index: int);
+    callback room-chosen(index: int);
+    callback add-room();
+    callback delete-room();
+    callback room-name-edited(text: string);
     callback wall-chosen(index: int);
     callback add-wall();
     callback delete-wall();
@@ -542,6 +553,34 @@ export component AppWindow inherits Window {
                             padding: 12px;
                             spacing: 8px;
                             alignment: start;
+                            Text { text: "Room"; font-weight: 700; }
+                            if root.has-room: ComboBox {
+                                accessible-label: "Room";
+                                model: root.room-names;
+                                current-index <=> root.room-index;
+                                selected => { root.room-chosen(self.current-index); }
+                            }
+                            if root.has-room: VerticalLayout {
+                                spacing: 4px;
+                                Text { text: "Room name"; }
+                                LineEdit {
+                                    accessible-label: "Room name";
+                                    text <=> root.room-name-text;
+                                    edited(text) => { root.room-name-edited(text); }
+                                }
+                                if root.room-name-error != "": Text {
+                                    text: root.room-name-error;
+                                    color: Signal.error;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Button { text: "Add room"; clicked => { root.add-room(); } }
+                                Button { text: "Delete room"; clicked => { root.delete-room(); } }
+                            }
+                            Text { text: "Walls"; font-weight: 700; }
                             StandardListView {
                                 accessible-label: "Walls";
                                 height: 110px;

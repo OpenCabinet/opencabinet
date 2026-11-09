@@ -4,7 +4,8 @@
 //! Editing the room: its walls, their openings, and where the cabinets are
 //! placed on them.
 //!
-//! The window edits the project's first room. Walls are added one after
+//! The window edits one room at a time; the cabinets belong to the project
+//! and can be placed in any of them. Walls are added one after
 //! another, each turning a right angle to the left of the one before, so a
 //! straight, L or U kitchen is just a list of lengths; the file keeps the
 //! corners as points (RFC-0001 §5).
@@ -24,10 +25,12 @@ pub enum OpeningKind {
     Door,
 }
 
-/// Which wall, opening and placement are being edited, and whether the
-/// drawing shows the walls rather than the cabinet.
+/// Which room, wall, opening and placement are being edited, and whether
+/// the drawing shows the walls rather than the cabinet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct RoomSelection {
+    /// By its place in the project; the project may have no room yet.
+    pub(super) room: usize,
     pub(super) wall: Option<usize>,
     pub(super) opening: Option<usize>,
     /// Among the edited cabinet's placements in the room.
@@ -87,7 +90,14 @@ fn opening_name(kind: &WallOpeningKind) -> &'static str {
 
 impl Designer {
     fn room(&self) -> Option<&Room> {
-        self.document.project.rooms.first()
+        self.document.project.rooms.get(self.room_selection.room)
+    }
+
+    fn room_mut(&mut self) -> Option<&mut Room> {
+        self.document
+            .project
+            .rooms
+            .get_mut(self.room_selection.room)
     }
 
     fn wall(&self) -> Option<&Wall> {
@@ -96,12 +106,7 @@ impl Designer {
 
     fn wall_mut(&mut self) -> Option<&mut Wall> {
         let index = self.room_selection.wall?;
-        self.document
-            .project
-            .rooms
-            .first_mut()?
-            .walls
-            .get_mut(index)
+        self.room_mut()?.walls.get_mut(index)
     }
 
     fn opening(&self) -> Option<&WallOpening> {
@@ -137,12 +142,7 @@ impl Designer {
         let index = *self
             .placement_indexes()
             .get(self.room_selection.placement?)?;
-        self.document
-            .project
-            .rooms
-            .first_mut()?
-            .placements
-            .get_mut(index)
+        self.room_mut()?.placements.get_mut(index)
     }
 
     /// After the edited cabinet changes, edit its first placement.
@@ -154,16 +154,123 @@ impl Designer {
         self.follow_cabinet_standard();
     }
 
-    /// The selection a project starts with: its first wall, and the first
-    /// placement of its first cabinet.
+    /// The selection a project starts with: its first room and wall, and
+    /// the first placement of its first cabinet.
     pub(super) fn first_selection(&mut self) {
-        let has_walls = self.room().is_some_and(|r| !r.walls.is_empty());
-        self.room_selection = RoomSelection {
-            wall: has_walls.then_some(0),
-            ..RoomSelection::default()
-        };
-        self.select_wall_openings();
+        self.room_selection = RoomSelection::default();
+        self.select_room_walls();
         self.cabinet_changed();
+    }
+
+    /// After the edited room changes, edit its first wall.
+    fn select_room_walls(&mut self) {
+        let has_walls = self.room().is_some_and(|r| !r.walls.is_empty());
+        self.room_selection.wall = has_walls.then_some(0);
+        self.select_wall_openings();
+    }
+
+    /// The project's rooms, by name.
+    #[must_use]
+    pub fn rooms(&self) -> Vec<String> {
+        self.document
+            .project
+            .rooms
+            .iter()
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
+    /// Which room is being edited; `None` while the project has none.
+    #[must_use]
+    pub fn selected_room(&self) -> Option<usize> {
+        self.room().map(|_| self.room_selection.room)
+    }
+
+    /// Edits another room, and shows its first wall; returns whether there
+    /// is one at `index`.
+    pub fn select_room(&mut self, index: usize) -> bool {
+        let exists = index < self.document.project.rooms.len();
+        if exists {
+            self.room_selection.room = index;
+            self.select_room_walls();
+            let placed = !self.placement_indexes().is_empty();
+            self.room_selection.placement = placed.then_some(0);
+            self.room_selection.showing_walls = true;
+        }
+        exists
+    }
+
+    /// Adds an empty room, "Room 2" for a project with one, and edits it.
+    pub fn add_room(&mut self) {
+        let rooms = &mut self.document.project.rooms;
+        // Of these many names, the rooms can take all but one.
+        let count = rooms.len();
+        let name = (count + 1..=2 * count + 1)
+            .map(|n| format!("Room {n}"))
+            .find(|name| rooms.iter().all(|r| r.name != *name))
+            .unwrap_or_else(|| format!("Room {}", count + 1));
+        rooms.push(Room {
+            id: Id::new(),
+            name,
+            walls: Vec::new(),
+            placements: Vec::new(),
+            unknown: BTreeMap::default(),
+        });
+        let index = rooms.len() - 1;
+        self.select_room(index);
+        self.modified = true;
+    }
+
+    /// The edited room's name; empty while the project has no room.
+    #[must_use]
+    pub fn room_name(&self) -> String {
+        self.room().map(|r| r.name.clone()).unwrap_or_default()
+    }
+
+    /// Renames the edited room.
+    ///
+    /// # Errors
+    /// A message for the user when the name is empty or there is no room;
+    /// nothing then changes.
+    pub fn set_room_name(&mut self, text: &str) -> Result<(), String> {
+        let name = text.trim();
+        if name.is_empty() {
+            return Err("A room needs a name".into());
+        }
+        let room = self.room_mut().ok_or("Add a room first")?;
+        if room.name != name {
+            name.clone_into(&mut room.name);
+            self.modified = true;
+        }
+        Ok(())
+    }
+
+    /// How many walls and placements the edited room has, to say what
+    /// deleting it would remove.
+    #[must_use]
+    pub fn room_contents(&self) -> (usize, usize) {
+        self.room()
+            .map_or((0, 0), |r| (r.walls.len(), r.placements.len()))
+    }
+
+    /// Removes the edited room with its walls and placements; the cabinets
+    /// stay in the project, and those no longer placed count by their
+    /// quantity. Then edits the room that takes its place in the list.
+    ///
+    /// # Errors
+    /// When there is no room to remove.
+    pub fn delete_room(&mut self) -> Result<(), String> {
+        let index = self.selected_room().ok_or("There is no room to delete")?;
+        let rooms = &mut self.document.project.rooms;
+        rooms.remove(index);
+        let left = rooms.len();
+        if left == 0 {
+            self.room_selection = RoomSelection::default();
+        } else {
+            self.select_room(index.min(left - 1));
+        }
+        self.modified = true;
+        Ok(())
     }
 
     fn select_wall_openings(&mut self) {
@@ -210,17 +317,11 @@ impl Designer {
     /// the left, and edits it. The room is made with the first wall.
     pub fn add_wall(&mut self) {
         let (length, height, thickness) = new_wall_size();
-        let project = &mut self.document.project;
-        if project.rooms.is_empty() {
-            project.rooms.push(Room {
-                id: Id::new(),
-                name: "Room".into(),
-                walls: Vec::new(),
-                placements: Vec::new(),
-                unknown: BTreeMap::default(),
-            });
+        if self.room().is_none() {
+            self.add_room();
         }
-        let room = &mut project.rooms[0];
+        let index = self.room_selection.room;
+        let room = &mut self.document.project.rooms[index];
         let (start, (dx, dy)) = room.walls.last().map_or(
             (
                 Point {
@@ -266,12 +367,7 @@ impl Designer {
             .room_selection
             .wall
             .ok_or("There is no wall to delete")?;
-        let room = self
-            .document
-            .project
-            .rooms
-            .first_mut()
-            .ok_or("There is no wall to delete")?;
+        let room = self.room_mut().ok_or("There is no wall to delete")?;
         let removed = room.walls.remove(index);
         room.placements.retain(|p| p.wall != Some(removed.id));
         self.room_selection.wall =
@@ -287,12 +383,7 @@ impl Designer {
     /// direction, and moves the walls joined after it with its end.
     fn set_wall_length(&mut self, length: Length) -> Result<(), String> {
         let index = self.room_selection.wall.ok_or("There is no wall to edit")?;
-        let room = self
-            .document
-            .project
-            .rooms
-            .first_mut()
-            .ok_or("There is no wall to edit")?;
+        let room = self.room_mut().ok_or("There is no wall to edit")?;
         let wall = &room.walls[index];
         let (dx, dy) =
             axis(wall).ok_or("Only walls along the plan's axes can change length here")?;
@@ -468,10 +559,11 @@ impl Designer {
             Length::ZERO
         };
         let wall_index = self.room_selection.wall.unwrap_or(0);
+        let room_index = self.room_selection.room;
         let project = &mut self.document.project;
         let room = project
             .rooms
-            .first_mut()
+            .get_mut(room_index)
             .filter(|r| !r.walls.is_empty())
             .ok_or("Add a wall first, on the Walls tab")?;
         let wall = room.walls[wall_index.min(room.walls.len() - 1)].id;
@@ -560,7 +652,7 @@ impl Designer {
             .placement_indexes()
             .get(selected)
             .ok_or("The cabinet is not placed")?;
-        if let Some(room) = self.document.project.rooms.first_mut() {
+        if let Some(room) = self.room_mut() {
             room.placements.remove(index);
         }
         let left = self.placement_indexes().len();
@@ -855,5 +947,82 @@ mod tests {
         designer.select_wall(1);
         designer.delete_wall().unwrap();
         assert_eq!(designer.placements(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn rooms_are_added_renamed_chosen_and_deleted() {
+        let mut designer = Designer::default();
+        assert_eq!(designer.rooms(), Vec::<String>::new());
+        assert_eq!(designer.selected_room(), None);
+        assert_eq!(designer.room_name(), "");
+        assert_eq!(
+            designer.set_room_name("Kitchen"),
+            Err("Add a room first".into())
+        );
+
+        // The first wall makes the first room.
+        designer.add_wall();
+        assert_eq!(designer.rooms(), ["Room 1"]);
+        assert_eq!(designer.selected_room(), Some(0));
+        designer.place().unwrap();
+
+        // A new room starts empty, and the cabinet is placed in it too.
+        designer.add_room();
+        assert_eq!(designer.rooms(), ["Room 1", "Room 2"]);
+        assert_eq!(designer.selected_room(), Some(1));
+        assert_eq!(designer.walls(), Vec::<String>::new());
+        assert_eq!(designer.placements(), Vec::<String>::new());
+        assert_eq!(
+            designer.place(),
+            Err("Add a wall first, on the Walls tab".into())
+        );
+        designer.add_wall();
+        designer.place().unwrap();
+        assert_eq!(designer.placements().len(), 1);
+        assert_eq!(designer.placed_count(), 2);
+        assert_eq!(designer.cut_list().rows[0].quantity, "2");
+
+        designer.set_room_name("  Laundry ").unwrap();
+        assert_eq!(designer.rooms(), ["Room 1", "Laundry"]);
+        assert_eq!(
+            designer.set_room_name(" "),
+            Err("A room needs a name".into())
+        );
+        assert_eq!(designer.room_name(), "Laundry");
+
+        assert!(designer.select_room(0));
+        assert_eq!(designer.room_name(), "Room 1");
+        assert_eq!(designer.walls().len(), 1);
+        assert_eq!(designer.placements().len(), 1);
+        assert!(!designer.select_room(2));
+        assert_eq!(designer.selected_room(), Some(0));
+
+        // A name already taken is skipped.
+        designer.set_room_name("Room 3").unwrap();
+        designer.add_room();
+        assert_eq!(designer.rooms(), ["Room 3", "Laundry", "Room 4"]);
+        assert_eq!(designer.room_contents(), (0, 0));
+        designer.delete_room().unwrap();
+        assert_eq!(designer.selected_room(), Some(1));
+
+        // Deleting a room keeps the cabinet, placed in the other one.
+        assert_eq!(designer.room_contents(), (1, 1));
+        designer.delete_room().unwrap();
+        assert_eq!(designer.rooms(), ["Room 3"]);
+        assert_eq!(designer.selected_room(), Some(0));
+        assert_eq!(designer.placed_count(), 1);
+        assert_eq!(designer.cabinets().len(), 1);
+
+        // Without rooms it counts by its quantity again.
+        designer.delete_room().unwrap();
+        assert_eq!(designer.rooms(), Vec::<String>::new());
+        assert_eq!(designer.selected_room(), None);
+        assert_eq!(designer.placed_count(), 0);
+        assert_eq!(designer.cut_list().rows[0].quantity, "1");
+        assert_eq!(designer.issues(), []);
+        assert_eq!(
+            designer.delete_room(),
+            Err("There is no room to delete".into())
+        );
     }
 }
