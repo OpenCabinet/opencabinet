@@ -86,7 +86,7 @@ jobs:
           cargo run --locked -q -p opencabinet-reports --example elevations -- elevations
           qpdf --check elevations/elevations.pdf
           text=$(pdftotext elevations/elevations.pdf -)
-          for expected in "Elevation — North" "Elevation — East" "Scale 1/2\" = 1'-0\"" "Page 2 of 2" "B30"; do
+          for expected in "Elevation — Kitchen - North" "Elevation — Kitchen - East" "Scale 1/2\" = 1'-0\"" "Page 2 of 2" "B30"; do
             grep -qF "$expected" <<< "$text" || { echo "missing: $expected"; exit 1; }
           done
       # The parts as DXF, audited by ezdxf (ADR-0015).
