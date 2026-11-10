@@ -190,6 +190,62 @@ fn the_window_edits_saves_and_reopens_a_project() {
 
     shop_template(&answers, &dir);
     theme(&answers, &dir);
+    rooms(&answers);
+}
+
+/// Rooms are added, renamed, chosen and deleted on the Walls tab, each with
+/// its own walls, and deleting one that holds something asks first.
+fn rooms(answers: &Rc<Answers>) {
+    let window = opencabinet_app::create_with(answers.clone(), None).unwrap();
+    let names = |w: &AppWindow| -> Vec<String> {
+        w.get_room_names().iter().map(|n| n.to_string()).collect()
+    };
+    window.set_tab_index(1);
+    window.invoke_tab_chosen(1);
+    assert!(!window.get_has_room());
+
+    window.invoke_add_wall();
+    window.invoke_place_cabinet();
+    assert_eq!(names(&window), ["Room 1"]);
+    assert!(window.get_has_room());
+    assert_eq!(window.get_room_name_text(), "Room 1");
+
+    window.invoke_add_room();
+    assert_eq!(names(&window), ["Room 1", "Room 2"]);
+    assert_eq!(window.get_room_index(), 1);
+    assert_eq!(window.get_room_name_text(), "Room 2");
+    assert_eq!(window.get_walls().row_count(), 0);
+    field(&window, "Room name").set_accessible_value("Laundry");
+    assert_eq!(names(&window), ["Room 1", "Laundry"]);
+    window.invoke_room_name_edited(" ".into());
+    assert_eq!(window.get_room_name_error(), "A room needs a name");
+    assert_eq!(names(&window), ["Room 1", "Laundry"]);
+    window.invoke_add_wall();
+    window.invoke_place_cabinet();
+    assert_eq!(window.get_placements().row_count(), 1);
+
+    window.invoke_room_chosen(0);
+    assert_eq!(window.get_room_name_text(), "Room 1");
+    assert_eq!(window.get_room_name_error(), "");
+    assert_eq!(window.get_walls().row_count(), 1);
+
+    // Deleting a room with walls asks; saying no keeps it.
+    let asked = answers.asked_to_confirm.get();
+    answers.confirm.set(false);
+    window.invoke_delete_room();
+    assert_eq!(answers.asked_to_confirm.get(), asked + 1);
+    assert_eq!(names(&window), ["Room 1", "Laundry"]);
+    answers.confirm.set(true);
+    window.invoke_delete_room();
+    assert_eq!(names(&window), ["Laundry"]);
+    assert_eq!(window.get_room_name_text(), "Laundry");
+    assert_eq!(window.get_placements().row_count(), 1);
+
+    // An empty room goes without asking.
+    window.invoke_add_room();
+    window.invoke_delete_room();
+    assert_eq!(answers.asked_to_confirm.get(), asked + 2);
+    assert_eq!(names(&window), ["Laundry"]);
 }
 
 /// A theme chosen in one window is shown at once and remembered for the next

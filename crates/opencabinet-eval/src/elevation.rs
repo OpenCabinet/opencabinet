@@ -27,6 +27,8 @@ pub struct Elevation {
     pub wall: Id,
     /// Its name, such as "North".
     pub name: String,
+    /// The name of its room, such as "Kitchen".
+    pub room: String,
     /// From its start to its end.
     pub length: Length,
     /// Floor to ceiling.
@@ -135,6 +137,7 @@ pub fn elevation(project: &Project, library: &Library, wall: Id) -> Option<Eleva
     Some(Elevation {
         wall: wall.id,
         name: wall.name.clone(),
+        room: room.name.clone(),
         length: wall_length(wall),
         height: wall.height,
         openings,
@@ -214,7 +217,10 @@ fn wall_length(wall: &Wall) -> Length {
 #[must_use]
 pub fn placement_problems(project: &Project) -> Vec<String> {
     let mut problems = Vec::new();
+    // With more than one room, each problem says which.
+    let several = project.rooms.len() > 1;
     for room in &project.rooms {
+        let first = problems.len();
         let mut footprints: Vec<(&str, Footprint)> = Vec::new();
         let mut blinds: Vec<BlindFront<'_>> = Vec::new();
         for placement in &room.placements {
@@ -277,6 +283,11 @@ pub fn placement_problems(project: &Project) -> Vec<String> {
                 if first.collides(second) {
                     problems.push(format!("{a} and {b} overlap"));
                 }
+            }
+        }
+        if several {
+            for problem in &mut problems[first..] {
+                *problem = format!("{}: {problem}", room.name);
             }
         }
     }

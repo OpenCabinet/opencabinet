@@ -18,6 +18,16 @@ follow [Semantic Versioning](https://semver.org/).
   the user's folder, beside the shop template, and exported PDF and DXF files
   do not change. Errors and warnings now have colors that are easy to read on
   either background.
+- **Several rooms:** the Walls tab adds, renames, chooses and deletes the
+  project's rooms, each with its own walls. Cabinets still belong to the
+  project and can be placed in any room; deleting a room that holds walls
+  or placed cabinets asks first, and keeps the cabinets.
+
+### Changed
+
+- Elevations are named after their room and wall, as "Kitchen - North", on
+  each page of the PDF and in each DXF file's name, and placement warnings
+  say which room when the project has more than one.
 
 ## [0.1.0-beta.2] - 2026-11-07
 

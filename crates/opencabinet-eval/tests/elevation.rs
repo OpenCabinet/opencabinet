@@ -290,3 +290,30 @@ fn a_cabinet_in_front_of_a_blind_corners_doors_is_reported() {
         ["B30 stands in front of BC42's doors"]
     );
 }
+
+#[test]
+fn with_several_rooms_each_problem_says_which() {
+    let mut project = moved("W30", 60, 54);
+    let mut laundry = project.rooms[0].clone();
+    laundry.id = Id::new();
+    laundry.name = "Laundry".into();
+    laundry.placements.clear();
+    for wall in &mut laundry.walls {
+        wall.id = Id::new();
+    }
+    project.rooms.push(laundry);
+    assert_eq!(
+        placement_problems(&project),
+        [
+            "Kitchen: W30 covers the window on wall North".to_owned(),
+            format!("Kitchen: {BLIND}"),
+        ]
+    );
+    let (_, library) = kitchen();
+    let laundry = &project.rooms[1];
+    let north = elevation(&project, &library, laundry.walls[0].id).unwrap();
+    assert_eq!(
+        (north.room.as_str(), north.name.as_str()),
+        ("Laundry", "North")
+    );
+}
