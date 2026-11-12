@@ -24,6 +24,7 @@ Accepted ADRs are not edited; a new ADR supersedes them.
 | [0006](0006-trunk-based-workflow.md) | Trunk-based workflow, Conventional Commits and SemVer | Accepted |
 | [0007](0007-english-as-repository-language.md) | English as the repository language | Accepted |
 | [0008](0008-imperial-default-units.md) | Imperial units by default, metric as an option | Accepted |
+| [0009](0009-length-representation.md) | Represent lengths as integer nanometers | Proposed |
 | [0010](0010-project-and-module-names.md) | Project and module names | Accepted |
 | [0011](0011-core-technical-stack.md) | Rust for the core | Accepted |
 | [0012](0012-desktop-ui-toolkit.md) | Desktop user interface toolkit | Accepted |
