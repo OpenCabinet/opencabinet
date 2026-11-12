@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use opencabinet_eval::{elevation, front_view, placement_problems};
+use opencabinet_eval::{elevation, front_view, placement_problems, plan};
 use opencabinet_format::Document;
 use opencabinet_model::validate::{Issue, validate};
 use opencabinet_model::{
@@ -784,14 +784,20 @@ impl Designer {
         Ok(files.len())
     }
 
-    /// What the drawing area shows: the edited wall while the walls are
-    /// shown, otherwise the wall the edited cabinet is placed on, or the
-    /// cabinet alone when it is not placed on a wall.
+    /// What the drawing area shows: the edited room's plan or wall while
+    /// the walls are shown, otherwise the wall the edited cabinet is
+    /// placed on, or the cabinet alone when it is not placed on a wall.
     #[must_use]
     pub fn drawing(&self) -> Drawing {
         let (project, library) = (&self.document.project, &self.document.library);
         let product = self.product();
         let show = |length: Length| self.show(length);
+        if self.showing_plan()
+            && let Some((room, wall)) = self.plan_selection()
+            && let Some(plan) = plan(project, room)
+        {
+            return drawing::plan(&plan, wall, product.id, &show);
+        }
         if let Some(elevation) = self
             .shown_wall()
             .and_then(|w| elevation(project, library, w))

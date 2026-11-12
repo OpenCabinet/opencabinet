@@ -194,7 +194,7 @@ fn chain(mut stops: Vec<Length>) -> Vec<(Length, Length)> {
 
 /// From a wall's start to its end, to the nanometer for walls along an
 /// axis.
-fn wall_length(wall: &Wall) -> Length {
+pub(crate) fn wall_length(wall: &Wall) -> Length {
     let dx = (wall.end.x - wall.start.x).nm();
     let dy = (wall.end.y - wall.start.y).nm();
     if dx == 0 || dy == 0 {
@@ -312,13 +312,13 @@ struct Footprint {
 const TOLERANCE: f64 = 0.001;
 
 #[allow(clippy::cast_precision_loss, reason = "a room is far below 2^53 nm")]
-fn mm(length: Length) -> f64 {
+pub(crate) fn mm(length: Length) -> f64 {
     length.nm() as f64 / 1_000_000.0
 }
 
 /// The point in plan, in millimeters, `a` along `wall` from its start and
 /// `b` out from its front face into the room.
-fn plan_point(wall: &Wall, a: f64, b: f64) -> (f64, f64) {
+pub(crate) fn plan_point(wall: &Wall, a: f64, b: f64) -> (f64, f64) {
     let start = (mm(wall.start.x), mm(wall.start.y));
     let (dx, dy) = (mm(wall.end.x) - start.0, mm(wall.end.y) - start.1);
     let length = dx.hypot(dy).max(f64::MIN_POSITIVE);

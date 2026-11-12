@@ -12,6 +12,7 @@ mod cut_list;
 pub mod elevations;
 mod parts_dxf;
 mod pdf;
+pub mod plans;
 mod sketch;
 
 pub use bill_of_materials::{BOARD_WIDTH, Bom, BomRow, bill_of_materials};

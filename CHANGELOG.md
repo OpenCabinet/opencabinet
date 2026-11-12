@@ -22,6 +22,12 @@ follow [Semantic Versioning](https://semver.org/).
   project's rooms, each with its own walls. Cabinets still belong to the
   project and can be placed in any room; deleting a room that holds walls
   or placed cabinets asks first, and keeps the cabinets.
+- **Plan view:** on the Walls tab, **View** shows the chosen room from above
+  instead of the wall's elevation: walls at their thickness, cut by doors
+  and pass-throughs, with a line for each window; every placed cabinet's
+  footprint with its label, dashed when it hangs off the floor; and each
+  wall's length and name outside the room. The edited wall and the edited
+  cabinet are outlined. The plan is on screen only for now.
 
 ### Changed
 

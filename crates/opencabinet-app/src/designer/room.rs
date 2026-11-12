@@ -36,6 +36,8 @@ pub(super) struct RoomSelection {
     /// Among the edited cabinet's placements in the room.
     pub(super) placement: Option<usize>,
     pub(super) showing_walls: bool,
+    /// Whether the walls are shown in plan rather than in elevation.
+    pub(super) showing_plan: bool,
 }
 
 /// A new wall: 10' long, 8' high, 4-1/2" thick.
@@ -311,6 +313,30 @@ impl Designer {
     /// cabinet's.
     pub fn show_walls(&mut self, walls: bool) {
         self.room_selection.showing_walls = walls;
+    }
+
+    /// Whether the walls are shown as the room's plan rather than as the
+    /// edited wall's elevation.
+    pub fn show_plan(&mut self, plan: bool) {
+        self.room_selection.showing_plan = plan;
+    }
+
+    /// Whether the drawing can show the room's plan: while the walls are
+    /// shown and there is a room.
+    #[must_use]
+    pub fn plan_available(&self) -> bool {
+        self.room_selection.showing_walls && self.room().is_some()
+    }
+
+    /// Whether the drawing shows the room's plan.
+    #[must_use]
+    pub fn showing_plan(&self) -> bool {
+        self.plan_available() && self.room_selection.showing_plan
+    }
+
+    /// The edited room and wall, for the plan.
+    pub(super) fn plan_selection(&self) -> Option<(Id, Option<Id>)> {
+        Some((self.room()?.id, self.wall().map(|w| w.id)))
     }
 
     /// Adds a wall at the end of the last one, turning a right angle to
