@@ -819,6 +819,8 @@ fn show_drawing(window: &AppWindow, designer: &Designer) {
             commands.into()
         }
     };
+    window.set_plan_available(designer.plan_available());
+    window.set_view_index(i32::from(designer.showing_plan()));
     window.set_drawing_title(drawing.title.into());
     window.set_drawing_width(drawing.width);
     window.set_drawing_height(drawing.height);
@@ -961,6 +963,8 @@ fn connect_room(window: &AppWindow, app: &Rc<App>) {
     }
     let handle = Rc::clone(app);
     window.on_tab_chosen(move |tab| handle.update(|d| d.show_walls(tab == 1)));
+    let handle = Rc::clone(app);
+    window.on_view_chosen(move |view| handle.update(|d| d.show_plan(view == 1)));
     let (handle, choose) = (Rc::clone(app), chosen(Designer::select_room));
     window.on_room_chosen(move |i| handle.update(|d| choose(d, i)));
     let handle = Rc::clone(app);

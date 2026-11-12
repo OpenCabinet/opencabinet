@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 OpenCabinet contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The drawing area's content: the elevation of a wall, or one cabinet
-//! alone, drawn as the elevations' PDF and DXF draw them, turned into path
+//! The drawing area's content: a room's plan, the elevation of a wall, or
+//! one cabinet alone, drawn as the PDF and DXF draw them, turned into path
 //! commands the window scales to fit and text labels.
 //!
 //! Coordinates are millimeters from the drawing's top left corner, `y`
@@ -11,12 +11,13 @@
 
 use std::fmt::Write as _;
 
-use opencabinet_eval::{Elevation, FrontView};
+use opencabinet_eval::{Elevation, FrontView, Plan};
 use opencabinet_model::{Id, Length};
 use opencabinet_reports::Shape;
 use opencabinet_reports::elevations::{
     DIMENSIONS, HINGE_MARKS, SELECTED, bounds, cabinet_shapes, elevation_shapes,
 };
+use opencabinet_reports::plans::{CABINETS_ABOVE, plan_shapes};
 
 /// What the drawing area shows.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -66,6 +67,19 @@ pub fn wall(elevation: &Elevation, selected: Id, show: &dyn Fn(Length) -> String
     from_shapes(format!("Elevation of wall {}", elevation.name), &shapes)
 }
 
+/// A room seen from above, with the wall `wall` and the footprints of
+/// `selected` outlined; `show` writes a length in the user's units.
+#[must_use]
+pub fn plan(
+    plan: &Plan,
+    wall: Option<Id>,
+    selected: Id,
+    show: &dyn Fn(Length) -> String,
+) -> Drawing {
+    let shapes = plan_shapes(plan, wall, Some(selected), show);
+    from_shapes(format!("Plan of {}", plan.room), &shapes)
+}
+
 /// One cabinet that is not placed on a wall, seen from the front.
 #[must_use]
 pub fn cabinet(label: &str, width: Length, height: Length, view: Option<&FrontView>) -> Drawing {
@@ -87,7 +101,8 @@ fn from_shapes(title: String, shapes: &[Shape]) -> Drawing {
     };
     for shape in shapes {
         let path = match shape.layer() {
-            HINGE_MARKS => &mut drawing.marks,
+            // Dashes, drawn lighter as hinge marks are.
+            HINGE_MARKS | CABINETS_ABOVE => &mut drawing.marks,
             DIMENSIONS => &mut drawing.dimensions,
             SELECTED => &mut drawing.highlight,
             _ => &mut drawing.lines,

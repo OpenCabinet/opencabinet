@@ -246,6 +246,43 @@ fn rooms(answers: &Rc<Answers>) {
     window.invoke_delete_room();
     assert_eq!(answers.asked_to_confirm.get(), asked + 2);
     assert_eq!(names(&window), ["Laundry"]);
+
+    plan_view(&window);
+}
+
+/// On the Walls tab the drawing shows the room's plan or the wall's
+/// elevation; the choice is kept while other tabs show the cabinet.
+fn plan_view(window: &AppWindow) {
+    let views = |w: &AppWindow| ElementHandle::find_by_accessible_label(w, "View").count();
+    assert!(window.get_plan_available());
+    assert!(views(window) > 0);
+    assert_eq!(window.get_view_index(), 0);
+    assert!(window.get_drawing_title().starts_with("Elevation of wall"));
+
+    window.set_view_index(1);
+    window.invoke_view_chosen(1);
+    assert_eq!(window.get_drawing_title(), "Plan of Laundry");
+    assert_eq!(window.get_view_index(), 1);
+    // The edited wall and the edited cabinet's footprint are outlined.
+    assert!(window.get_drawing_highlight().matches('Z').count() >= 2);
+    assert!(
+        window
+            .get_drawing_labels()
+            .iter()
+            .any(|l| l.text == "Wall A")
+    );
+
+    window.set_tab_index(0);
+    window.invoke_tab_chosen(0);
+    assert!(!window.get_plan_available());
+    assert_ne!(window.get_drawing_title(), "Plan of Laundry");
+
+    window.set_tab_index(1);
+    window.invoke_tab_chosen(1);
+    assert_eq!(window.get_drawing_title(), "Plan of Laundry");
+    window.set_view_index(0);
+    window.invoke_view_chosen(0);
+    assert!(window.get_drawing_title().starts_with("Elevation of wall"));
 }
 
 /// A theme chosen in one window is shown at once and remembered for the next

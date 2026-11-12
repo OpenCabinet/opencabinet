@@ -139,6 +139,7 @@
 pub mod elevation;
 pub mod front;
 pub mod machining;
+pub mod plan;
 pub mod rules;
 pub mod view;
 
@@ -154,6 +155,7 @@ pub use crate::elevation::{Dimension, Elevation, PlacedCabinet, elevation, place
 use crate::front::{Divider, Dividers, Layout, Opening, Rect, lay_out};
 pub use crate::machining::{Face, Operation, Point};
 use crate::machining::{groove_along, hinge_positions, holes_between};
+pub use crate::plan::{Plan, PlanCabinet, PlanWall, plan};
 use crate::rules::{Back, FaceFrame, Fronts, Overlay, Rules};
 pub use crate::view::{FrontKind, FrontShape, FrontView, front_openings, front_view};
 

@@ -291,6 +291,11 @@ export component AppWindow inherits Window {
     // The drawing: the elevation of the edited cabinet's wall, or the
     // cabinet alone. Paths and labels are in millimeters; the drawing area
     // scales them to fit.
+    // While the walls are shown: whether the drawing can show the room's
+    // plan, and whether it shows the elevation (0) or the plan (1).
+    in property <bool> plan-available;
+    in-out property <int> view-index;
+    callback view-chosen(index: int);
     in property <string> drawing-title: "Drawing";
     in property <float> drawing-width: 1;
     in property <float> drawing-height: 1;
@@ -1056,6 +1061,23 @@ export component AppWindow inherits Window {
 
             VerticalLayout {
                 horizontal-stretch: 1;
+
+                if root.plan-available: HorizontalLayout {
+                    padding: 4px;
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: "View";
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        accessible-label: "View";
+                        width: 140px;
+                        model: ["Elevation", "Plan"];
+                        current-index <=> root.view-index;
+                        selected => { root.view-chosen(self.current-index); }
+                    }
+                }
 
                 // The drawing area: millimeters scaled to fit, centered.
                 drawing-area := Rectangle {
