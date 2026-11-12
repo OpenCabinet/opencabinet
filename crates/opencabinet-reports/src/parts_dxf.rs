@@ -171,6 +171,7 @@ fn sketch(part: &Part, project: &Project, library: &Library) -> (String, Sketch)
             height: TEXT_HEIGHT,
             text: line.clone(),
             centered: false,
+            beside: None,
         });
     }
     let top = base + 2.0 * LINE_SPACING + TEXT_HEIGHT;
@@ -202,6 +203,7 @@ fn sketch(part: &Part, project: &Project, library: &Library) -> (String, Sketch)
                 height: TEXT_HEIGHT,
                 text: "grain".into(),
                 centered: false,
+                beside: None,
             },
         ]);
         bottom = y - TEXT_HEIGHT;
@@ -345,6 +347,7 @@ fn lay_out(sketches: &[(String, Sketch)], parts: &[Part], library: &Library) -> 
             height: 2.0 * TEXT_HEIGHT,
             text: name.into(),
             centered: false,
+            beside: None,
         });
         let row_bottom = row_top - 3.0 * TEXT_HEIGHT - height;
         let mut left = 0.0;

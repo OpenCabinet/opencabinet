@@ -26,8 +26,11 @@ follow [Semantic Versioning](https://semver.org/).
   instead of the wall's elevation: walls at their thickness, cut by doors
   and pass-throughs, with a line for each window; every placed cabinet's
   footprint with its label, dashed when it hangs off the floor; and each
-  wall's length and name outside the room. The edited wall and the edited
+  wall's name and length outside the room. The edited wall and the edited
   cabinet are outlined. The plan is on screen only for now.
+- **Plan and elevation together:** a third **View** choice shows the room's
+  plan and the edited wall's elevation at once, side by side when the
+  drawing area is wider than high and one above the other otherwise.
 
 ### Changed
 

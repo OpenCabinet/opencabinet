@@ -40,7 +40,7 @@ pub struct Drawing {
     pub labels: Vec<Label>,
 }
 
-/// A text centered on a point.
+/// A text centered on a point, or standing off it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Label {
     /// From the drawing's left, in millimeters.
@@ -49,6 +49,9 @@ pub struct Label {
     pub y: f32,
     /// What it says.
     pub text: String,
+    /// The direction, `y` down, in which the text stands off the point,
+    /// its nearest edge just clearing it; `(0, 0)` centers it there.
+    pub side: (f32, f32),
 }
 
 /// Room around a drawing, in millimeters.
@@ -122,12 +125,16 @@ fn from_shapes(title: String, shapes: &[Shape]) -> Drawing {
                     .expect("to a string");
             }
             Shape::Circle { .. } => {}
-            Shape::Text { at, text, .. } => {
+            Shape::Text {
+                at, text, beside, ..
+            } => {
                 let (x, y) = point(*at);
+                let (bx, by) = beside.unwrap_or_default();
                 drawing.labels.push(Label {
                     x: f32_of(x),
                     y: f32_of(y),
                     text: text.clone(),
+                    side: (f32_of(bx), f32_of(-by)),
                 });
             }
         }

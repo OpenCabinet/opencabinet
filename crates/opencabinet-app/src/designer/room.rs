@@ -25,6 +25,41 @@ pub enum OpeningKind {
     Door,
 }
 
+/// How the Walls tab shows the room.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WallView {
+    /// The edited wall's elevation.
+    #[default]
+    Elevation,
+    /// The room's plan.
+    Plan,
+    /// The plan and the elevation together.
+    PlanAndElevation,
+}
+
+impl WallView {
+    /// The view at `index` in the window's list, the elevation for any
+    /// other.
+    #[must_use]
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            1 => Self::Plan,
+            2 => Self::PlanAndElevation,
+            _ => Self::Elevation,
+        }
+    }
+
+    /// Its place in the window's list.
+    #[must_use]
+    pub fn index(self) -> i32 {
+        match self {
+            Self::Elevation => 0,
+            Self::Plan => 1,
+            Self::PlanAndElevation => 2,
+        }
+    }
+}
+
 /// Which room, wall, opening and placement are being edited, and whether
 /// the drawing shows the walls rather than the cabinet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -36,8 +71,8 @@ pub(super) struct RoomSelection {
     /// Among the edited cabinet's placements in the room.
     pub(super) placement: Option<usize>,
     pub(super) showing_walls: bool,
-    /// Whether the walls are shown in plan rather than in elevation.
-    pub(super) showing_plan: bool,
+    /// How the walls are shown.
+    pub(super) view: WallView,
 }
 
 /// A new wall: 10' long, 8' high, 4-1/2" thick.
@@ -315,10 +350,10 @@ impl Designer {
         self.room_selection.showing_walls = walls;
     }
 
-    /// Whether the walls are shown as the room's plan rather than as the
-    /// edited wall's elevation.
-    pub fn show_plan(&mut self, plan: bool) {
-        self.room_selection.showing_plan = plan;
+    /// How the walls are shown: the edited wall's elevation, the room's
+    /// plan, or both.
+    pub fn choose_view(&mut self, view: WallView) {
+        self.room_selection.view = view;
     }
 
     /// Whether the drawing can show the room's plan: while the walls are
@@ -328,10 +363,15 @@ impl Designer {
         self.room_selection.showing_walls && self.room().is_some()
     }
 
-    /// Whether the drawing shows the room's plan.
+    /// How the drawing shows the walls now: in elevation whenever the
+    /// plan is not available.
     #[must_use]
-    pub fn showing_plan(&self) -> bool {
-        self.plan_available() && self.room_selection.showing_plan
+    pub fn view(&self) -> WallView {
+        if self.plan_available() {
+            self.room_selection.view
+        } else {
+            WallView::Elevation
+        }
     }
 
     /// The edited room and wall, for the plan.

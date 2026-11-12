@@ -32,7 +32,7 @@ pub mod template;
 
 pub use front::SectionKind;
 pub use materials::{MaterialRole, RoleChoices};
-pub use room::OpeningKind;
+pub use room::{OpeningKind, WallView};
 pub use standard::{RuleKind, RuleRow};
 
 /// A length the window edits: the cabinet's overall dimensions, the edited
@@ -789,15 +789,33 @@ impl Designer {
     /// placed on, or the cabinet alone when it is not placed on a wall.
     #[must_use]
     pub fn drawing(&self) -> Drawing {
+        if self.view() != WallView::Elevation
+            && let Some(plan) = self.plan_drawing()
+        {
+            return plan;
+        }
+        self.elevation_drawing()
+    }
+
+    /// The drawing beside the first one when the plan and the elevation
+    /// are shown together: the elevation.
+    #[must_use]
+    pub fn second_drawing(&self) -> Option<Drawing> {
+        (self.view() == WallView::PlanAndElevation).then(|| self.elevation_drawing())
+    }
+
+    fn plan_drawing(&self) -> Option<Drawing> {
+        let (room, wall) = self.plan_selection()?;
+        let plan = plan(&self.document.project, room)?;
+        let show = |length: Length| self.show(length);
+        Some(drawing::plan(&plan, wall, self.product().id, &show))
+    }
+
+    /// The edited wall's elevation, or the cabinet alone.
+    fn elevation_drawing(&self) -> Drawing {
         let (project, library) = (&self.document.project, &self.document.library);
         let product = self.product();
         let show = |length: Length| self.show(length);
-        if self.showing_plan()
-            && let Some((room, wall)) = self.plan_selection()
-            && let Some(plan) = plan(project, room)
-        {
-            return drawing::plan(&plan, wall, product.id, &show);
-        }
         if let Some(elevation) = self
             .shown_wall()
             .and_then(|w| elevation(project, library, w))
@@ -1530,6 +1548,31 @@ mod tests {
         // The island stands free, not on a wall: it is drawn alone.
         designer.select(4);
         assert_eq!(designer.drawing().title, "IS48, not placed on a wall");
+    }
+
+    #[test]
+    fn the_walls_show_in_plan_in_elevation_or_both() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/kitchen.ocab");
+        let mut designer = Designer::open(&fixture).unwrap();
+        designer.choose_view(WallView::PlanAndElevation);
+        // Not while the cabinet is shown.
+        assert_eq!(designer.view(), WallView::Elevation);
+        assert!(designer.second_drawing().is_none());
+
+        designer.show_walls(true);
+        assert_eq!(designer.view(), WallView::PlanAndElevation);
+        assert_eq!(designer.drawing().title, "Plan of Kitchen");
+        assert_eq!(
+            designer.second_drawing().unwrap().title,
+            "Elevation of wall North"
+        );
+        designer.choose_view(WallView::Plan);
+        assert_eq!(designer.drawing().title, "Plan of Kitchen");
+        assert!(designer.second_drawing().is_none());
+        for index in [0, 1, 2] {
+            assert_eq!(WallView::from_index(index).index(), index);
+        }
+        assert_eq!(WallView::from_index(7), WallView::Elevation);
     }
 
     #[test]
