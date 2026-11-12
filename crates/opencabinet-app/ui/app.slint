@@ -92,11 +92,102 @@ component NameField inherits VerticalLayout {
 }
 
 // A text in the drawing, centered on a point given in millimeters from
-// the drawing's top left corner.
+// the drawing's top left corner, or standing off it in the direction
+// (side-x, side-y), `y` down, its nearest edge just clearing the point.
 export struct DrawingLabel {
     x: float,
     y: float,
     text: string,
+    side-x: float,
+    side-y: float,
+}
+
+// A drawing: its title for screen readers, its size in millimeters, its
+// paths in those millimeters and its labels.
+export struct DrawingData {
+    title: string,
+    width: float,
+    height: float,
+    lines: string,
+    marks: string,
+    highlight: string,
+    dimensions: string,
+    labels: [DrawingLabel],
+}
+
+// A drawing scaled to fit, centered.
+component DrawingView inherits Rectangle {
+    in property <DrawingData> drawing: {
+        title: "Drawing", width: 1, height: 1,
+        lines: "M 0 0", marks: "M 0 0", highlight: "M 0 0", dimensions: "M 0 0",
+    };
+    background: Palette.alternate-background;
+    accessible-role: image;
+    accessible-label: root.drawing.title;
+    // Pixels per millimeter.
+    property <float> scale: min(
+        (self.width - 32px) / 1px / root.drawing.width,
+        (self.height - 32px) / 1px / root.drawing.height);
+    property <length> drawing-w: root.drawing.width * self.scale * 1px;
+    property <length> drawing-h: root.drawing.height * self.scale * 1px;
+
+    Rectangle {
+        x: (parent.width - parent.drawing-w) / 2;
+        y: (parent.height - parent.drawing-h) / 2;
+        width: parent.drawing-w;
+        height: parent.drawing-h;
+
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: root.drawing.width;
+            viewbox-height: root.drawing.height;
+            commands: root.drawing.dimensions;
+            stroke: Palette.foreground.transparentize(55%);
+            stroke-width: 1px;
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: root.drawing.width;
+            viewbox-height: root.drawing.height;
+            commands: root.drawing.marks;
+            stroke: Palette.foreground.transparentize(55%);
+            stroke-width: 1px;
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: root.drawing.width;
+            viewbox-height: root.drawing.height;
+            commands: root.drawing.lines;
+            stroke: Palette.foreground;
+            stroke-width: 1px;
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: root.drawing.width;
+            viewbox-height: root.drawing.height;
+            commands: root.drawing.highlight;
+            stroke: Palette.accent-background;
+            stroke-width: 3px;
+        }
+        // A side counts when it is at least 22.5° off square to it.
+        for label in root.drawing.labels: Text {
+            x: label.x * root.scale * 1px
+                + (label.side-x > 0.38 ? 3px : label.side-x < -0.38 ? -203px : -100px);
+            y: label.y * root.scale * 1px
+                + (label.side-y > 0.38 ? 2px : label.side-y < -0.38 ? -18px : -8px);
+            width: 200px;
+            height: 16px;
+            horizontal-alignment: label.side-x > 0.38
+                ? left : label.side-x < -0.38 ? right : center;
+            vertical-alignment: center;
+            text: label.text;
+            font-size: 11px;
+        }
+    }
 }
 
 // A part of the edited cabinet that takes a material. `choices` says which
@@ -292,18 +383,20 @@ export component AppWindow inherits Window {
     // cabinet alone. Paths and labels are in millimeters; the drawing area
     // scales them to fit.
     // While the walls are shown: whether the drawing can show the room's
-    // plan, and whether it shows the elevation (0) or the plan (1).
+    // plan, and whether it shows the elevation (0), the plan (1) or the plan
+    // and the elevation (2), the elevation then being `second-drawing`.
     in property <bool> plan-available;
     in-out property <int> view-index;
     callback view-chosen(index: int);
-    in property <string> drawing-title: "Drawing";
-    in property <float> drawing-width: 1;
-    in property <float> drawing-height: 1;
-    in property <string> drawing-lines: "M 0 0";
-    in property <string> drawing-marks: "M 0 0";
-    in property <string> drawing-highlight: "M 0 0";
-    in property <string> drawing-dimensions: "M 0 0";
-    in property <[DrawingLabel]> drawing-labels;
+    in property <DrawingData> drawing: {
+        title: "Drawing", width: 1, height: 1,
+        lines: "M 0 0", marks: "M 0 0", highlight: "M 0 0", dimensions: "M 0 0",
+    };
+    in property <bool> split;
+    in property <DrawingData> second-drawing: {
+        title: "Drawing", width: 1, height: 1,
+        lines: "M 0 0", marks: "M 0 0", highlight: "M 0 0", dimensions: "M 0 0",
+    };
     in property <string> placement-problems;
     // The cut list: one row of text cells per part, and what could not be
     // evaluated.
@@ -1072,78 +1165,35 @@ export component AppWindow inherits Window {
                     }
                     ComboBox {
                         accessible-label: "View";
-                        width: 140px;
-                        model: ["Elevation", "Plan"];
+                        width: 180px;
+                        model: ["Elevation", "Plan", "Plan and elevation"];
                         current-index <=> root.view-index;
                         selected => { root.view-chosen(self.current-index); }
                     }
                 }
 
-                // The drawing area: millimeters scaled to fit, centered.
+                // The drawing area: one drawing, or two side by side when it is
+                // wider than high and one above the other when it is not.
                 drawing-area := Rectangle {
                     vertical-stretch: 1;
-                    background: Palette.alternate-background;
-                    accessible-role: image;
-                    accessible-label: root.drawing-title;
-                    // Pixels per millimeter.
-                    property <float> scale: min(
-                        (self.width - 32px) / 1px / root.drawing-width,
-                        (self.height - 32px) / 1px / root.drawing-height);
-                    property <length> drawing-w: root.drawing-width * self.scale * 1px;
-                    property <length> drawing-h: root.drawing-height * self.scale * 1px;
+                    property <bool> wide: self.width >= self.height;
+                    property <length> gap: 4px;
 
-                    Rectangle {
-                        x: (parent.width - parent.drawing-w) / 2;
-                        y: (parent.height - parent.drawing-h) / 2;
-                        width: parent.drawing-w;
-                        height: parent.drawing-h;
-
-                        Path {
-                            width: 100%;
-                            height: 100%;
-                            viewbox-width: root.drawing-width;
-                            viewbox-height: root.drawing-height;
-                            commands: root.drawing-dimensions;
-                            stroke: Palette.foreground.transparentize(55%);
-                            stroke-width: 1px;
-                        }
-                        Path {
-                            width: 100%;
-                            height: 100%;
-                            viewbox-width: root.drawing-width;
-                            viewbox-height: root.drawing-height;
-                            commands: root.drawing-marks;
-                            stroke: Palette.foreground.transparentize(55%);
-                            stroke-width: 1px;
-                        }
-                        Path {
-                            width: 100%;
-                            height: 100%;
-                            viewbox-width: root.drawing-width;
-                            viewbox-height: root.drawing-height;
-                            commands: root.drawing-lines;
-                            stroke: Palette.foreground;
-                            stroke-width: 1px;
-                        }
-                        Path {
-                            width: 100%;
-                            height: 100%;
-                            viewbox-width: root.drawing-width;
-                            viewbox-height: root.drawing-height;
-                            commands: root.drawing-highlight;
-                            stroke: Palette.accent-background;
-                            stroke-width: 3px;
-                        }
-                        for label in root.drawing-labels: Text {
-                            x: label.x * drawing-area.scale * 1px - 50px;
-                            y: label.y * drawing-area.scale * 1px - 8px;
-                            width: 100px;
-                            height: 16px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            text: label.text;
-                            font-size: 11px;
-                        }
+                    DrawingView {
+                        x: 0;
+                        y: 0;
+                        width: root.split && parent.wide
+                            ? (parent.width - parent.gap) / 2 : parent.width;
+                        height: root.split && !parent.wide
+                            ? (parent.height - parent.gap) / 2 : parent.height;
+                        drawing: root.drawing;
+                    }
+                    if root.split: DrawingView {
+                        x: parent.wide ? (parent.width + parent.gap) / 2 : 0;
+                        y: parent.wide ? 0 : (parent.height + parent.gap) / 2;
+                        width: parent.wide ? (parent.width - parent.gap) / 2 : parent.width;
+                        height: parent.wide ? parent.height : (parent.height - parent.gap) / 2;
+                        drawing: root.second-drawing;
                     }
 
                     if root.placement-problems != "": Text {

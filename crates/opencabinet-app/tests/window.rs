@@ -250,39 +250,69 @@ fn rooms(answers: &Rc<Answers>) {
     plan_view(&window);
 }
 
-/// On the Walls tab the drawing shows the room's plan or the wall's
-/// elevation; the choice is kept while other tabs show the cabinet.
+/// On the Walls tab the drawing shows the room's plan, the wall's
+/// elevation, or both; the choice is kept while other tabs show the
+/// cabinet.
 fn plan_view(window: &AppWindow) {
     let views = |w: &AppWindow| ElementHandle::find_by_accessible_label(w, "View").count();
     assert!(window.get_plan_available());
     assert!(views(window) > 0);
     assert_eq!(window.get_view_index(), 0);
-    assert!(window.get_drawing_title().starts_with("Elevation of wall"));
+    assert!(window.get_drawing().title.starts_with("Elevation of wall"));
 
     window.set_view_index(1);
     window.invoke_view_chosen(1);
-    assert_eq!(window.get_drawing_title(), "Plan of Laundry");
+    assert_eq!(window.get_drawing().title, "Plan of Laundry");
     assert_eq!(window.get_view_index(), 1);
     // The edited wall and the edited cabinet's footprint are outlined.
-    assert!(window.get_drawing_highlight().matches('Z').count() >= 2);
+    assert!(window.get_drawing().highlight.matches('Z').count() >= 2);
     assert!(
         window
-            .get_drawing_labels()
+            .get_drawing()
+            .labels
             .iter()
-            .any(|l| l.text == "Wall A")
+            .any(|l| l.text.starts_with("Wall A · "))
     );
 
     window.set_tab_index(0);
     window.invoke_tab_chosen(0);
     assert!(!window.get_plan_available());
-    assert_ne!(window.get_drawing_title(), "Plan of Laundry");
+    assert_ne!(window.get_drawing().title, "Plan of Laundry");
 
     window.set_tab_index(1);
     window.invoke_tab_chosen(1);
-    assert_eq!(window.get_drawing_title(), "Plan of Laundry");
+    assert_eq!(window.get_drawing().title, "Plan of Laundry");
+    assert!(!window.get_split());
+
+    // Both: the plan, and beside it the edited wall's elevation, each
+    // outlining what is edited.
+    window.set_view_index(2);
+    window.invoke_view_chosen(2);
+    assert_eq!(window.get_view_index(), 2);
+    assert!(window.get_split());
+    let (first, second) = (window.get_drawing(), window.get_second_drawing());
+    assert_eq!(first.title, "Plan of Laundry");
+    assert!(second.title.starts_with("Elevation of wall"));
+    assert!(!first.highlight.is_empty() && !second.highlight.is_empty());
+    for title in [&first.title, &second.title] {
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(window, title).count(),
+            1,
+            "{title}"
+        );
+    }
+    // The cabinet alone on the other tabs, then both again.
+    window.set_tab_index(0);
+    window.invoke_tab_chosen(0);
+    assert!(!window.get_split());
+    window.set_tab_index(1);
+    window.invoke_tab_chosen(1);
+    assert!(window.get_split());
+
     window.set_view_index(0);
     window.invoke_view_chosen(0);
-    assert!(window.get_drawing_title().starts_with("Elevation of wall"));
+    assert!(!window.get_split());
+    assert!(window.get_drawing().title.starts_with("Elevation of wall"));
 }
 
 /// A theme chosen in one window is shown at once and remembered for the next
@@ -828,7 +858,7 @@ fn walls_and_placements(window: &AppWindow) {
     assert_eq!(window.get_wall_length_reading(), "= 144\"");
     window.invoke_add_window();
     assert_eq!(items(window.get_openings()), ["Window · 36\" at 54\""]);
-    assert_eq!(window.get_drawing_title(), "Elevation of wall Wall A");
+    assert_eq!(window.get_drawing().title, "Elevation of wall Wall A");
 
     // A wall cabinet goes 54" up.
     window.set_tab_index(0);

@@ -56,20 +56,21 @@ fn line(layer: &str, from: (f64, f64), to: (f64, f64)) -> Shape {
     }
 }
 
-fn text(layer: &str, at: (f64, f64), value: String) -> Shape {
+/// A text centered on `at`, or standing off it toward `beside`.
+fn text(layer: &str, at: (f64, f64), value: String, beside: Option<(f64, f64)>) -> Shape {
     Shape::Text {
         layer: layer.into(),
         at: flip(at),
         height: TEXT_HEIGHT,
         text: value,
         centered: true,
+        beside: beside.map(flip),
     }
 }
 
-/// How wide a text is, about, as `bounds` counts it.
-#[allow(clippy::cast_precision_loss, reason = "a short label")]
-fn text_width(value: &str) -> f64 {
-    value.chars().count() as f64 * TEXT_HEIGHT * 0.6
+fn unit((x, y): (f64, f64)) -> (f64, f64) {
+    let long = x.hypot(y).max(f64::MIN_POSITIVE);
+    (x / long, y / long)
 }
 
 /// The outline from `points`, in dashes along each side.
@@ -129,11 +130,7 @@ pub fn plan_shapes(
                 add(face, out, w.thickness + TICK),
                 add(on_line, out, TICK),
             ));
-            let along = {
-                let (dx, dy) = (end.0 - start.0, end.1 - start.1);
-                let long = dx.hypot(dy).max(f64::MIN_POSITIVE);
-                (dx / long, dy / long)
-            };
+            let along = unit((end.0 - start.0, end.1 - start.1));
             let slant = (
                 (along.0 + out.0) * TICK / 2.0,
                 (along.1 + out.1) * TICK / 2.0,
@@ -144,21 +141,15 @@ pub fn plan_shapes(
                 (on_line.0 + slant.0, on_line.1 + slant.1),
             ));
         }
-        let value = show(w.length);
+        // The name and the length in one text beyond the line, so that
+        // they cannot cover each other however small the plan is drawn.
         let middle = (f64::midpoint(a.0, b.0), f64::midpoint(a.1, b.1));
-        // Texts stack away from the wall: by their height when the wall
-        // runs across the drawing, by their widths when it runs down it.
-        let (value_off, name_off) = if out.1.abs() >= out.0.abs() {
-            (TICK + TEXT_HEIGHT, TICK + TEXT_HEIGHT * 2.5)
-        } else {
-            let half = text_width(&value) / 2.0;
-            (
-                TICK + half,
-                TICK + 2.0 * half + TEXT_HEIGHT + text_width(&w.name) / 2.0,
-            )
-        };
-        shapes.push(text(DIMENSIONS, add(middle, out, value_off), value));
-        shapes.push(text(LABEL, add(middle, out, name_off), w.name.clone()));
+        shapes.push(text(
+            DIMENSIONS,
+            add(middle, out, TICK),
+            format!("{} · {}", w.name, show(w.length)),
+            Some(out),
+        ));
     }
     for cabinet in &plan.cabinets {
         if cabinet.above {
@@ -169,11 +160,24 @@ pub fn plan_shapes(
         if Some(cabinet.product) == product {
             shapes.push(polygon(SELECTED, &cabinet.corners));
         }
-        let center = cabinet
-            .corners
-            .iter()
-            .fold((0.0, 0.0), |c, p| (c.0 + p.0 / 4.0, c.1 + p.1 / 4.0));
-        shapes.push(text(LABEL, center, cabinet.label.clone()));
+        // The label in the middle; above the floor, inside the back, so
+        // that a wall cabinet's stays clear of the base cabinet's below.
+        let [left_back, right_back, _, left_front] = cabinet.corners;
+        let label = cabinet.label.clone();
+        shapes.push(if cabinet.above {
+            let back = (
+                f64::midpoint(left_back.0, right_back.0),
+                f64::midpoint(left_back.1, right_back.1),
+            );
+            let inward = unit((left_front.0 - left_back.0, left_front.1 - left_back.1));
+            text(LABEL, back, label, Some(inward))
+        } else {
+            let center = cabinet
+                .corners
+                .iter()
+                .fold((0.0, 0.0), |c, p| (c.0 + p.0 / 4.0, c.1 + p.1 / 4.0));
+            text(LABEL, center, label, None)
+        });
     }
     shapes
 }
@@ -223,17 +227,22 @@ mod tests {
                 > 4
         );
         assert!(!shapes.iter().any(|s| s.layer() == CABINETS));
-        // The value above the line, and the name above the value.
-        let texts: Vec<(&str, f64)> = shapes
+        // The name and the length beyond the line, up; the wall cabinet's
+        // label inside its back, down toward the room.
+        let texts: Vec<_> = shapes
             .iter()
             .filter_map(|s| match s {
-                Shape::Text { text, at, .. } => Some((text.as_str(), at.1)),
+                Shape::Text {
+                    text, at, beside, ..
+                } => Some((text.as_str(), *at, *beside)),
                 _ => None,
             })
             .collect();
-        assert_eq!(texts[0].0, "1000000000");
-        assert_eq!(texts[1].0, "North");
-        assert!(texts[1].1 > texts[0].1 && texts[0].1 > 350.0);
-        assert_eq!(texts[2].0, "W30");
+        assert_eq!(texts[0].0, "North · 1000000000");
+        assert_eq!(texts[0].1, (500.0, 375.0));
+        assert_eq!(texts[0].2, Some((0.0, 1.0)));
+        assert_eq!(texts[1].0, "W30");
+        assert_eq!(texts[1].1, (381.0, -0.0));
+        assert_eq!(texts[1].2, Some((0.0, -1.0)));
     }
 }

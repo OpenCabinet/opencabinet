@@ -23,7 +23,7 @@ use slint::{
 };
 
 use crate::designer::{
-    CabinetKind, Designer, Dimension, OpeningKind, RoleChoices, RuleKind, template,
+    CabinetKind, Designer, Dimension, OpeningKind, RoleChoices, RuleKind, WallView, template,
 };
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
 use crate::preferences::{Preferences, Theme};
@@ -810,7 +810,19 @@ impl App {
 /// The drawing area: the elevation or the cabinet, and what is wrong with
 /// the placements.
 fn show_drawing(window: &AppWindow, designer: &Designer) {
-    let drawing = designer.drawing();
+    window.set_plan_available(designer.plan_available());
+    window.set_view_index(designer.view().index());
+    window.set_drawing(drawing_data(designer.drawing()));
+    let second = designer.second_drawing();
+    window.set_split(second.is_some());
+    if let Some(second) = second {
+        window.set_second_drawing(drawing_data(second));
+    }
+    window.set_placement_problems(designer.placement_problems().join("\n").into());
+}
+
+/// A drawing as the window takes it.
+fn drawing_data(drawing: drawing::Drawing) -> ui::DrawingData {
     // An empty path is not drawn; a move alone draws nothing.
     let path = |commands: String| {
         if commands.is_empty() {
@@ -819,15 +831,6 @@ fn show_drawing(window: &AppWindow, designer: &Designer) {
             commands.into()
         }
     };
-    window.set_plan_available(designer.plan_available());
-    window.set_view_index(i32::from(designer.showing_plan()));
-    window.set_drawing_title(drawing.title.into());
-    window.set_drawing_width(drawing.width);
-    window.set_drawing_height(drawing.height);
-    window.set_drawing_lines(path(drawing.lines));
-    window.set_drawing_marks(path(drawing.marks));
-    window.set_drawing_highlight(path(drawing.highlight));
-    window.set_drawing_dimensions(path(drawing.dimensions));
     let labels: Vec<ui::DrawingLabel> = drawing
         .labels
         .into_iter()
@@ -835,10 +838,20 @@ fn show_drawing(window: &AppWindow, designer: &Designer) {
             x: l.x,
             y: l.y,
             text: l.text.into(),
+            side_x: l.side.0,
+            side_y: l.side.1,
         })
         .collect();
-    window.set_drawing_labels(ModelRc::new(VecModel::from(labels)));
-    window.set_placement_problems(designer.placement_problems().join("\n").into());
+    ui::DrawingData {
+        title: drawing.title.into(),
+        width: drawing.width,
+        height: drawing.height,
+        lines: path(drawing.lines),
+        marks: path(drawing.marks),
+        highlight: path(drawing.highlight),
+        dimensions: path(drawing.dimensions),
+        labels: ModelRc::new(VecModel::from(labels)),
+    }
 }
 
 fn file_name(path: &Path) -> String {
@@ -964,7 +977,9 @@ fn connect_room(window: &AppWindow, app: &Rc<App>) {
     let handle = Rc::clone(app);
     window.on_tab_chosen(move |tab| handle.update(|d| d.show_walls(tab == 1)));
     let handle = Rc::clone(app);
-    window.on_view_chosen(move |view| handle.update(|d| d.show_plan(view == 1)));
+    window.on_view_chosen(move |view| {
+        handle.update(|d| d.choose_view(WallView::from_index(view)));
+    });
     let (handle, choose) = (Rc::clone(app), chosen(Designer::select_room));
     window.on_room_chosen(move |i| handle.update(|d| choose(d, i)));
     let handle = Rc::clone(app);
