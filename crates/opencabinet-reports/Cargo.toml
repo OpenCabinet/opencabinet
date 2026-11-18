@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "opencabinet-reports"
+description = "OpenCabinet's reports: the cut list, as shown, as CSV and as PDF; parts as DXF"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono = "0.4.45"
+dxf = { version = "0.6.2", default-features = false }
+krilla = { version = "0.8.2", default-features = false, features = ["simple-text"] }
+opencabinet-eval = { workspace = true }
+opencabinet-model = { workspace = true }
+skrifa = "0.42.1"
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

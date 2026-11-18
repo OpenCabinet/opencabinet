@@ -1,0 +1,32 @@
+{
+  "materials": [
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000101",
+      "version": 1,
+      "name": "Maple plywood 3/4\"",
+      "nominalThickness": 19050000,
+      "actualThickness": 18000000,
+      "length": 2463800000,
+      "width": 1244600000,
+      "grain": "length",
+      "finish": "prefinished"
+    }
+  ],
+  "edgeBands": [],
+  "hardware": [],
+  "standards": [
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000131",
+      "version": 1,
+      "name": "Shop frameless, 32 mm",
+      "method": "frameless",
+      "rules": {}
+    }
+  ],
+  "countertops": [
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000141",
+      "name": "Quartz 3 cm"
+    }
+  ]
+}

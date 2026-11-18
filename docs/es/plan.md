@@ -357,9 +357,9 @@ Resumen de puertas:
 ### Decisiones a cerrar (Fases 0 y 1)
 
 - [ ] Nombre del proyecto, verificado en GitHub, dominio y registros de marcas
-- [ ] GPL-3.0-or-later o GPL-3.0-only
+- [x] GPL-3.0-or-later o GPL-3.0-only (ADR-0013: "or later")
 - [ ] Plugins en el mismo proceso o aislados
-- [ ] Lenguaje y stack técnico
+- [x] Lenguaje y stack técnico (ADR-0011: Rust; ADR-0012: Slint)
 - [ ] Modelo de unidades y precisión
 - [ ] Segundo propietario de la organización de GitHub
 - [ ] Definición final de "gratuita"

@@ -1,0 +1,1226 @@
+// SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+import {
+    Button, ComboBox, LineEdit, Palette, ScrollView, StandardListView, StandardTableView,
+    TabWidget,
+} from "std-widgets.slint";
+
+// The colors of errors and warnings, which the style's palette does not have.
+// Each has a version for a light and for a dark background, so that the text
+// keeps a contrast of at least 4.5:1 on the window's backgrounds (#FAFAFA and
+// #F0F0F0 light, #1C1C1C and #2C2C2C dark): 4.93 and 5.02 light, 6.12 and
+// 8.07 dark. The background tells which applies, also when the window follows
+// the system.
+global Signal {
+    out property <bool> dark: Palette.background.to-oklch().lightness < 0.5;
+    out property <color> error: dark ? #ff8a80 : #c62828;
+    out property <color> warning: dark ? #ffb74d : #9a5500;
+}
+
+// A length field: a label, the text as typed, and below it either the value
+// read back in the display precision or why it cannot be read.
+component LengthField inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text;
+    in property <string> reading;
+    in property <string> error;
+    callback edited(text: string);
+    spacing: 4px;
+
+    Text { text: root.label; }
+    LineEdit {
+        accessible-label: root.label;
+        text <=> root.text;
+        edited(text) => { root.edited(text); }
+    }
+    Text {
+        text: root.error != "" ? root.error : root.reading;
+        color: root.error != "" ? Signal.error : Palette.foreground.transparentize(40%);
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
+// A field for a whole number: a label, the text as typed, and below it why
+// it cannot be read, or a note.
+component CountField inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text;
+    in property <string> error;
+    in property <string> note;
+    in property <bool> enabled: true;
+    callback edited(text: string);
+    spacing: 4px;
+
+    Text { text: root.label; }
+    LineEdit {
+        accessible-label: root.label;
+        enabled: root.enabled;
+        text <=> root.text;
+        edited(text) => { root.edited(text); }
+    }
+    if root.error != "" || root.note != "": Text {
+        text: root.error != "" ? root.error : root.note;
+        color: root.error != "" ? Signal.error : Palette.foreground.transparentize(40%);
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
+// A field for a name: a label, the text as typed, and below it why it cannot
+// be used.
+component NameField inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text;
+    in property <string> error;
+    callback edited(text: string);
+    spacing: 4px;
+
+    Text { text: root.label; }
+    LineEdit {
+        accessible-label: root.label;
+        text <=> root.text;
+        edited(text) => { root.edited(text); }
+    }
+    if root.error != "": Text {
+        text: root.error;
+        color: Signal.error;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
+// A text in the drawing, centered on a point given in millimeters from
+// the drawing's top left corner.
+export struct DrawingLabel {
+    x: float,
+    y: float,
+    text: string,
+}
+
+// A part of the edited cabinet that takes a material. `choices` says which
+// list it chooses from: 0 sheets; 1 and 2 the same, first offering the doors'
+// or the case's; 3 edge bands.
+export struct MaterialRole {
+    key: string,
+    label: string,
+    choices: int,
+    index: int,
+}
+
+// A row of the Standard tab. `kind` is 0 for the title of a group, 1 for the
+// title of a group the standard does not have, 2 for a field and 3 for a list.
+export struct RuleRow {
+    key: string,
+    label: string,
+    kind: int,
+    text: string,
+    reading: string,
+    error: string,
+    options: [string],
+    index: int,
+}
+
+export component AppWindow inherits Window {
+    // 0 follows the system, 1 is light and 2 is dark.
+    in property <int> theme-index;
+    in property <string> system-theme-title: "Same as the system";
+    callback theme-chosen(index: int);
+    // Whether the window shows dark backgrounds now, for the tests.
+    out property <bool> dark-shown: Signal.dark;
+    changed theme-index => {
+        // Unknown leaves the choice to the system, as when nothing is set.
+        Palette.color-scheme = root.theme-index == 1 ? ColorScheme.light
+            : root.theme-index == 2 ? ColorScheme.dark : ColorScheme.unknown;
+    }
+    in property <string> window-title: "OpenCabinet Designer";
+    title: root.window-title;
+    // Usable on the 1366 × 768 screen of the reference computer (ADR-0014).
+    preferred-width: 1280px;
+    preferred-height: 720px;
+    min-width: 960px;
+    min-height: 600px;
+
+    in property <bool> metric;
+    // The project's cabinets, and which one is being edited.
+    in property <[StandardListViewItem]> cabinets;
+    in-out property <int> cabinet-index;
+    in property <string> cabinet-label: "Cabinet";
+    in-out property <string> label-text;
+    in property <string> label-error;
+    // The kinds of cabinet offered, and which one is being edited.
+    in property <[string]> kinds;
+    in-out property <int> kind-index;
+    // 0 for slab fronts, 1 for five-piece.
+    in-out property <int> style-index;
+    // Whether the cabinet is a blind corner, and its blind side: 0 for
+    // left, 1 for right.
+    in property <bool> blind;
+    in-out property <int> blind-side-index;
+    in-out property <string> blind-width-text;
+    in property <string> blind-width-reading;
+    in property <string> blind-width-error;
+    // How many the job needs, and how many are placed on walls instead.
+    in-out property <string> quantity-text;
+    in property <string> quantity-error;
+    in property <bool> cabinet-placed;
+    in property <string> placed-note;
+    // The sections of the front, from top to bottom, and the edited one;
+    // the note says why a front cannot be edited here.
+    in property <[StandardListViewItem]> sections;
+    in-out property <int> section-index;
+    in property <string> front-note;
+    in property <[string]> section-kinds;
+    in-out property <int> section-kind-index;
+    in-out property <string> section-height-text;
+    in property <string> section-height-reading;
+    in property <string> section-height-error;
+    in property <bool> section-has-doors;
+    in property <bool> section-single-door;
+    in-out property <int> door-count-index;
+    in-out property <int> hinge-index;
+    in property <bool> section-has-shelves;
+    in-out property <string> shelves-text;
+    in property <string> shelves-error;
+    in property <string> status;
+    in-out property <string> width-text;
+    in-out property <string> height-text;
+    in-out property <string> depth-text;
+    in property <string> width-reading;
+    in property <string> height-reading;
+    in property <string> depth-reading;
+    in property <string> width-error;
+    in property <string> height-error;
+    in property <string> depth-error;
+    // The left panel's tab: 0 for the cabinets, 1 for the walls, 2 for the
+    // materials, 3 for the standard.
+    in-out property <int> tab-index;
+    // The project's rooms and which one is being edited, with its name as
+    // typed and why it cannot be used.
+    in property <[string]> room-names;
+    in-out property <int> room-index;
+    in property <bool> has-room;
+    in-out property <string> room-name-text;
+    in property <string> room-name-error;
+    // The room's walls, the edited wall's openings, and the edited
+    // cabinet's placements, with which of each is being edited.
+    in property <[StandardListViewItem]> walls;
+    in-out property <int> wall-index;
+    in property <[string]> wall-names;
+    in property <[StandardListViewItem]> openings;
+    in-out property <int> opening-index;
+    in property <[StandardListViewItem]> placements;
+    in-out property <int> placement-index;
+    in-out property <int> placement-wall-index;
+    in property <bool> has-wall;
+    in property <bool> has-opening;
+    in property <bool> has-placement;
+    in-out property <string> wall-length-text;
+    in property <string> wall-length-reading;
+    in property <string> wall-length-error;
+    in-out property <string> wall-height-text;
+    in property <string> wall-height-reading;
+    in property <string> wall-height-error;
+    in-out property <string> opening-offset-text;
+    in property <string> opening-offset-reading;
+    in property <string> opening-offset-error;
+    in-out property <string> opening-width-text;
+    in property <string> opening-width-reading;
+    in property <string> opening-width-error;
+    in-out property <string> opening-height-text;
+    in property <string> opening-height-reading;
+    in property <string> opening-height-error;
+    in-out property <string> opening-sill-text;
+    in property <string> opening-sill-reading;
+    in property <string> opening-sill-error;
+    in-out property <string> placement-offset-text;
+    in property <string> placement-offset-reading;
+    in property <string> placement-offset-error;
+    in-out property <string> placement-elevation-text;
+    in property <string> placement-elevation-reading;
+    in property <string> placement-elevation-error;
+    // The project's sheets and edge bands, with which of each is being edited.
+    in property <[StandardListViewItem]> sheets;
+    in-out property <int> sheet-index;
+    in property <bool> has-sheet;
+    in-out property <string> sheet-name-text;
+    in property <string> sheet-name-error;
+    in-out property <string> sheet-nominal-text;
+    in property <string> sheet-nominal-reading;
+    in property <string> sheet-nominal-error;
+    in-out property <string> sheet-actual-text;
+    in property <string> sheet-actual-reading;
+    in property <string> sheet-actual-error;
+    in-out property <string> sheet-length-text;
+    in property <string> sheet-length-reading;
+    in property <string> sheet-length-error;
+    in-out property <string> sheet-width-text;
+    in property <string> sheet-width-reading;
+    in property <string> sheet-width-error;
+    // 0 for no grain, 1 for a grain along the length.
+    in-out property <int> sheet-grain-index;
+    in property <string> sheet-note;
+    in property <[StandardListViewItem]> bands;
+    in-out property <int> band-index;
+    in property <bool> has-band;
+    in-out property <string> band-name-text;
+    in property <string> band-name-error;
+    in-out property <string> band-thickness-text;
+    in property <string> band-thickness-reading;
+    in property <string> band-thickness-error;
+    in-out property <string> band-width-text;
+    in property <string> band-width-reading;
+    in property <string> band-width-error;
+    // What the edited cabinet's parts are made of, and the lists to choose
+    // from.
+    in-out property <[MaterialRole]> material-roles;
+    in property <[string]> role-sheets;
+    in property <[string]> role-sheets-or-doors;
+    in property <[string]> role-sheets-or-case;
+    in property <[string]> role-bands;
+    // The project's standards, the one the Standard tab edits, its rules, and
+    // the one the edited cabinet is built by.
+    in property <[string]> standard-names;
+    in-out property <int> standard-index;
+    in-out property <int> cabinet-standard-index;
+    in property <string> standard-note;
+    in-out property <string> standard-name-text;
+    in property <string> standard-name-error;
+    in-out property <[RuleRow]> rule-rows;
+    // The drawing: the elevation of the edited cabinet's wall, or the
+    // cabinet alone. Paths and labels are in millimeters; the drawing area
+    // scales them to fit.
+    // While the walls are shown: whether the drawing can show the room's
+    // plan, and whether it shows the elevation (0) or the plan (1).
+    in property <bool> plan-available;
+    in-out property <int> view-index;
+    callback view-chosen(index: int);
+    in property <string> drawing-title: "Drawing";
+    in property <float> drawing-width: 1;
+    in property <float> drawing-height: 1;
+    in property <string> drawing-lines: "M 0 0";
+    in property <string> drawing-marks: "M 0 0";
+    in property <string> drawing-highlight: "M 0 0";
+    in property <string> drawing-dimensions: "M 0 0";
+    in property <[DrawingLabel]> drawing-labels;
+    in property <string> placement-problems;
+    // The cut list: one row of text cells per part, and what could not be
+    // evaluated.
+    in property <[[StandardListViewItem]]> cut-rows;
+    in property <string> cut-problems;
+    // The bill of materials: one row of text cells per thing to buy, and
+    // how it was counted.
+    in property <[[StandardListViewItem]]> material-rows;
+    in property <string> material-notes;
+
+    callback width-edited(text: string);
+    callback height-edited(text: string);
+    callback depth-edited(text: string);
+    callback units-chosen(metric: bool);
+    callback wall-length-edited(text: string);
+    callback wall-height-edited(text: string);
+    callback opening-offset-edited(text: string);
+    callback opening-width-edited(text: string);
+    callback opening-height-edited(text: string);
+    callback opening-sill-edited(text: string);
+    callback placement-offset-edited(text: string);
+    callback placement-elevation-edited(text: string);
+    callback tab-chosen(index: int);
+    callback room-chosen(index: int);
+    callback add-room();
+    callback delete-room();
+    callback room-name-edited(text: string);
+    callback wall-chosen(index: int);
+    callback add-wall();
+    callback delete-wall();
+    callback opening-chosen(index: int);
+    callback add-window();
+    callback add-door();
+    callback delete-opening();
+    callback placement-chosen(index: int);
+    callback place-cabinet();
+    callback unplace-cabinet();
+    callback placement-wall-chosen(index: int);
+    callback cabinet-chosen(index: int);
+    callback add-cabinet();
+    callback duplicate-cabinet();
+    callback delete-cabinet();
+    callback label-edited(text: string);
+    callback kind-chosen(index: int);
+    callback style-chosen(five-piece: bool);
+    callback blind-side-chosen(index: int);
+    callback blind-width-edited(text: string);
+    callback quantity-edited(text: string);
+    callback section-chosen(index: int);
+    callback add-section();
+    callback delete-section();
+    callback move-section(up: bool);
+    callback section-kind-chosen(index: int);
+    callback section-height-edited(text: string);
+    callback door-count-chosen(index: int);
+    callback hinge-chosen(index: int);
+    callback shelves-edited(text: string);
+    callback sheet-chosen(index: int);
+    callback add-sheet();
+    callback duplicate-sheet();
+    callback delete-sheet();
+    callback sheet-name-edited(text: string);
+    callback sheet-nominal-edited(text: string);
+    callback sheet-actual-edited(text: string);
+    callback sheet-length-edited(text: string);
+    callback sheet-width-edited(text: string);
+    callback sheet-grain-chosen(index: int);
+    callback band-chosen(index: int);
+    callback add-band();
+    callback duplicate-band();
+    callback delete-band();
+    callback band-name-edited(text: string);
+    callback band-thickness-edited(text: string);
+    callback band-width-edited(text: string);
+    callback material-role-chosen(key: string, index: int);
+    callback apply-materials-to-all();
+    callback standard-chosen(index: int);
+    callback cabinet-standard-chosen(index: int);
+    callback standard-name-edited(text: string);
+    callback rule-edited(key: string, text: string);
+    callback rule-chosen(key: string, index: int);
+    callback add-rule-group(key: string);
+    // Whether the user's folder holds a shop template.
+    in property <bool> has-shop-template;
+    // `true` for a face frame project, `false` for a frameless one.
+    callback new-project(face-frame: bool);
+    callback open-project();
+    callback save-project();
+    callback save-project-as();
+    // `true` for semicolons between fields, as Excel in Spanish expects.
+    callback export-cut-list(semicolon: bool);
+    callback export-cut-list-pdf();
+    // `true` for semicolons between fields, as for the cut list.
+    callback export-materials(semicolon: bool);
+    callback export-parts-dxf();
+    callback export-elevations-pdf();
+    callback export-elevations-dxf();
+    callback save-shop-template();
+    callback remove-shop-template();
+    callback about();
+    callback quit();
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "New frameless project";
+                activated => { root.new-project(false); }
+            }
+            MenuItem {
+                title: "New face frame project";
+                activated => { root.new-project(true); }
+            }
+            MenuItem { title: "Open…"; activated => { root.open-project(); } }
+            MenuItem { title: "Save"; activated => { root.save-project(); } }
+            MenuItem { title: "Save as…"; activated => { root.save-project-as(); } }
+            MenuSeparator { }
+            MenuItem {
+                title: "Save as shop template";
+                activated => { root.save-shop-template(); }
+            }
+            MenuItem {
+                title: "Remove shop template";
+                enabled: root.has-shop-template;
+                activated => { root.remove-shop-template(); }
+            }
+            MenuSeparator { }
+            Menu {
+                title: "Export cut list";
+                MenuItem {
+                    title: "PDF…";
+                    activated => { root.export-cut-list-pdf(); }
+                }
+                MenuItem {
+                    title: "CSV with commas…";
+                    activated => { root.export-cut-list(false); }
+                }
+                MenuItem {
+                    title: "CSV with semicolons, for Excel in Spanish…";
+                    activated => { root.export-cut-list(true); }
+                }
+            }
+            Menu {
+                title: "Export materials";
+                MenuItem {
+                    title: "CSV with commas…";
+                    activated => { root.export-materials(false); }
+                }
+                MenuItem {
+                    title: "CSV with semicolons, for Excel in Spanish…";
+                    activated => { root.export-materials(true); }
+                }
+            }
+            MenuItem {
+                title: "Export parts as DXF…";
+                activated => { root.export-parts-dxf(); }
+            }
+            Menu {
+                title: "Export elevations";
+                MenuItem {
+                    title: "PDF…";
+                    activated => { root.export-elevations-pdf(); }
+                }
+                MenuItem {
+                    title: "DXF…";
+                    activated => { root.export-elevations-dxf(); }
+                }
+            }
+            MenuSeparator { }
+            MenuItem { title: "Quit"; activated => { root.quit(); } }
+        }
+        Menu {
+            title: "Units";
+            MenuItem {
+                title: "Imperial (inches)";
+                checkable: true;
+                checked: !root.metric;
+                activated => { root.units-chosen(false); }
+            }
+            MenuItem {
+                title: "Metric (millimeters)";
+                checkable: true;
+                checked: root.metric;
+                activated => { root.units-chosen(true); }
+            }
+        }
+        Menu {
+            title: "View";
+            Menu {
+                title: "Theme";
+                MenuItem {
+                    title: root.system-theme-title;
+                    checkable: true;
+                    checked: root.theme-index == 0;
+                    activated => { root.theme-chosen(0); }
+                }
+                MenuItem {
+                    title: "Light";
+                    checkable: true;
+                    checked: root.theme-index == 1;
+                    activated => { root.theme-chosen(1); }
+                }
+                MenuItem {
+                    title: "Dark";
+                    checkable: true;
+                    checked: root.theme-index == 2;
+                    activated => { root.theme-chosen(2); }
+                }
+            }
+        }
+        Menu {
+            title: "Help";
+            MenuItem { title: "About OpenCabinet"; activated => { root.about(); } }
+        }
+    }
+
+    VerticalLayout {
+        HorizontalLayout {
+            vertical-stretch: 1;
+
+            TabWidget {
+                // Four tabs have to fit their titles.
+                width: 320px;
+                current-index <=> root.tab-index;
+                changed current-index => { root.tab-chosen(self.current-index); }
+
+                Tab {
+                    title: "Cabinets";
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        StandardListView {
+                            accessible-label: "Cabinets";
+                            vertical-stretch: 1;
+                            model: root.cabinets;
+                            current-item <=> root.cabinet-index;
+                            current-item-changed(index) => { root.cabinet-chosen(index); }
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Button { text: "Add"; clicked => { root.add-cabinet(); } }
+                            Button { text: "Duplicate"; clicked => { root.duplicate-cabinet(); } }
+                            Button { text: "Delete"; clicked => { root.delete-cabinet(); } }
+                        }
+                    }
+                }
+
+                Tab {
+                    title: "Walls";
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            alignment: start;
+                            Text { text: "Room"; font-weight: 700; }
+                            if root.has-room: ComboBox {
+                                accessible-label: "Room";
+                                model: root.room-names;
+                                current-index <=> root.room-index;
+                                selected => { root.room-chosen(self.current-index); }
+                            }
+                            if root.has-room: VerticalLayout {
+                                spacing: 4px;
+                                Text { text: "Room name"; }
+                                LineEdit {
+                                    accessible-label: "Room name";
+                                    text <=> root.room-name-text;
+                                    edited(text) => { root.room-name-edited(text); }
+                                }
+                                if root.room-name-error != "": Text {
+                                    text: root.room-name-error;
+                                    color: Signal.error;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Button { text: "Add room"; clicked => { root.add-room(); } }
+                                Button { text: "Delete room"; clicked => { root.delete-room(); } }
+                            }
+                            Text { text: "Walls"; font-weight: 700; }
+                            StandardListView {
+                                accessible-label: "Walls";
+                                height: 110px;
+                                model: root.walls;
+                                current-item <=> root.wall-index;
+                                current-item-changed(index) => { root.wall-chosen(index); }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Button { text: "Add wall"; clicked => { root.add-wall(); } }
+                                Button { text: "Delete"; clicked => { root.delete-wall(); } }
+                            }
+                            if root.has-wall: VerticalLayout {
+                                spacing: 8px;
+                                LengthField {
+                                    label: "Wall length";
+                                    text <=> root.wall-length-text;
+                                    reading: root.wall-length-reading;
+                                    error: root.wall-length-error;
+                                    edited(text) => { root.wall-length-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Wall height";
+                                    text <=> root.wall-height-text;
+                                    reading: root.wall-height-reading;
+                                    error: root.wall-height-error;
+                                    edited(text) => { root.wall-height-edited(text); }
+                                }
+                                Text { text: "Windows and doors"; font-weight: 700; }
+                                StandardListView {
+                                    accessible-label: "Windows and doors";
+                                    height: 80px;
+                                    model: root.openings;
+                                    current-item <=> root.opening-index;
+                                    current-item-changed(index) => { root.opening-chosen(index); }
+                                }
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Button { text: "Window"; clicked => { root.add-window(); } }
+                                    Button { text: "Door"; clicked => { root.add-door(); } }
+                                    Button { text: "Delete"; clicked => { root.delete-opening(); } }
+                                }
+                                if root.has-opening: VerticalLayout {
+                                    spacing: 8px;
+                                    LengthField {
+                                        label: "Opening from wall start";
+                                        text <=> root.opening-offset-text;
+                                        reading: root.opening-offset-reading;
+                                        error: root.opening-offset-error;
+                                        edited(text) => { root.opening-offset-edited(text); }
+                                    }
+                                    LengthField {
+                                        label: "Opening width";
+                                        text <=> root.opening-width-text;
+                                        reading: root.opening-width-reading;
+                                        error: root.opening-width-error;
+                                        edited(text) => { root.opening-width-edited(text); }
+                                    }
+                                    LengthField {
+                                        label: "Opening height";
+                                        text <=> root.opening-height-text;
+                                        reading: root.opening-height-reading;
+                                        error: root.opening-height-error;
+                                        edited(text) => { root.opening-height-edited(text); }
+                                    }
+                                    LengthField {
+                                        label: "Sill height";
+                                        text <=> root.opening-sill-text;
+                                        reading: root.opening-sill-reading;
+                                        error: root.opening-sill-error;
+                                        edited(text) => { root.opening-sill-edited(text); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Tab {
+                    title: "Materials";
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            alignment: start;
+                            Text { text: "Sheets"; font-weight: 700; }
+                            StandardListView {
+                                accessible-label: "Sheets";
+                                height: 110px;
+                                model: root.sheets;
+                                current-item <=> root.sheet-index;
+                                current-item-changed(index) => { root.sheet-chosen(index); }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Button { text: "Add"; clicked => { root.add-sheet(); } }
+                                Button { text: "Duplicate"; clicked => { root.duplicate-sheet(); } }
+                                Button { text: "Delete"; clicked => { root.delete-sheet(); } }
+                            }
+                            if root.has-sheet: VerticalLayout {
+                                spacing: 8px;
+                                NameField {
+                                    label: "Sheet name";
+                                    text <=> root.sheet-name-text;
+                                    error: root.sheet-name-error;
+                                    edited(text) => { root.sheet-name-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Sold as";
+                                    text <=> root.sheet-nominal-text;
+                                    reading: root.sheet-nominal-reading;
+                                    error: root.sheet-nominal-error;
+                                    edited(text) => { root.sheet-nominal-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Real thickness";
+                                    text <=> root.sheet-actual-text;
+                                    reading: root.sheet-actual-reading;
+                                    error: root.sheet-actual-error;
+                                    edited(text) => { root.sheet-actual-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Sheet length";
+                                    text <=> root.sheet-length-text;
+                                    reading: root.sheet-length-reading;
+                                    error: root.sheet-length-error;
+                                    edited(text) => { root.sheet-length-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Sheet width";
+                                    text <=> root.sheet-width-text;
+                                    reading: root.sheet-width-reading;
+                                    error: root.sheet-width-error;
+                                    edited(text) => { root.sheet-width-edited(text); }
+                                }
+                                if root.sheet-note != "": Text {
+                                    text: root.sheet-note;
+                                    color: Palette.foreground.transparentize(40%);
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                Text { text: "Grain"; }
+                                ComboBox {
+                                    accessible-label: "Grain";
+                                    model: ["None", "Along the length"];
+                                    current-index <=> root.sheet-grain-index;
+                                    selected => { root.sheet-grain-chosen(self.current-index); }
+                                }
+                            }
+                            Text { text: "Edge bands"; font-weight: 700; }
+                            StandardListView {
+                                accessible-label: "Edge bands";
+                                height: 80px;
+                                model: root.bands;
+                                current-item <=> root.band-index;
+                                current-item-changed(index) => { root.band-chosen(index); }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Button { text: "Add"; clicked => { root.add-band(); } }
+                                Button { text: "Duplicate"; clicked => { root.duplicate-band(); } }
+                                Button { text: "Delete"; clicked => { root.delete-band(); } }
+                            }
+                            if root.has-band: VerticalLayout {
+                                spacing: 8px;
+                                NameField {
+                                    label: "Band name";
+                                    text <=> root.band-name-text;
+                                    error: root.band-name-error;
+                                    edited(text) => { root.band-name-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Band thickness";
+                                    text <=> root.band-thickness-text;
+                                    reading: root.band-thickness-reading;
+                                    error: root.band-thickness-error;
+                                    edited(text) => { root.band-thickness-edited(text); }
+                                }
+                                LengthField {
+                                    label: "Band width";
+                                    text <=> root.band-width-text;
+                                    reading: root.band-width-reading;
+                                    error: root.band-width-error;
+                                    edited(text) => { root.band-width-edited(text); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Tab {
+                    title: "Standard";
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            alignment: start;
+                            Text { text: "Standard to edit"; }
+                            ComboBox {
+                                accessible-label: "Standard to edit";
+                                model: root.standard-names;
+                                current-index <=> root.standard-index;
+                                selected => { root.standard-chosen(self.current-index); }
+                            }
+                            Text {
+                                text: root.standard-note;
+                                color: Palette.foreground.transparentize(40%);
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            NameField {
+                                label: "Standard name";
+                                text <=> root.standard-name-text;
+                                error: root.standard-name-error;
+                                edited(text) => { root.standard-name-edited(text); }
+                            }
+                            for row in root.rule-rows: VerticalLayout {
+                                spacing: 4px;
+                                if row.kind == 0: Text {
+                                    text: row.label;
+                                    font-weight: 700;
+                                }
+                                if row.kind == 1: HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: row.label + ": none";
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    Button {
+                                        text: "Add";
+                                        clicked => { root.add-rule-group(row.key); }
+                                    }
+                                }
+                                if row.kind == 2: LengthField {
+                                    label: row.label;
+                                    text <=> row.text;
+                                    reading: row.reading;
+                                    error: row.error;
+                                    edited(text) => { root.rule-edited(row.key, text); }
+                                }
+                                if row.kind == 3: VerticalLayout {
+                                    spacing: 4px;
+                                    Text { text: row.label; }
+                                    ComboBox {
+                                        accessible-label: row.label;
+                                        model: row.options;
+                                        current-index <=> row.index;
+                                        selected => {
+                                            root.rule-chosen(row.key, self.current-index);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ScrollView {
+                width: 280px;
+                VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                alignment: start;
+                Text { text: root.cabinet-label; font-size: 18px; font-weight: 700; }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Label"; }
+                    LineEdit {
+                        accessible-label: "Label";
+                        text <=> root.label-text;
+                        edited(text) => { root.label-edited(text); }
+                    }
+                    if root.label-error != "": Text {
+                        text: root.label-error;
+                        color: Signal.error;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+                Text { text: "Type"; }
+                ComboBox {
+                    accessible-label: "Type";
+                    model: root.kinds;
+                    current-index <=> root.kind-index;
+                    selected => { root.kind-chosen(self.current-index); }
+                }
+                Text { text: "Standard"; }
+                ComboBox {
+                    accessible-label: "Standard";
+                    model: root.standard-names;
+                    current-index <=> root.cabinet-standard-index;
+                    selected => { root.cabinet-standard-chosen(self.current-index); }
+                }
+                Text { text: "Doors and fronts"; }
+                ComboBox {
+                    accessible-label: "Doors and fronts";
+                    model: ["Slab", "Five-piece"];
+                    current-index <=> root.style-index;
+                    selected => { root.style-chosen(self.current-index == 1); }
+                }
+                LengthField {
+                    label: "Width";
+                    text <=> root.width-text;
+                    reading: root.width-reading;
+                    error: root.width-error;
+                    edited(text) => { root.width-edited(text); }
+                }
+                LengthField {
+                    label: "Height";
+                    text <=> root.height-text;
+                    reading: root.height-reading;
+                    error: root.height-error;
+                    edited(text) => { root.height-edited(text); }
+                }
+                LengthField {
+                    label: "Depth";
+                    text <=> root.depth-text;
+                    reading: root.depth-reading;
+                    error: root.depth-error;
+                    edited(text) => { root.depth-edited(text); }
+                }
+                if root.blind: VerticalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Blind side"; }
+                        ComboBox {
+                            accessible-label: "Blind side";
+                            model: ["Left", "Right"];
+                            current-index <=> root.blind-side-index;
+                            selected => { root.blind-side-chosen(self.current-index); }
+                        }
+                    }
+                    LengthField {
+                        label: "Blind width";
+                        text <=> root.blind-width-text;
+                        reading: root.blind-width-reading;
+                        error: root.blind-width-error;
+                        edited(text) => { root.blind-width-edited(text); }
+                    }
+                }
+                CountField {
+                    label: "Quantity";
+                    text <=> root.quantity-text;
+                    error: root.quantity-error;
+                    note: root.placed-note;
+                    enabled: !root.cabinet-placed;
+                    edited(text) => { root.quantity-edited(text); }
+                }
+                Text { text: "Front"; font-weight: 700; }
+                if root.front-note != "": Text {
+                    text: root.front-note;
+                    color: Signal.warning;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if root.front-note == "": VerticalLayout {
+                    spacing: 8px;
+                    StandardListView {
+                        accessible-label: "Sections";
+                        height: 90px;
+                        model: root.sections;
+                        current-item <=> root.section-index;
+                        current-item-changed(index) => { root.section-chosen(index); }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Button { text: "Add"; clicked => { root.add-section(); } }
+                        Button { text: "Delete"; clicked => { root.delete-section(); } }
+                        Button { text: "Up"; clicked => { root.move-section(true); } }
+                        Button { text: "Down"; clicked => { root.move-section(false); } }
+                    }
+                    Text { text: "Section"; }
+                    ComboBox {
+                        accessible-label: "Section";
+                        model: root.section-kinds;
+                        current-index <=> root.section-kind-index;
+                        selected => { root.section-kind-chosen(self.current-index); }
+                    }
+                    LengthField {
+                        label: "Section height, empty for the rest";
+                        text <=> root.section-height-text;
+                        reading: root.section-height-reading;
+                        error: root.section-height-error;
+                        edited(text) => { root.section-height-edited(text); }
+                    }
+                    if root.section-has-doors: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Doors"; }
+                        ComboBox {
+                            accessible-label: "Doors";
+                            model: ["1 door", "2 doors"];
+                            current-index <=> root.door-count-index;
+                            selected => { root.door-count-chosen(self.current-index); }
+                        }
+                    }
+                    if root.section-single-door: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Hinges"; }
+                        ComboBox {
+                            accessible-label: "Hinges";
+                            model: ["Left", "Right"];
+                            current-index <=> root.hinge-index;
+                            selected => { root.hinge-chosen(self.current-index); }
+                        }
+                    }
+                    if root.section-has-shelves: CountField {
+                        label: "Shelves";
+                        text <=> root.shelves-text;
+                        error: root.shelves-error;
+                        edited(text) => { root.shelves-edited(text); }
+                    }
+                }
+                Text { text: "Materials"; font-weight: 700; }
+                for role in root.material-roles: VerticalLayout {
+                    spacing: 4px;
+                    Text { text: role.label; }
+                    ComboBox {
+                        accessible-label: role.label;
+                        model: role.choices == 0 ? root.role-sheets
+                            : role.choices == 1 ? root.role-sheets-or-doors
+                            : role.choices == 2 ? root.role-sheets-or-case
+                            : root.role-bands;
+                        current-index <=> role.index;
+                        selected => { root.material-role-chosen(role.key, self.current-index); }
+                    }
+                }
+                Button {
+                    text: "Apply to all cabinets";
+                    clicked => { root.apply-materials-to-all(); }
+                }
+                Text { text: "Placement"; font-weight: 700; }
+                StandardListView {
+                    accessible-label: "Placements";
+                    height: 70px;
+                    model: root.placements;
+                    current-item <=> root.placement-index;
+                    current-item-changed(index) => { root.placement-chosen(index); }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Button { text: "Place on wall"; clicked => { root.place-cabinet(); } }
+                    Button { text: "Remove"; clicked => { root.unplace-cabinet(); } }
+                }
+                if root.has-placement: VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "Wall"; }
+                    ComboBox {
+                        accessible-label: "Wall";
+                        model: root.wall-names;
+                        current-index <=> root.placement-wall-index;
+                        selected => { root.placement-wall-chosen(self.current-index); }
+                    }
+                    LengthField {
+                        label: "Cabinet from wall start";
+                        text <=> root.placement-offset-text;
+                        reading: root.placement-offset-reading;
+                        error: root.placement-offset-error;
+                        edited(text) => { root.placement-offset-edited(text); }
+                    }
+                    LengthField {
+                        label: "Above floor";
+                        text <=> root.placement-elevation-text;
+                        reading: root.placement-elevation-reading;
+                        error: root.placement-elevation-error;
+                        edited(text) => { root.placement-elevation-edited(text); }
+                    }
+                }
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+
+                if root.plan-available: HorizontalLayout {
+                    padding: 4px;
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: "View";
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        accessible-label: "View";
+                        width: 140px;
+                        model: ["Elevation", "Plan"];
+                        current-index <=> root.view-index;
+                        selected => { root.view-chosen(self.current-index); }
+                    }
+                }
+
+                // The drawing area: millimeters scaled to fit, centered.
+                drawing-area := Rectangle {
+                    vertical-stretch: 1;
+                    background: Palette.alternate-background;
+                    accessible-role: image;
+                    accessible-label: root.drawing-title;
+                    // Pixels per millimeter.
+                    property <float> scale: min(
+                        (self.width - 32px) / 1px / root.drawing-width,
+                        (self.height - 32px) / 1px / root.drawing-height);
+                    property <length> drawing-w: root.drawing-width * self.scale * 1px;
+                    property <length> drawing-h: root.drawing-height * self.scale * 1px;
+
+                    Rectangle {
+                        x: (parent.width - parent.drawing-w) / 2;
+                        y: (parent.height - parent.drawing-h) / 2;
+                        width: parent.drawing-w;
+                        height: parent.drawing-h;
+
+                        Path {
+                            width: 100%;
+                            height: 100%;
+                            viewbox-width: root.drawing-width;
+                            viewbox-height: root.drawing-height;
+                            commands: root.drawing-dimensions;
+                            stroke: Palette.foreground.transparentize(55%);
+                            stroke-width: 1px;
+                        }
+                        Path {
+                            width: 100%;
+                            height: 100%;
+                            viewbox-width: root.drawing-width;
+                            viewbox-height: root.drawing-height;
+                            commands: root.drawing-marks;
+                            stroke: Palette.foreground.transparentize(55%);
+                            stroke-width: 1px;
+                        }
+                        Path {
+                            width: 100%;
+                            height: 100%;
+                            viewbox-width: root.drawing-width;
+                            viewbox-height: root.drawing-height;
+                            commands: root.drawing-lines;
+                            stroke: Palette.foreground;
+                            stroke-width: 1px;
+                        }
+                        Path {
+                            width: 100%;
+                            height: 100%;
+                            viewbox-width: root.drawing-width;
+                            viewbox-height: root.drawing-height;
+                            commands: root.drawing-highlight;
+                            stroke: Palette.accent-background;
+                            stroke-width: 3px;
+                        }
+                        for label in root.drawing-labels: Text {
+                            x: label.x * drawing-area.scale * 1px - 50px;
+                            y: label.y * drawing-area.scale * 1px - 8px;
+                            width: 100px;
+                            height: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            text: label.text;
+                            font-size: 11px;
+                        }
+                    }
+
+                    if root.placement-problems != "": Text {
+                        x: 12px;
+                        y: parent.height - self.height - 8px;
+                        width: parent.width - 24px;
+                        text: root.placement-problems;
+                        color: Signal.warning;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                TabWidget {
+                    height: 320px;
+
+                    Tab {
+                        title: "Cut list";
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 4px;
+                            if root.cut-problems != "": Text {
+                                text: root.cut-problems;
+                                color: Signal.warning;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            StandardTableView {
+                                accessible-label: "Cut list";
+                                columns: [
+                                    { title: "Product" }, { title: "Part" }, { title: "Material" },
+                                    { title: "Qty" }, { title: "Length" }, { title: "Width" },
+                                    { title: "Thick." }, { title: "Cut length" },
+                                    { title: "Cut width" }, { title: "Edges" },
+                                ];
+                                rows: root.cut-rows;
+                            }
+                        }
+                    }
+
+                    Tab {
+                        title: "Bill of materials";
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 4px;
+                            Text {
+                                text: root.material-notes;
+                                color: Palette.foreground.transparentize(40%);
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            StandardTableView {
+                                accessible-label: "Bill of materials";
+                                columns: [
+                                    { title: "Section" }, { title: "Item" },
+                                    { title: "Quantity" }, { title: "Detail" },
+                                ];
+                                rows: root.material-rows;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 28px;
+            background: Palette.alternate-background;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                Text {
+                    text: root.status;
+                    vertical-alignment: center;
+                    font-size: 12px;
+                }
+            }
+        }
+    }
+}

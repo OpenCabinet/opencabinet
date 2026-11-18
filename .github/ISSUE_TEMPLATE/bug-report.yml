@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: CC-BY-SA-4.0
+
+name: Bug report
+description: Something gives a wrong size, crashes, or does not work as it should.
+title: "[Bug]: "
+labels: ["bug", "status: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying OpenCabinet! A wrong size is the most important
+        thing to report. Please never share a client's private data: remove
+        names and addresses from a project before attaching it.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in Help > About OpenCabinet.
+      placeholder: OpenCabinet Designer 0.1.0-beta.2
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What did you do?
+      description: The steps, one per line, from opening the program or a project.
+      placeholder: |
+        1. Added a base cabinet 33" wide
+        2. Chose five-piece doors
+        3. Opened the cut list
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: For a wrong size, the size you expected and how your shop works it out.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      description: The size or message you got. A screenshot helps.
+    validations:
+      required: true
+  - type: textarea
+    id: project
+    attributes:
+      label: Project file
+      description: If you can, attach the `.ocab` file (zip it first if GitHub refuses it).
+  - type: input
+    id: system
+    attributes:
+      label: Computer
+      description: Windows version and screen size, if you know them.
+      placeholder: Windows 11, 1366 × 768

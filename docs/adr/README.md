@@ -27,3 +27,7 @@ Accepted ADRs are not edited; a new ADR supersedes them.
 | [0009](0009-length-representation.md) | Represent lengths as integer nanometers | Proposed |
 | [0010](0010-project-and-module-names.md) | Project and module names | Accepted |
 | [0011](0011-core-technical-stack.md) | Rust for the core | Accepted |
+| [0012](0012-desktop-ui-toolkit.md) | Desktop user interface toolkit | Accepted |
+| [0013](0013-gpl-or-later.md) | Keep "or later" in the GPL and AGPL licenses | Accepted |
+| [0014](0014-modest-hardware-budgets.md) | Performance budgets for modest computers | Accepted |
+| [0015](0015-export-libraries-and-font.md) | Libraries for PDF and DXF export, and a bundled font | Accepted |

@@ -50,7 +50,7 @@ user experience.
 ## Evidence: the stack spike
 
 Both remaining options implemented the same slice of RFC-0001 in
-[`prototypes/stack-spike/`](https://github.com/A-newGP/millwork-suite/tree/48a01194cbe4099d0359d54f1f5d564fac15cd80/prototypes/stack-spike)
+[`prototypes/stack-spike/`](https://github.com/OpenCabinet/opencabinet/tree/48a01194cbe4099d0359d54f1f5d564fac15cd80/prototypes/stack-spike)
 (removed after this decision; the link points to the commit that added it): load a `.ocab`
 project, evaluate four frameless cabinets into parts and hinge holes, write
 a cut list and an operations list, and round-trip the project through a ZIP

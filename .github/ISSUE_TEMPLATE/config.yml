@@ -4,8 +4,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Questions, ideas and millwork know-how
-    url: https://github.com/A-newGP/millwork-suite/discussions
+    url: https://github.com/OpenCabinet/opencabinet/discussions
     about: Ask and discuss in GitHub Discussions (English or Spanish).
   - name: Report a security vulnerability
-    url: https://github.com/A-newGP/millwork-suite/security/advisories/new
+    url: https://github.com/OpenCabinet/opencabinet/security/advisories/new
     about: Report privately. Never open a public issue for vulnerabilities.

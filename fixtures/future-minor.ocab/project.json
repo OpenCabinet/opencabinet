@@ -1,0 +1,40 @@
+{
+  "id": "0199f8a0-0000-7000-8000-000000000001",
+  "name": "Written by a newer version",
+  "notes": "",
+  "settings": {
+    "units": "metric",
+    "precision": 100000,
+    "defaultStandard": "0199f8a0-0000-7000-8000-000000000131",
+    "angleDisplay": "degrees"
+  },
+  "rooms": [],
+  "products": [
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000301",
+      "label": "T24",
+      "type": "appliance-garage@2",
+      "standard": "0199f8a0-0000-7000-8000-000000000131",
+      "width": 609600000,
+      "height": 457200000,
+      "depth": 381000000,
+      "parameters": {},
+      "materials": {
+        "case": "0199f8a0-0000-7000-8000-000000000101"
+      },
+      "front": {
+        "id": "0199f8a0-0000-7000-8000-000000000401",
+        "insert": {
+          "kind": "tambour",
+          "slatWidth": 19050000
+        }
+      },
+      "overrides": [],
+      "extensions": {},
+      "finishSchedule": "F-2"
+    }
+  ],
+  "revisions": [],
+  "extensions": {},
+  "jobPhase": "install"
+}

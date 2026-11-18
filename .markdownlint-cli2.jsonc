@@ -7,11 +7,15 @@
   "config": {
     "default": true,
     // Prose wraps at ~78 columns by convention, but tables and URLs cannot.
-    "MD013": false
+    "MD013": false,
+    // A changelog repeats "Added", "Fixed"... under each version.
+    "MD024": { "siblings_only": true }
   },
   "globs": ["**/*.md"],
   "ignores": [
     "node_modules/**",
+    // Build output, such as the licenses of fonts in generated docs.
+    "target/**",
     // Copied verbatim from the official Contributor Covenant text.
     "CODE_OF_CONDUCT.md"
   ]

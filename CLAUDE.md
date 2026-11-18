@@ -18,16 +18,34 @@ llega en fases posteriores.
 El fundador (Andrés) es nuevo en open source. **Explica cada decisión en
 español sencillo y con el porqué** antes de aplicarla.
 
-## Fase actual: Fase 1a — Entorno del repositorio
+## Fase actual: Fase 1b — Diseño, con la Fase 2 iniciada en paralelo
 
 La Fase 1 del plan se divide en dos partes:
 
-- **1a — Entorno (actual):** repositorio, licencias, archivos de comunidad,
-  CI de documentación y ADRs de las decisiones ya tomadas. **No se escribe
-  código de la aplicación.**
-- **1b — Diseño:** RFC-0001 (modelo de proyecto), ADR de unidades y
-  precisión, ADR del stack con prototipos desechables comparables, RFC-0002
-  (arquitectura de módulos y plugins). Recién aquí empieza el código.
+- **1a — Entorno (cerrada):** repositorio, licencias, archivos de comunidad,
+  CI de documentación y ADRs de las decisiones ya tomadas.
+- **1b — Diseño (actual):** RFC-0001 (modelo de proyecto), ADR-0009
+  (longitudes), ADR-0011 (stack: Rust, aceptado), RFC-0002 (módulos y
+  plugins) y ADR-0012 (interfaz: Slint, aceptado). Los RFCs pasan al menos 14 días
+  en comentarios públicos antes de aceptarse.
+
+El 2026-10-25 Andrés decidió **empezar la Fase 2 sin esperar** a que cierren
+los comentarios de los RFCs (8 de noviembre). Reglas mientras tanto:
+
+- Los RFCs se aceptan igual al cumplir sus 14 días; no se acorta un período
+  anunciado.
+- El código de la aplicación vive en `crates/` y empieza por lo que no
+  depende de los puntos abiertos de los RFCs (workspace, CI, longitudes,
+  esqueleto de la interfaz, instalador). Lo que dependa de ellos se ajusta
+  cuando se acepten.
+- Los **prototipos desechables** siguen en `prototypes/` y se borran cuando
+  su ADR o RFC se acepta.
+
+Alcance acordado para la versión 0.1 (Fase 2): construcción frameless **y**
+face frame, operaciones de mecanizado modeladas (taller manual y CNC), y
+gabinetes ubicados en paredes con elevaciones.
+
+Todos los cambios entran por rama y pull request, nunca directo a `main`.
 
 La Fase 0 está cerrada: el contrato laboral fue revisado por un abogado y se
 autorizó publicar.
@@ -43,7 +61,8 @@ documentos de proceso (MAINTAINERS, CODEOWNERS, CHANGELOG con entradas, repo
 
 ## Decisiones ya tomadas (no cambiarlas sin preguntar)
 
-- Licencia del núcleo y módulos de escritorio: **GPL-3.0-or-later**.
+- Licencia del núcleo y módulos de escritorio: **GPL-3.0-or-later**
+  ("or later" confirmado en el ADR-0013).
 - Servicios de servidor (futuros): **AGPL-3.0-or-later**.
 - Documentación e íconos: **CC BY-SA 4.0**. Especificación del formato de
   archivo: **CC BY 4.0**. Plantillas de plugin: **MIT**.
@@ -70,12 +89,22 @@ documentos de proceso (MAINTAINERS, CODEOWNERS, CHANGELOG con entradas, repo
   usuario. El modelo interno de precisión se decide en un ADR de la Fase 1b.
 - Núcleo en **Rust** (ADR-0011): `cargo fmt`, `cargo clippy -D warnings` y
   pruebas en la CI. Las longitudes son enteros de 64 bits en nanómetros.
+- Plugins de terceros: **aislados en un sandbox WebAssembly** (Wasmtime),
+  con permisos declarados y perfil determinista para los que participan en
+  el cálculo (RFC-0002). Los módulos oficiales son crates de Rust.
+- Interfaz gráfica de escritorio en **Slint** (ADR-0012), con egui como
+  alternativa. Slint es GPL-3.0-only: el programa distribuido queda en la
+  práctica bajo GPL-3.0.
+- Equipo modesto (ADR-0014): equipo de referencia de unos diez años (2
+  núcleos, 4 GB, sin GPU, 1366 × 768) y presupuestos de rendimiento que la
+  CI vigila desde la Fase 2.
+- Exportación (ADR-0015): PDF con **krilla**, DXF con el crate **`dxf`**
+  (DXF 2000+ en milímetros, auditado con ezdxf en la CI) y la fuente
+  **Noto Sans** (OFL-1.1) incluida como archivo aparte, no dentro del
+  ejecutable.
 
 ## Decisiones pendientes (no tomarlas por tu cuenta)
 
-- GPL-3.0-or-later vs GPL-3.0-only (provisoriamente "or later").
-- Plugins en el mismo proceso o aislados (RFC-0002).
-- Tecnología de la interfaz gráfica de escritorio.
 - Representación interna de longitudes y precisión (ADR-0009, propuesto:
   nanómetros enteros).
 
@@ -95,6 +124,9 @@ documentos de proceso (MAINTAINERS, CODEOWNERS, CHANGELOG con entradas, repo
 
 ## Cuentas de GitHub
 
+- Repositorio: <https://github.com/OpenCabinet/opencabinet>, en la
+  organización `OpenCabinet` (antes `A-newGP/millwork-suite`; GitHub
+  redirige los enlaces viejos). Usa `-R OpenCabinet/opencabinet` con `gh`.
 - El proyecto usa **solo la cuenta personal `A-newGP`**. Nunca usar la
   cuenta laboral `agonzales-metric` ni la organización de su empleador para
   nada de este proyecto (ni push, ni issues, ni forks).
@@ -108,4 +140,5 @@ documentos de proceso (MAINTAINERS, CODEOWNERS, CHANGELOG con entradas, repo
   ([`docs/es/guia-github.md`](docs/es/guia-github.md)).
 - Hacer push sin permiso explícito de Andrés en esa sesión.
 - Manejar contraseñas, tokens ni secretos.
-- Escribir código de la aplicación durante la Fase 1a.
+- Escribir código de la aplicación antes de la Fase 2 (los prototipos
+  desechables de `prototypes/` sí están permitidos).

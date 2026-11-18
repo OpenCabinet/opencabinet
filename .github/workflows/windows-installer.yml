@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Builds the Windows installer of OpenCabinet Designer, installs it, checks
+# that the program starts, uninstalls it, and keeps the installer as a
+# downloadable artifact. Run it by hand for a test build, from the Actions
+# tab ("Run workflow"); the release workflow calls it with the version of
+# the tag being released.
+
+name: Windows installer
+
+on:
+  pull_request:
+    paths:
+      - crates/**
+      - Cargo.lock
+      - assets/**
+      - packaging/windows/**
+      - .github/workflows/windows-installer.yml
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: The version being released, which must match Cargo.toml.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  INNO_VERSION: 6.7.1
+  INNO_SHA256: 4d11e8050b6185e0d49bd9e8cc661a7a59f44959a621d31d11033124c4e8a7b0
+  # Half of the 50 MB budget for the installer (ADR-0014).
+  MAX_INSTALLER_BYTES: 26214400
+
+jobs:
+  installer:
+    name: Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rustup reads rust-toolchain.toml and installs the pinned version.
+      - name: Install toolchain
+        run: rustup toolchain install
+      - name: Build
+        run: cargo build --locked --release -p opencabinet-app
+      # The released Inno Setup, verified against the checksum GitHub
+      # publishes for it.
+      - name: Install Inno Setup
+        run: |
+          $tag = 'is-' + $env:INNO_VERSION.Replace('.', '_')
+          $url = "https://github.com/jrsoftware/issrc/releases/download/$tag/innosetup-$env:INNO_VERSION.exe"
+          Invoke-WebRequest $url -OutFile inno.exe
+          $hash = (Get-FileHash inno.exe -Algorithm SHA256).Hash
+          if ($hash -ne $env:INNO_SHA256) { throw "unexpected checksum $hash" }
+          Start-Process .\inno.exe -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', '/DIR=C:\inno'
+      # A release takes the tag's version; a test build is the workspace's
+      # version plus the run number, as SemVer build metadata.
+      - name: Build the installer
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($env:RELEASE_VERSION) {
+            if ($env:RELEASE_VERSION -ne $cargo) { throw "the tag's version $env:RELEASE_VERSION is not Cargo.toml's $cargo" }
+            $version = $env:RELEASE_VERSION
+          } else {
+            $version = "$cargo+dev.$env:GITHUB_RUN_NUMBER"
+          }
+          $numeric = ($cargo -replace '[-+].*$', '') + ".$env:GITHUB_RUN_NUMBER"
+          & C:\inno\ISCC.exe /Q "/DAppVersion=$version" "/DNumericVersion=$numeric" packaging\windows\opencabinet.iss
+          if ($LASTEXITCODE -ne 0) { throw 'the installer did not build' }
+          $installer = "target\installer\OpenCabinet-Designer-$version-windows-x64.exe"
+          $size = (Get-Item $installer).Length
+          "Installer: $([math]::Round($size / 1KB)) KB" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+          if ($size -gt [long]$env:MAX_INSTALLER_BYTES) { throw 'the installer is over half its budget' }
+          "VERSION=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "INSTALLER=$installer" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      # Install as a user would, without administrator rights, check that the
+      # program starts and keeps running, then uninstall.
+      - name: Install, start and uninstall
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'OpenCabinet'
+          Start-Process $env:INSTALLER -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', "/DIR=$dir"
+          $exe = Join-Path $dir 'opencabinet.exe'
+          if (-not (Test-Path $exe)) { throw 'opencabinet.exe was not installed' }
+          if (-not (Test-Path (Join-Path $dir 'fonts\NotoSans-Regular.ttf'))) { throw 'the font was not installed' }
+          $app = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($app.HasExited) { throw "the program exited with code $($app.ExitCode)" }
+          Stop-Process -Id $app.Id
+          $app.WaitForExit()
+          Start-Process (Join-Path $dir 'unins000.exe') -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES'
+          # The uninstaller removes itself from a copy; give it a moment.
+          Start-Sleep -Seconds 3
+          if (Test-Path $exe) { throw 'the uninstaller left opencabinet.exe behind' }
+          'Installed, started and uninstalled.' | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: OpenCabinet-Designer-${{ env.VERSION }}-windows-x64
+          path: ${{ env.INSTALLER }}
+          retention-days: 30

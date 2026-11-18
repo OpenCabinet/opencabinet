@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 OpenCabinet contributors
 # SPDX-License-Identifier: CC0-1.0
 
-# Language-specific entries are added together with the technical stack.
+# Rust build output.
+/target/
 
 # Secrets — never commit them.
 .env
@@ -29,3 +30,6 @@ node_modules/
 
 # Claude Code personal settings
 .claude/settings.local.json
+
+# Performance measurement builds (scripts/performance.ps1).
+/perf/

@@ -1,0 +1,19 @@
+{
+  "formatVersion": "0.2",
+  "generator": "oc-format 0.1.0",
+  "entries": [
+    {
+      "path": "project.json",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "library.json",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "org.example.cnc-nesting/nest.json",
+      "mediaType": "application/json"
+    }
+  ],
+  "minimumReader": "0.1"
+}

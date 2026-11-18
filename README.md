@@ -37,9 +37,16 @@ comes much later, once a community exists to sustain it.
 
 ## Status
 
-See the [roadmap](ROADMAP.md). The current phase sets up the repository and
-records the decisions that are hard to reverse later as
-[architecture decision records](docs/adr/).
+**OpenCabinet Designer 0.1.0-beta.2** is the first published test release:
+cabinets, your shop's materials and construction standards, cut lists, a bill
+of materials, machining, walls and elevations, exported as CSV, PDF and DXF.
+It is for shops willing to try it on a real job and
+[report what is wrong](https://github.com/OpenCabinet/opencabinet/issues/new/choose);
+download it from the [releases](https://github.com/OpenCabinet/opencabinet/releases),
+and see the [changelog](CHANGELOG.md) for what it does and does not do yet.
+
+See the [roadmap](ROADMAP.md) for what comes next. Decisions that are hard
+to reverse are recorded as [architecture decision records](docs/adr/).
 
 Imperial units (including fractional inches) are the default; metric is a
 first-class option.
