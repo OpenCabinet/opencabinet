@@ -5,10 +5,11 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 
 # RFC 0001 — Project data model
 
-- **Status:** draft
+- **Status:** accepted
 - **Author(s):** Andrés (@A-newGP)
 - **Created:** 2026-10-25
-- **Comment period ends:** 2026-11-08
+- **Comment period ended:** 2026-11-08
+- **Accepted:** 2026-11-18
 - **Discussion:** pull request introducing this RFC; announced in [Discussions #11](https://github.com/OpenCabinet/opencabinet/discussions/11)
 
 ## Summary
@@ -130,8 +131,12 @@ These rules hold for every implementation and every module:
 
 ### 2. Coordinate systems
 
-- **Plan (room) coordinates:** right-handed, Z up, origin chosen by the user.
-  Walls are drawn in the X-Y plane.
+- **Plan (room) coordinates:** seen from above, +X runs to the right and +Y
+  toward the bottom of the drawing, as on a screen; +Z is up from the floor.
+  The origin is chosen by the user. Walls lie in the X-Y plane. This frame
+  is left-handed, like the product frame below; it is chosen on purpose, so
+  that plans, elevations and screens agree without mirroring, and must not
+  be "corrected" to a right-handed one.
 - **Product coordinates:** origin at the **left, back, bottom** corner of
   the product's bounding box as seen from the front. +X runs to the right
   along the width, +Y toward the front along the depth, +Z up along the
@@ -144,9 +149,10 @@ These rules hold for every implementation and every module:
 In v0.1 every part is axis-aligned in product coordinates; the only rotation
 is a product's rotation about Z when placed in plan.
 
-**Angles** are integers too: microdegrees, counterclockwise seen from above,
-so 90° is `90000000`. Every angle a shop uses (90°, 45°, 22.5°, 15°) is
-exact, and rotations are as deterministic as lengths (ADR-0009).
+**Angles** are integers too: microdegrees, so 90° is `90000000`. A positive
+angle turns +X toward +Y, which is clockwise on a plan drawn as above. Every
+angle a shop uses (90°, 45°, 22.5°, 15°) is exact, and rotations are as
+deterministic as lengths (ADR-0009).
 
 ### 3. Entity overview
 
@@ -192,17 +198,29 @@ define fields for personal data (addresses, phone numbers) in v0.1.
 
 ### 5. Rooms, walls and placements
 
-- **Room:** `id`, `name`, `walls`, `placements`.
+- **Room:** `id`, `name`, `walls`, `placements`, and two optional defaults
+  for the products created in it: `defaultStandard`, and `materials`, a map
+  from material role to library item like a product's. They are copied
+  into a new product and never inherited live: changing them changes no
+  product until the user explicitly applies them, because one product may
+  be placed in several rooms and its parts must not depend on where it is
+  placed. `settings.defaultStandard` (§4) is the fallback for rooms without
+  one and for products that are not placed.
 - **Wall:** `id`, `name`, `start` and `end` points in plan, `height`,
-  `thickness`. The wall's front side is to the left when walking from start
-  to end. A wall has **openings** (windows, doors, pass-throughs): `id`,
+  `thickness`. For a wall running in the direction (dx, dy), its front side
+  is toward (−dy, dx): on a plan drawn as in §2, on the right of someone
+  walking from its start to its end, so a room whose walls run clockwise
+  has their front sides inside it. The thickness lies behind the front
+  face. A wall has **openings** (windows, doors, pass-throughs): `id`,
   `kind`, `offset` from the wall's start, `width`, `height`, `sillHeight`.
 - **Placement:** puts a product in a room, in one of two ways:
   - **on a wall:** `wall`, `offset` from the wall's start to the product's
     left side, `elevation` of the product's bottom above the floor; the
     product's back plane lies on the wall's front face;
   - **free:** `position` (x, y, z) of the product origin and `rotation`
-    about Z in [0°, 360°), for islands and peninsulas.
+    about Z in [0°, 360°), for islands and peninsulas. The product's width
+    runs along the turned X axis and its depth along the turned Y axis, as
+    it would on a wall running along the turned X axis.
 
   Fillers, scribes and end panels are products too, so they appear in the
   cut list and in elevations like any other.
@@ -333,6 +351,7 @@ not code. v0.1 groups its rules as follows:
 | Edge banding | Which edges of which part role receive which band role |
 | Cutting | Oversize for parts banded later or trimmed after glue-up |
 | Machining | Hinge cup diameter, depth and setback; connector and dowel patterns |
+| Bill of materials | Waste added to sheet area and solid stock length; edge band allowance per banded edge |
 
 Every standard has an `id`, a `name`, a `version` and a `derivedFrom` link
 when it is a copy of another. The shop keeps master standards outside any
@@ -358,10 +377,21 @@ Library items are reusable definitions:
   cup diameter and boring distance) and an optional machining pattern.
 - **Standards** (§7).
 
+Sheet materials, solid stock and edge bands also take optional fields for
+reports, all free text entered by the user: a `code` naming the finish on
+the drawings (such as `PL-1` or `WD-2`), `manufacturer`, `product`,
+`finish` and `notes`. The evaluator ignores them; reports show the code
+next to the name. Validation warns when two items of one project library
+share a code, and never blocks. A finish per face is left for later, on top
+of the show-face flags above.
+
 The project embeds a snapshot of each item it uses. Snapshots carry the
 master's `id` and `version`, so the software can detect that the shop's
 master changed and **offer** an update, showing the resulting differences.
-An update is always explicit. The project ships no third-party catalog data;
+An update is always explicit. A snapshot edited inside the project keeps
+the master's `id` and `version` and is marked `modified: true`, so that
+`id` and `version` alone are never taken as proof that its content matches
+the master, and an update offer warns before replacing local changes. The project ships no third-party catalog data;
 libraries contain what users create or import with permission (see the
 legal section of the project plan).
 
@@ -371,7 +401,7 @@ Evaluation is a pure function:
 
 ```text
 derive(product, standard, library, typeVersion, evaluatorVersion)
-    → assemblies, parts, operations
+    → assemblies, parts, operations, hardware
 ```
 
 - **Assembly:** a named group (case, drawer, door, face frame) with a key
@@ -410,6 +440,10 @@ derive(product, standard, library, typeVersion, evaluatorVersion)
   Operations never contain G-code; CNC post-processors translate them for a
   given machine, which keeps the model useful for manual shops too (a hole
   list is a drilling guide).
+- **Hardware:** each piece the evaluator places (hinges, drawer slides,
+  shelf pins), with the library item or the size it was chosen by and how
+  many, recorded as it is placed, so the bill of materials and the
+  machining can never disagree.
 
 The **cut list** and **bill of materials** are aggregations of parts,
 edge banding and hardware; they are reports, not stored entities.
@@ -591,13 +625,16 @@ All questions raised while drafting were settled by the founder on
 | Quantities | Placements count units; unplaced products carry a quantity | §6 |
 | File extension and media type | `.ocab`, `application/vnd.opencabinet.project+zip` | §13 |
 
-Proposed during the comment period, after the format prototype
+Settled during the comment period, which ended on 2026-11-08 with no
+comments from outside the project, and accepted with this RFC on
+2026-11-18. The first ten came from the format prototype
 ([#10](https://github.com/OpenCabinet/opencabinet/pull/10)) and the review
-for shop drawings, and open for comment until the period ends:
+for shop drawings; the last four from building and testing version
+0.1.0-beta.2:
 
-| Question | Proposal | Section |
+| Question | Decision | Section |
 | --- | --- | --- |
-| How angles are stored | Integer microdegrees, counterclockwise | §2, §5 |
+| How angles are stored | Integer microdegrees; positive turns +X toward +Y | §2, §5 |
 | How parameter values are typed | By the product type's declaration | §6 |
 | How annotations stay attached | Stable anchor keys inside parts, with orphan reporting | §9 |
 | Where drawings will live | A reserved `drawings` collection | §3, §13 |
@@ -607,11 +644,17 @@ for shop drawings, and open for comment until the period ends:
 | Files re-zipped by other tools | Strict writers, lenient readers | §13 |
 | Hostile files | Safe entry names, no links, size limits | §13 |
 | Saving over the directory form | Owned and listed entries only; LF; binary for Git | §13 |
+| Which way the plan's axes run | +Y down as on a screen, a deliberate left-handed frame; positive angles turn +X toward +Y | §2, §5 |
+| Material codes for reports | Optional `code`, `manufacturer`, `product`, `finish`, `notes` | §8 |
+| Defaults per room | `defaultStandard` and `materials`, copied into new products, never inherited live | §5 |
+| Snapshots edited in a project | Keep the master's `id` and `version`, marked `modified` | §8 |
 
-To settle during implementation:
+To record in the format specification, as the implementation already does
+them:
 
 1. The exact rounding and remainder distribution rules for splits (bounded
-   by ADR-0009).
+   by ADR-0009): shares are rounded down and the nanometers left over go one
+   each to the first shares.
 2. The full list of material and edge band roles.
 
 ## Sources

@@ -5,8 +5,8 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 
 # 0009 — Represent lengths as integer nanometers
 
-- **Status:** proposed
-- **Date:** 2026-10-25
+- **Status:** accepted
+- **Date:** 2026-10-25, accepted 2026-11-18 with RFC-0001
 - **Deciders:** Andrés (@A-newGP)
 
 ## Context and problem statement
