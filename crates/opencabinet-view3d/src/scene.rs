@@ -546,7 +546,10 @@ impl Model {
         let (low, high) = self.bounds_of(part);
         let center = (low + high) * 0.5;
         let middle = instance.size * 0.5;
-        (center - middle) * (explode * 0.9)
+        let mut offset = (center - middle) * (explode * 0.9);
+        // Nothing is pulled down through the floor.
+        offset.y = offset.y.max(-(instance.origin.y + low.y));
+        offset
     }
 
     /// A part's box in its product's frame.
