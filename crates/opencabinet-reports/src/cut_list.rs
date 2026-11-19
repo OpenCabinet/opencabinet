@@ -128,8 +128,9 @@ pub fn cut_list(project: &Project, library: &Library, units: Units, precision: L
     CutList { rows, problems }
 }
 
-/// A name for people: "Left side", "Front stretcher", "Door 2".
-pub(crate) fn part_name(part: &Part) -> String {
+/// A part's name for people: "Left side", "Front stretcher", "Door 2".
+#[must_use]
+pub fn part_name(part: &Part) -> String {
     let mut segments = part.key.rsplit('/');
     let last = segments.next().unwrap_or_default();
     if matches!(part.role, "stile" | "rail" | "panel") {

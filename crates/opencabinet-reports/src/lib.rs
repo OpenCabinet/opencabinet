@@ -17,7 +17,7 @@ mod sketch;
 
 pub use bill_of_materials::{BOARD_WIDTH, Bom, BomRow, bill_of_materials};
 pub use csv::{Separator, materials_to_csv, to_csv};
-pub use cut_list::{CutList, CutRow, cut_list};
+pub use cut_list::{CutList, CutRow, cut_list, part_name};
 pub use parts_dxf::{ALL_PARTS, parts_dxf};
 pub use pdf::{Fonts, Paper, cut_list_pdf, elevations_pdf};
 pub use sketch::{DxfFile, Shape};

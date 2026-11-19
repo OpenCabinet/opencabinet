@@ -93,6 +93,8 @@ application, on Windows and Linux:
 
 3D views and AI features are optional modules with their own budgets, so
 they never raise the cost of the base program (plan, principle 5).
+The 3D view's budgets are in
+[ADR-0016](0016-3d-view.md).
 
 ### Consequences
 
