@@ -1,0 +1,407 @@
+{
+  "id": "0199f8a0-0000-7000-8000-000000000001",
+  "name": "Sample kitchen",
+  "notes": "Fictional project created from scratch for the format spike.",
+  "settings": {
+    "units": "imperial",
+    "precision": 793750,
+    "defaultStandard": "0199f8a0-0000-7000-8000-000000000131"
+  },
+  "rooms": [
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000201",
+      "name": "Kitchen",
+      "walls": [
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000211",
+          "name": "North",
+          "start": {
+            "x": 0,
+            "y": 0
+          },
+          "end": {
+            "x": 3657600000,
+            "y": 0
+          },
+          "height": 2438400000,
+          "thickness": 114300000,
+          "openings": [
+            {
+              "id": "0199f8a0-0000-7000-8000-000000000221",
+              "kind": "window",
+              "offset": 1524000000,
+              "width": 914400000,
+              "height": 1219200000,
+              "sillHeight": 1066800000
+            }
+          ]
+        },
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000212",
+          "name": "East",
+          "start": {
+            "x": 3657600000,
+            "y": 0
+          },
+          "end": {
+            "x": 3657600000,
+            "y": 3048000000
+          },
+          "height": 2438400000,
+          "thickness": 114300000,
+          "openings": []
+        }
+      ],
+      "placements": [
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000231",
+          "product": "0199f8a0-0000-7000-8000-000000000301",
+          "wall": "0199f8a0-0000-7000-8000-000000000211",
+          "offset": 0,
+          "elevation": 0
+        },
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000232",
+          "product": "0199f8a0-0000-7000-8000-000000000301",
+          "wall": "0199f8a0-0000-7000-8000-000000000211",
+          "offset": 762000000,
+          "elevation": 0
+        },
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000233",
+          "product": "0199f8a0-0000-7000-8000-000000000302",
+          "wall": "0199f8a0-0000-7000-8000-000000000211",
+          "offset": 1524000000,
+          "elevation": 0
+        },
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000234",
+          "product": "0199f8a0-0000-7000-8000-000000000306",
+          "wall": "0199f8a0-0000-7000-8000-000000000211",
+          "offset": 2438400000,
+          "elevation": 0
+        },
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000235",
+          "product": "0199f8a0-0000-7000-8000-000000000303",
+          "wall": "0199f8a0-0000-7000-8000-000000000211",
+          "offset": 2514600000,
+          "elevation": 0
+        },
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000236",
+          "product": "0199f8a0-0000-7000-8000-000000000304",
+          "wall": "0199f8a0-0000-7000-8000-000000000211",
+          "offset": 0,
+          "elevation": 1371600000
+        },
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000237",
+          "product": "0199f8a0-0000-7000-8000-000000000305",
+          "position": {
+            "x": 1524000000,
+            "y": 1828800000,
+            "z": 0
+          },
+          "rotation": 90000000
+        }
+      ]
+    }
+  ],
+  "products": [
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000301",
+      "label": "B30",
+      "type": "base-cabinet@1",
+      "standard": "0199f8a0-0000-7000-8000-000000000131",
+      "width": 762000000,
+      "height": 876300000,
+      "depth": 609600000,
+      "parameters": {},
+      "materials": {
+        "back": "0199f8a0-0000-7000-8000-000000000103",
+        "case": "0199f8a0-0000-7000-8000-000000000102",
+        "doors": "0199f8a0-0000-7000-8000-000000000101",
+        "drawerBottom": "0199f8a0-0000-7000-8000-000000000103",
+        "drawerBox": "0199f8a0-0000-7000-8000-000000000103",
+        "drawerFronts": "0199f8a0-0000-7000-8000-000000000101",
+        "edgeBandFronts": "0199f8a0-0000-7000-8000-000000000111",
+        "frontPanels": "0199f8a0-0000-7000-8000-000000000103"
+      },
+      "front": {
+        "id": "0199f8a0-0000-7000-8000-000000000401",
+        "split": "horizontal",
+        "children": [
+          {
+            "id": "0199f8a0-0000-7000-8000-000000000402",
+            "size": {
+              "length": 152400000
+            },
+            "insert": {
+              "kind": "drawer",
+              "style": "slab"
+            }
+          },
+          {
+            "id": "0199f8a0-0000-7000-8000-000000000403",
+            "size": {
+              "share": 1
+            },
+            "insert": {
+              "kind": "doors",
+              "style": "fivePiece",
+              "count": 2,
+              "adjustments": [
+                {
+                  "id": "0199f8a0-0000-7000-8000-000000000501",
+                  "target": "hinges/left",
+                  "action": "add",
+                  "position": 304800000
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "overrides": [],
+      "extensions": {}
+    },
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000302",
+      "label": "SB36",
+      "type": "sink-base@1",
+      "standard": "0199f8a0-0000-7000-8000-000000000131",
+      "width": 914400000,
+      "height": 876300000,
+      "depth": 609600000,
+      "parameters": {},
+      "materials": {
+        "case": "0199f8a0-0000-7000-8000-000000000102",
+        "doors": "0199f8a0-0000-7000-8000-000000000101"
+      },
+      "front": {
+        "id": "0199f8a0-0000-7000-8000-000000000411",
+        "split": "horizontal",
+        "children": [
+          {
+            "id": "0199f8a0-0000-7000-8000-000000000412",
+            "size": {
+              "length": 152400000
+            },
+            "insert": {
+              "kind": "falseFront",
+              "style": "slab"
+            }
+          },
+          {
+            "id": "0199f8a0-0000-7000-8000-000000000413",
+            "size": {
+              "share": 1
+            },
+            "insert": {
+              "kind": "doors",
+              "style": "slab",
+              "count": 2
+            }
+          }
+        ]
+      },
+      "overrides": [
+        {
+          "id": "0199f8a0-0000-7000-8000-000000000601",
+          "target": "case/bottom",
+          "action": "set",
+          "value": {
+            "material": "0199f8a0-0000-7000-8000-000000000103"
+          },
+          "note": "Plywood bottom under the sink"
+        }
+      ],
+      "extensions": {}
+    },
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000303",
+      "label": "BC42",
+      "type": "blind-corner-base@1",
+      "standard": "0199f8a0-0000-7000-8000-000000000131",
+      "width": 1066800000,
+      "height": 876300000,
+      "depth": 609600000,
+      "parameters": {
+        "blindSide": "right",
+        "blindWidth": 609600000
+      },
+      "materials": {
+        "back": "0199f8a0-0000-7000-8000-000000000103",
+        "case": "0199f8a0-0000-7000-8000-000000000102",
+        "doors": "0199f8a0-0000-7000-8000-000000000101"
+      },
+      "front": {
+        "id": "0199f8a0-0000-7000-8000-000000000421",
+        "insert": {
+          "kind": "doors",
+          "style": "slab",
+          "count": 1,
+          "hingeSide": "left"
+        }
+      },
+      "overrides": [],
+      "extensions": {}
+    },
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000304",
+      "label": "W30",
+      "type": "wall-cabinet@1",
+      "standard": "0199f8a0-0000-7000-8000-000000000132",
+      "width": 762000000,
+      "height": 762000000,
+      "depth": 304800000,
+      "parameters": {},
+      "materials": {
+        "back": "0199f8a0-0000-7000-8000-000000000103",
+        "case": "0199f8a0-0000-7000-8000-000000000101",
+        "doors": "0199f8a0-0000-7000-8000-000000000101",
+        "faceFrame": "0199f8a0-0000-7000-8000-000000000104"
+      },
+      "front": {
+        "id": "0199f8a0-0000-7000-8000-000000000431",
+        "split": "vertical",
+        "children": [
+          {
+            "id": "0199f8a0-0000-7000-8000-000000000432",
+            "size": {
+              "share": 1
+            },
+            "insert": {
+              "kind": "doors",
+              "style": "fivePiece",
+              "count": 1,
+              "hingeSide": "left"
+            }
+          },
+          {
+            "id": "0199f8a0-0000-7000-8000-000000000433",
+            "size": {
+              "share": 1
+            },
+            "insert": {
+              "kind": "doors",
+              "style": "fivePiece",
+              "count": 1,
+              "hingeSide": "right"
+            }
+          }
+        ]
+      },
+      "overrides": [],
+      "extensions": {}
+    },
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000305",
+      "label": "IS48",
+      "type": "base-cabinet@1",
+      "standard": "0199f8a0-0000-7000-8000-000000000131",
+      "width": 1219200000,
+      "height": 876300000,
+      "depth": 609600000,
+      "parameters": {},
+      "materials": {
+        "case": "0199f8a0-0000-7000-8000-000000000102",
+        "drawerFronts": "0199f8a0-0000-7000-8000-000000000101"
+      },
+      "front": {
+        "id": "0199f8a0-0000-7000-8000-000000000441",
+        "split": "horizontal",
+        "children": [
+          {
+            "id": "0199f8a0-0000-7000-8000-000000000442",
+            "size": {
+              "share": 1
+            },
+            "insert": {
+              "kind": "drawer",
+              "style": "slab"
+            }
+          },
+          {
+            "id": "0199f8a0-0000-7000-8000-000000000443",
+            "size": {
+              "share": 1
+            },
+            "insert": {
+              "kind": "drawer",
+              "style": "slab"
+            }
+          },
+          {
+            "id": "0199f8a0-0000-7000-8000-000000000444",
+            "size": {
+              "share": 2
+            },
+            "insert": {
+              "kind": "drawer",
+              "style": "slab"
+            }
+          }
+        ]
+      },
+      "overrides": [],
+      "extensions": {
+        "org.example.cnc-nesting": {
+          "priority": 2
+        }
+      }
+    },
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000306",
+      "label": "F3",
+      "type": "filler@1",
+      "standard": "0199f8a0-0000-7000-8000-000000000131",
+      "width": 76200000,
+      "height": 876300000,
+      "depth": 19050000,
+      "parameters": {},
+      "materials": {
+        "case": "0199f8a0-0000-7000-8000-000000000101"
+      },
+      "overrides": [],
+      "extensions": {}
+    },
+    {
+      "id": "0199f8a0-0000-7000-8000-000000000307",
+      "label": "V24",
+      "type": "vanity-base@1",
+      "standard": "0199f8a0-0000-7000-8000-000000000131",
+      "width": 609600000,
+      "height": 787400000,
+      "depth": 533400000,
+      "quantity": 3,
+      "parameters": {},
+      "materials": {
+        "case": "0199f8a0-0000-7000-8000-000000000102"
+      },
+      "front": {
+        "id": "0199f8a0-0000-7000-8000-000000000451",
+        "insert": {
+          "kind": "open",
+          "shelves": 1
+        }
+      },
+      "overrides": [],
+      "extensions": {}
+    }
+  ],
+  "revisions": [
+    {
+      "label": "A",
+      "date": "2026-10-25",
+      "author": "OpenCabinet contributors",
+      "description": "First issue for review"
+    }
+  ],
+  "extensions": {
+    "org.example.estimating": {
+      "laborHours": 42
+    }
+  }
+}

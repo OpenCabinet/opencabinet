@@ -50,7 +50,8 @@ user experience.
 ## Evidence: the stack spike
 
 Both remaining options implemented the same slice of RFC-0001 in
-[`prototypes/stack-spike/`](../../prototypes/stack-spike/): load a `.ocab`
+[`prototypes/stack-spike/`](https://github.com/OpenCabinet/opencabinet/tree/48a01194cbe4099d0359d54f1f5d564fac15cd80/prototypes/stack-spike)
+(removed after this decision; the link points to the commit that added it): load a `.ocab`
 project, evaluate four frameless cabinets into parts and hinge holes, write
 a cut list and an operations list, and round-trip the project through a ZIP
 `.ocab`. An independent Python reference generated the golden outputs.
@@ -145,8 +146,8 @@ satisfies all the hard drivers at once:
 
 ## Sources
 
-- Stack spike and CI workflow: `prototypes/stack-spike/`,
-  `.github/workflows/stack-spike.yml`.
+- Stack spike and CI workflow, as of commit `48a0119`:
+  `prototypes/stack-spike/` and `.github/workflows/stack-spike.yml`.
 - The Rust Reference and Rust Edition Guide (2024 edition).
 - .NET documentation: Native AOT deployment; System.Text.Json source
   generation; Microsoft Testing Platform.

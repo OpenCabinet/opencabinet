@@ -24,5 +24,5 @@ technical decisions go directly to an [ADR](../adr/).
 
 | RFC | Title | Status |
 | --- | --- | --- |
-| 0001 | Project data model | Planned (phase 1b) |
-| [0002](0002-module-and-plugin-architecture.md) | Module and plugin architecture | Draft |
+| [0001](0001-project-data-model.md) | Project data model | Accepted |
+| [0002](0002-module-and-plugin-architecture.md) | Module and plugin architecture | Accepted |

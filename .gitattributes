@@ -25,3 +25,8 @@
 *.woff binary
 *.woff2 binary
 *.svg  text eol=lf
+*.ttf  binary
+*.otf  binary
+
+# The bundled font's license notice is kept exactly as published.
+assets/fonts/**/OFL.txt -text

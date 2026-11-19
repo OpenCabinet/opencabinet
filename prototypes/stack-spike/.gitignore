@@ -1,7 +1,0 @@
-# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
-# SPDX-License-Identifier: CC0-1.0
-
-rust/target/
-csharp/**/bin/
-csharp/**/obj/
-csharp/publish/

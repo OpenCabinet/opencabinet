@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: CC0-1.0
+
+# Everyone and CI build with the same compiler, so warnings and results match.
+[toolchain]
+channel = "1.99"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

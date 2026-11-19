@@ -146,10 +146,16 @@ gh label create "good first issue" --color 7057FF --description "Good for newcom
 *Q&A* y crea **Millwork know-how** (cómo trabajan los talleres: métodos
 constructivos, holguras, convenciones). Esa categoría alimenta el RFC-0001.
 
-## Pendientes con el nombre OpenCabinet
+## Estado
 
-- Reservar cuanto antes la organización `opencabinet` en GitHub (estaba
-  libre el 2026-10-25) y transferirle el repositorio (paso 2).
+Hecho el 2026-10-25: pasos 1 a 8, la organización
+[OpenCabinet](https://github.com/OpenCabinet) y la transferencia del
+repositorio a <https://github.com/OpenCabinet/opencabinet>. Las etiquetas del
+paso 7 las creó Claude Code con tu cuenta personal.
+
+## Pendientes
+
+- Sumar un segundo propietario a la organización (paso 2).
 - Registrar `opencabinet.org` (estaba libre el 2026-10-25; el `.com` está
   ocupado).
 - Consultar al abogado la búsqueda de marca (USPTO, SENAPI) y mencionarle el

@@ -109,6 +109,13 @@ Files that cannot hold comments (images, JSON) are declared in a
      format or licensing, once the project has two maintainers.
 6. A maintainer squash-merges the pull request when CI is green.
 
+The **Performance** check compares every change to the application with
+`main` against the budgets of
+[ADR-0014](docs/adr/0014-modest-hardware-budgets.md). When a change costs
+more than it allows and a maintainer decides the cost is worth it, they add
+the `performance-accepted` label, which keeps the measures in the report
+and records the decision.
+
 Large changes (plugin API, file format, new official modules, governance)
 need an accepted [RFC](docs/rfcs/) first. Significant technical decisions
 are recorded as [ADRs](docs/adr/).

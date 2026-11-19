@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Measures each pull request against the performance budgets of ADR-0014
+# and against the branch it targets, built and run on the same machine.
+#
+# A maintainer who decides a cost is worth it adds the performance-accepted
+# label: the measures are still reported, marked as accepted, but no longer
+# fail the check. The label is the record of that decision.
+
+name: Performance
+
+on:
+  pull_request:
+    # Also when the label is added or removed.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - crates/**
+      - Cargo.lock
+      - Cargo.toml
+      - scripts/performance.ps1
+      - .github/workflows/performance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  measure:
+    name: Performance (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install toolchain
+        run: rustup toolchain install
+      - name: Install system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libgl1-mesa-dri xvfb
+      - name: Build the head
+        run: |
+          exe=""
+          [[ "$RUNNER_OS" == "Windows" ]] && exe=".exe"
+          echo "EXE=$exe" >> "$GITHUB_ENV"
+          cargo build --locked --release -p opencabinet-app --bin opencabinet --example perf_edit
+          mkdir -p perf/head
+          cp "target/release/opencabinet$exe" "target/release/examples/perf_edit$exe" perf/head/
+      # The base is what the pull request targets; for a manual run, main.
+      # It shares the target directory, so dependencies build only once. A
+      # base from before this harness has no edit example; that is not an
+      # error.
+      - name: Build the base
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+        run: |
+          git worktree add -q ../base "$BASE"
+          mkdir -p perf/base
+          cd ../base
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          cargo build --locked --release -p opencabinet-app --bin opencabinet
+          cp "$CARGO_TARGET_DIR/release/opencabinet$EXE" "$GITHUB_WORKSPACE/perf/base/"
+          if cargo build --locked --release -p opencabinet-app --example perf_edit 2>/dev/null; then
+            cp "$CARGO_TARGET_DIR/release/examples/perf_edit$EXE" "$GITHUB_WORKSPACE/perf/base/"
+          fi
+      - name: Measure
+        env:
+          ACCEPTED: ${{ contains(github.event.pull_request.labels.*.name, 'performance-accepted') }}
+        run: |
+          args=(-HeadApp "perf/head/opencabinet$EXE" -HeadEdit "perf/head/perf_edit$EXE"
+                -BaseApp "perf/base/opencabinet$EXE" -BaseEdit "perf/base/perf_edit$EXE")
+          [[ "$ACCEPTED" == "true" ]] && args+=(-Accepted)
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a -s "-screen 0 1920x1080x24" pwsh -NoProfile -File scripts/performance.ps1 "${args[@]}"
+          else
+            pwsh -NoProfile -File scripts/performance.ps1 "${args[@]}"
+          fi

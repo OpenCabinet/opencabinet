@@ -1,8 +1,0 @@
-<!--
-SPDX-FileCopyrightText: 2026 OpenCabinet contributors
-SPDX-License-Identifier: CC0-1.0
--->
-<Solution>
-  <Project Path="OcSpike/OcSpike.csproj" />
-  <Project Path="OcSpike.Tests/OcSpike.Tests.csproj" />
-</Solution>
