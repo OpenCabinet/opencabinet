@@ -17,7 +17,8 @@ follow [Semantic Versioning](https://semver.org/).
   laid out as one, two side by side, two stacked or four (**Views**). Each
   shows the project in 3D, the room's plan, an elevation or the edited
   cabinet, chosen in its own header; each 3D view has its own camera and
-  display.
+  display. The window opens on the plan, so starting is as quick and light
+  as before; 3D starts when a view shows it.
 - **One panel that follows what you do:** it opens on the project, to add a
   cabinet, choose one, or open the rooms and walls, the materials or the
   construction standard. Clicking a cabinet in a 3D view, the plan or an

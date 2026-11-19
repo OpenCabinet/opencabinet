@@ -258,13 +258,13 @@ fn opens_on_the_project(window: &AppWindow) {
     assert_eq!(window.get_tab_index(), 4);
     window.invoke_cabinet_chosen(0);
     assert_eq!(window.get_tab_index(), 0);
-    // A cabinet that is not placed on a wall is drawn alone.
-    window.invoke_pane_kind_chosen(0, 3);
+    // It opens on the plan, which without a room shows the cabinet alone.
+    assert_eq!(pane(window, 0).kind, 1);
+    assert_eq!(pane(window, 0).note, "Add a wall to see the room's plan");
     assert_eq!(
         ElementHandle::find_by_accessible_label(window, "B1, not placed on a wall").count(),
         1
     );
-    window.invoke_pane_kind_chosen(0, 0);
 }
 
 /// What view `i` shows.
@@ -280,9 +280,12 @@ fn pane(window: &AppWindow, i: usize) -> opencabinet_app::PaneData {
 fn three_d(answers: &Rc<Answers>) {
     let window = opencabinet_app::create_with(answers.clone(), None).unwrap();
     let settle = || slint::platform::update_timers_and_animations();
-    // The window opens on the project, with one 3D view.
+    // The window opens on the project, with one view of the plan; the view
+    // is turned to 3D.
     assert_eq!(window.get_tab_index(), 4);
     assert_eq!(window.get_panes().row_count(), 1);
+    assert_eq!(pane(&window, 0).kind, 1);
+    window.invoke_pane_kind_chosen(0, 0);
     assert_eq!(pane(&window, 0).kind, 0);
     window.invoke_pane_resized(0, 800.0, 500.0);
     settle();
@@ -336,7 +339,7 @@ fn three_d(answers: &Rc<Answers>) {
     );
 }
 
-/// Four views show the 3D view, the room's plan, the edited wall's
+/// Four views show the room's plan, the 3D view, the edited wall's
 /// elevation and the edited cabinet; each can show something else.
 fn plan_view(window: &AppWindow) {
     window.set_layout_index(3);
@@ -345,14 +348,15 @@ fn plan_view(window: &AppWindow) {
     let titles: Vec<String> = (0..4)
         .map(|i| pane(window, i).drawing.title.to_string())
         .collect();
-    assert_eq!(titles[1], "Plan of Laundry");
+    assert_eq!(titles[0], "Plan of Laundry");
+    assert_eq!(pane(window, 1).kind, 0);
     assert!(titles[2].starts_with("Elevation of wall"), "{titles:?}");
     assert!(titles[3].contains("not placed on a wall") || !titles[3].is_empty());
     // The edited wall and the edited cabinet's footprint are outlined.
-    let plan = pane(window, 1).drawing;
+    let plan = pane(window, 0).drawing;
     assert!(plan.highlight.matches('Z').count() >= 2);
     assert!(plan.labels.iter().any(|l| l.text.starts_with("Wall A · ")));
-    for title in &titles[1..] {
+    for title in [&titles[0], &titles[2]] {
         assert_eq!(
             ElementHandle::find_by_accessible_label(window, title).count(),
             1,
@@ -360,11 +364,11 @@ fn plan_view(window: &AppWindow) {
         );
     }
 
-    // The first view shows the plan instead of 3D.
-    window.invoke_pane_kind_chosen(0, 1);
-    assert_eq!(pane(window, 0).kind, 1);
-    assert_eq!(pane(window, 0).drawing.title, "Plan of Laundry");
-    window.invoke_pane_kind_chosen(0, 0);
+    // The second view shows the plan instead of 3D.
+    window.invoke_pane_kind_chosen(1, 1);
+    assert_eq!(pane(window, 1).kind, 1);
+    assert_eq!(pane(window, 1).drawing.title, "Plan of Laundry");
+    window.invoke_pane_kind_chosen(1, 0);
 
     window.set_layout_index(0);
     window.invoke_layout_chosen(0);

@@ -100,13 +100,15 @@ pub struct Panes {
 }
 
 impl Default for Panes {
-    /// One 3D view; the others, when shown, start as the plan, an
-    /// elevation and the cabinet.
+    /// One view of the plan; the others, when shown, start as 3D, an
+    /// elevation and the cabinet. The window does not open on 3D, so that
+    /// starting costs no more than it did (ADR-0014): the renderer is made
+    /// when a view first shows 3D.
     fn default() -> Self {
         Self {
-            panes: Kind::ALL
-                .iter()
-                .map(|&kind| Pane {
+            panes: [Kind::Plan, Kind::ThreeD, Kind::Elevation, Kind::Cabinet]
+                .into_iter()
+                .map(|kind| Pane {
                     kind,
                     ..Pane::default()
                 })
@@ -174,7 +176,7 @@ impl Panes {
             }
             Kind::Plan => designer.plan_view().unwrap_or_else(|| {
                 data.note = "Add a wall to see the room's plan".into();
-                designer.elevation_view()
+                designer.cabinet_view()
             }),
             Kind::Elevation => designer.elevation_view(),
             Kind::Cabinet => designer.cabinet_view(),
