@@ -5,10 +5,11 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 
 # RFC 0002 — Module and plugin architecture
 
-- **Status:** draft
+- **Status:** accepted
 - **Author(s):** Andrés (@A-newGP)
 - **Created:** 2026-10-25
-- **Comment period ends:** 2026-11-08
+- **Comment period ended:** 2026-11-08
+- **Accepted:** 2026-11-18
 - **Discussion:** pull request introducing this RFC; announced in [Discussions #11](https://github.com/OpenCabinet/opencabinet/discussions/11)
 
 ## Summary
@@ -94,6 +95,11 @@ Rules, enforced in CI:
    duplicated.
 3. Every third-party crate must have a GPLv3-compatible license, checked by
    `cargo-deny` against an allowlist (plan, section A).
+
+Phase 2 built the first five crates: model, format, eval, reports and app.
+The designer lives in `opencabinet-app` until a second module needs its
+code; the plugin crates and the CI check of rule 1 arrive with the first
+plugin or module crate.
 
 ### 2. Official modules and plugins
 
@@ -261,8 +267,14 @@ announced in release notes.
 
 ## Unresolved questions
 
+The comment period ended on 2026-11-08 with no comments from outside the
+project, and the founder accepted this RFC on 2026-11-18. These questions
+were left for later on purpose, and stay open for the ADRs and RFCs that
+will settle them:
+
 1. **User interface contributions:** can plugins add panels, tools or
-   dialogs, and how? Depends on the user interface ADR.
+   dialogs, and how? ADR-0012 chose Slint for the interface; how a sandboxed
+   plugin contributes to it is left to the first plugin API ADR.
 2. **Default resource limits** (memory and CPU per call): set during
    implementation, from measurements on modest hardware.
 3. **Signing and distribution:** left to the registry RFC.
