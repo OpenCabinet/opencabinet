@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use opencabinet_eval::{elevation, front_view, placement_problems, plan};
+use opencabinet_eval::{elevation, front_view, placement_problems, plan, wall_length};
 use opencabinet_format::Document;
 use opencabinet_model::validate::{Issue, validate};
 use opencabinet_model::{
@@ -32,7 +32,7 @@ pub mod template;
 
 pub use front::SectionKind;
 pub use materials::{MaterialRole, RoleChoices};
-pub use room::{OpeningKind, WallView};
+pub use room::OpeningKind;
 pub use standard::{RuleKind, RuleRow};
 
 /// A length the window edits: the cabinet's overall dimensions, the edited
@@ -133,6 +133,16 @@ pub struct Designer {
     /// The standard the Standard tab edits, read within the ones the
     /// project has.
     standard: usize,
+}
+
+/// What a click in a plan finds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlanPick {
+    /// A cabinet, by its index in the project.
+    Cabinet(usize),
+    /// A wall, by its index in the room, and how far along its front the
+    /// click is from its start, in millimeters.
+    Wall(usize, f64),
 }
 
 impl Default for Designer {
@@ -797,24 +807,128 @@ impl Designer {
         Ok(files.len())
     }
 
-    /// What the drawing area shows: the edited room's plan or wall while
-    /// the walls are shown, otherwise the wall the edited cabinet is
-    /// placed on, or the cabinet alone when it is not placed on a wall.
+    /// The elevation of the edited wall while the walls are edited,
+    /// otherwise of the wall the edited cabinet is on; or the cabinet
+    /// alone when it is on no wall.
     #[must_use]
     pub fn drawing(&self) -> Drawing {
-        if self.view() != WallView::Elevation
-            && let Some(plan) = self.plan_drawing()
-        {
-            return plan;
-        }
         self.elevation_drawing()
     }
 
-    /// The drawing beside the first one when the plan and the elevation
-    /// are shown together: the elevation.
+    /// The edited room's plan, if there is a room.
     #[must_use]
-    pub fn second_drawing(&self) -> Option<Drawing> {
-        (self.view() == WallView::PlanAndElevation).then(|| self.elevation_drawing())
+    pub fn plan_view(&self) -> Option<Drawing> {
+        self.plan_drawing()
+    }
+
+    /// The elevation of the edited wall while the walls are edited,
+    /// otherwise of the wall the edited cabinet is on; or the cabinet
+    /// alone when it is on no wall.
+    #[must_use]
+    pub fn elevation_view(&self) -> Drawing {
+        self.elevation_drawing()
+    }
+
+    /// The edited cabinet alone, seen from the front.
+    #[must_use]
+    pub fn cabinet_view(&self) -> Drawing {
+        let product = self.product();
+        let view = front_view(product, &self.document.library).ok();
+        drawing::cabinet(&product.label, product.width, product.height, view.as_ref())
+    }
+
+    /// What is at the point `(x, y)` of the edited room's plan, in its
+    /// millimeters: a cabinet, by its index in the project, or a wall.
+    #[must_use]
+    pub fn pick_in_plan(&self, x: f64, y: f64) -> Option<PlanPick> {
+        let (room, _) = self.plan_selection()?;
+        let plan = plan(&self.document.project, room)?;
+        let inside = |corners: &[(f64, f64); 4]| {
+            // On the same side of every edge of the convex outline.
+            let side = |i: usize| {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0)
+            };
+            let sides = [side(0), side(1), side(2), side(3)];
+            sides.iter().all(|s| *s >= 0.0) || sides.iter().all(|s| *s <= 0.0)
+        };
+        // The cabinets drawn last are on top: wall cabinets over base ones.
+        if let Some(cabinet) = plan.cabinets.iter().rev().find(|c| inside(&c.corners)) {
+            let index = self
+                .document
+                .project
+                .products
+                .iter()
+                .position(|p| p.id == cabinet.product)?;
+            return Some(PlanPick::Cabinet(index));
+        }
+        let room = self.room()?;
+        plan.walls.iter().find_map(|w| {
+            let [(ax, ay), (bx, by)] = w.front;
+            let length = (bx - ax).hypot(by - ay);
+            if length <= 0.0 {
+                return None;
+            }
+            let (ux, uy) = ((bx - ax) / length, (by - ay) / length);
+            let along = (x - ax) * ux + (y - ay) * uy;
+            // Into the room is (−uy, ux); the wall is behind its front.
+            let into = (x - ax) * -uy + (y - ay) * ux;
+            let near = (-w.thickness - 50.0..=400.0).contains(&into);
+            let index = room.walls.iter().position(|r| r.id == w.wall)?;
+            (near && (0.0..=length).contains(&along)).then_some(PlanPick::Wall(index, along))
+        })
+    }
+
+    /// The cabinet at the point `(x, y)` of the elevation the drawing
+    /// shows, in millimeters along the wall and up from the floor: its
+    /// index in the project.
+    #[must_use]
+    pub fn pick_in_elevation(&self, x: f64, y: f64) -> Option<usize> {
+        let (project, library) = (&self.document.project, &self.document.library);
+        let elevation = elevation(project, library, self.shown_wall()?)?;
+        let mm = |l: Length| {
+            #[allow(clippy::cast_precision_loss, reason = "a room is far below 2^53 nm")]
+            let value = l.nm() as f64 / 1_000_000.0;
+            value
+        };
+        let cabinet = elevation.cabinets.iter().rev().find(|c| {
+            let r = c.rect;
+            (mm(r.x)..=mm(r.x + r.width)).contains(&x)
+                && (mm(r.y)..=mm(r.y + r.height)).contains(&y)
+        })?;
+        project
+            .products
+            .iter()
+            .position(|p| p.id == cabinet.product)
+    }
+
+    /// Places the edited cabinet on the wall at `wall` of the edited room,
+    /// its middle `along` millimeters from the wall's start, but not past
+    /// either end.
+    ///
+    /// # Errors
+    /// When the room has no such wall.
+    pub fn place_at(&mut self, wall: usize, along: f64) -> Result<(), String> {
+        let long = self
+            .room()
+            .and_then(|r| r.walls.get(wall))
+            .map(wall_length)
+            .ok_or("There is no such wall")?;
+        self.select_wall(wall);
+        self.place()?;
+        let width = self.product().width;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a room is far below 2^63 nm"
+        )]
+        let middle = Length::from_nm((along * 1_000_000.0).round() as i64);
+        let offset = (middle - width.div_round(2))
+            .min(long - width)
+            .max(Length::ZERO);
+        if let Some(placement) = self.placement_mut() {
+            placement.offset = Some(offset);
+        }
+        Ok(())
     }
 
     fn plan_drawing(&self) -> Option<Drawing> {
@@ -1564,28 +1678,14 @@ mod tests {
     }
 
     #[test]
-    fn the_walls_show_in_plan_in_elevation_or_both() {
+    fn the_plan_shows_the_edited_room() {
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/kitchen.ocab");
         let mut designer = Designer::open(&fixture).unwrap();
-        designer.choose_view(WallView::PlanAndElevation);
-        // Not while the cabinet is shown.
-        assert_eq!(designer.view(), WallView::Elevation);
-        assert!(designer.second_drawing().is_none());
-
+        assert_eq!(designer.plan_view().unwrap().title, "Plan of Kitchen");
         designer.show_walls(true);
-        assert_eq!(designer.view(), WallView::PlanAndElevation);
-        assert_eq!(designer.drawing().title, "Plan of Kitchen");
-        assert_eq!(
-            designer.second_drawing().unwrap().title,
-            "Elevation of wall North"
-        );
-        designer.choose_view(WallView::Plan);
-        assert_eq!(designer.drawing().title, "Plan of Kitchen");
-        assert!(designer.second_drawing().is_none());
-        for index in [0, 1, 2] {
-            assert_eq!(WallView::from_index(index).index(), index);
-        }
-        assert_eq!(WallView::from_index(7), WallView::Elevation);
+        assert_eq!(designer.elevation_view().title, "Elevation of wall North");
+        assert_eq!(designer.cabinet_view().title, "B30, not placed on a wall");
+        assert!(Designer::default().plan_view().is_none());
     }
 
     #[test]

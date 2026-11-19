@@ -194,7 +194,8 @@ fn chain(mut stops: Vec<Length>) -> Vec<(Length, Length)> {
 
 /// From a wall's start to its end, to the nanometer for walls along an
 /// axis.
-pub(crate) fn wall_length(wall: &Wall) -> Length {
+#[must_use]
+pub fn wall_length(wall: &Wall) -> Length {
     let dx = (wall.end.x - wall.start.x).nm();
     let dy = (wall.end.y - wall.start.y).nm();
     if dx == 0 || dy == 0 {

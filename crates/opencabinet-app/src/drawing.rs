@@ -38,6 +38,10 @@ pub struct Drawing {
     pub dimensions: String,
     /// Labels and dimension values.
     pub labels: Vec<Label>,
+    /// Where the drawing's top left corner is in the shapes' millimeters,
+    /// `y` up: a point `(x, y)` of the drawing is `(left + x, top - y)`
+    /// there.
+    pub origin: (f64, f64),
 }
 
 /// A text centered on a point, or standing off it.
@@ -100,6 +104,7 @@ fn from_shapes(title: String, shapes: &[Shape]) -> Drawing {
         title,
         width: f32_of(high_x - low_x + 2.0 * MARGIN),
         height: f32_of(high_y - low_y + 2.0 * MARGIN),
+        origin: (left, top),
         ..Drawing::default()
     };
     for shape in shapes {

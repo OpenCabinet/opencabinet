@@ -1,17 +1,19 @@
 // SPDX-FileCopyrightText: 2026 OpenCabinet contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The 3D view in the window: what it shows, the camera, the mouse, and
-//! the picture the renderer draws for the window to show.
+//! A 3D view in the window: what it shows, its camera, the mouse, and the
+//! picture drawn for the window to show. Each view of the window that
+//! shows 3D has its own; they share one renderer.
 //!
 //! - Drag with the left button to turn around the scene; with the right or
 //!   middle button, or with Shift, to slide it; scroll to come closer.
-//! - Click a part to select it and read what it is; click empty space to
-//!   clear the selection.
-//! - Double-click a cabinet to see it alone; double-click empty space, or
-//!   choose Room, to see the room again.
+//! - Click a cabinet to edit it; click empty space to edit the project.
+//! - Double-click a cabinet to go inside it: there, a click selects a part
+//!   and describes it. Double-click empty space, or choose Room, to see the
+//!   room again.
 
 use opencabinet_eval::{Face, Operation};
+use opencabinet_model::Id;
 use opencabinet_view3d::{Camera, Frame, Mode, Model, Pick, Renderer, View};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
@@ -40,12 +42,21 @@ struct Drag {
     moved: f32,
 }
 
-/// The 3D view's state.
+/// What a click in the view found.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Click {
+    /// A cabinet in the room, by its index in the project.
+    Cabinet(usize),
+    /// A part of the cabinet the view is inside.
+    Part,
+    /// Nothing; with the point of the floor under the mouse, in the
+    /// room's plan millimeters.
+    Empty(Option<(f64, f64)>),
+}
+
+/// A 3D view's state.
 #[derive(Debug, Default)]
 pub struct Viewer {
-    /// The renderer, made the first time the view is shown; the error
-    /// when none can be made.
-    renderer: Option<Result<Renderer, String>>,
     /// The scene, `None` when the project changed since it was built.
     model: Option<Model>,
     /// The room it was built for.
@@ -55,8 +66,6 @@ pub struct Viewer {
     camera: Camera,
     /// Whether the camera has been placed on the scene yet.
     framed: bool,
-    /// Whether the mesh must be sent to the GPU again.
-    stale_mesh: bool,
     /// The view's size in logical pixels, and pixels per logical pixel.
     size: (f32, f32),
     scale: f32,
@@ -99,7 +108,6 @@ impl Viewer {
             }
             self.model = Some(model);
             self.room = room;
-            self.stale_mesh = true;
         }
         self.model.as_ref().expect("just built")
     }
@@ -107,7 +115,11 @@ impl Viewer {
     /// Changes what the view shows.
     pub fn change(&mut self, change: impl FnOnce(&mut View)) {
         change(&mut self.view);
-        self.stale_mesh = true;
+    }
+
+    /// Outlines the product `id`, the one being edited, if any.
+    pub fn highlight(&mut self, id: Option<Id>) {
+        self.change(|view| view.highlight = id);
     }
 
     /// Places the camera so the view shows all it shows.
@@ -121,25 +133,24 @@ impl Viewer {
         self.framed = true;
     }
 
-    /// Draws the view; the picture, or why it could not be drawn.
+    /// Draws the view with `renderer`, as its view `slot`.
     ///
     /// # Errors
-    /// When there is no renderer or it fails: a message for the user.
-    pub fn draw(&mut self, designer: &Designer) -> Result<Image, String> {
+    /// When the renderer fails: a message for the user.
+    pub fn draw(
+        &mut self,
+        designer: &Designer,
+        renderer: &mut Renderer,
+        slot: usize,
+    ) -> Result<Image, String> {
         if !self.framed {
             self.fit(designer);
         }
         let view = self.view;
-        let mesh = self.stale_mesh.then(|| self.model(designer).mesh(&view));
-        let renderer = self
-            .renderer
-            .get_or_insert_with(Renderer::new)
-            .as_mut()
-            .map_err(|e| e.clone())?;
-        if let Some(mesh) = mesh {
-            renderer.upload(&mesh);
-            self.stale_mesh = false;
-        }
+        // A mesh is per slot, so a view that moved to another slot sends
+        // its mesh again; building it is quick.
+        let mesh = self.model(designer).mesh(&view);
+        renderer.upload(slot, &mesh);
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -157,21 +168,8 @@ impl Viewer {
             textured: view.mode == Mode::Textured,
             ghost_opacity: 0.22,
         };
-        renderer.draw(&frame, width, height, buffer.make_mut_bytes())?;
+        renderer.draw(slot, &frame, width, height, buffer.make_mut_bytes())?;
         Ok(Image::from_rgba8(buffer))
-    }
-
-    /// The renderer's adapter, once there is one, for the user.
-    #[must_use]
-    pub fn adapter(&self) -> Option<String> {
-        match &self.renderer {
-            Some(Ok(renderer)) if renderer.software => Some(format!(
-                "Drawn without a graphics card ({}), which is slower",
-                renderer.adapter
-            )),
-            Some(Ok(renderer)) => Some(renderer.adapter.clone()),
-            _ => None,
-        }
     }
 
     /// A mouse button went down at `(x, y)`: `button` 0 left, 1 right, 2
@@ -204,18 +202,45 @@ impl Viewer {
         true
     }
 
-    /// The button came up; whether it was a click, which selects the part
-    /// under the mouse.
-    pub fn release(&mut self, x: f32, y: f32, designer: &Designer) -> bool {
-        let Some(drag) = self.drag.take() else {
-            return false;
-        };
+    /// The button came up at `(x, y)`: what it clicked, or `None` after a
+    /// drag. Inside a cabinet, a click selects a part or clears the
+    /// selection.
+    pub fn release(&mut self, x: f32, y: f32, designer: &Designer) -> Option<Click> {
+        let drag = self.drag.take()?;
         if drag.moved >= CLICK || drag.pan {
-            return false;
+            return None;
         }
         let picked = self.pick(x, y, designer);
-        self.change(|view| view.selected = picked);
-        true
+        if self.view.isolated.is_some() {
+            self.change(|view| view.selected = picked);
+            return Some(if picked.is_some() {
+                Click::Part
+            } else {
+                Click::Empty(None)
+            });
+        }
+        self.change(|view| view.selected = None);
+        Some(match picked.and_then(|p| self.product_index(p, designer)) {
+            Some(index) => Click::Cabinet(index),
+            None => Click::Empty(self.floor_point(x, y)),
+        })
+    }
+
+    /// The point of the floor under `(x, y)`, in the plan's millimeters.
+    #[must_use]
+    pub fn floor_point(&self, x: f32, y: f32) -> Option<(f64, f64)> {
+        let ray = self.camera.ray(x, y, self.size.0, self.size.1);
+        if ray.direction.y >= -1e-6 {
+            return None;
+        }
+        let t = -ray.origin.y / ray.direction.y;
+        let p = ray.origin + ray.direction * t;
+        Some((f64::from(p.x), f64::from(p.z)))
+    }
+
+    fn product_index(&self, pick: Pick, designer: &Designer) -> Option<usize> {
+        let id = self.model.as_ref()?.instances.get(pick.instance)?.product;
+        designer.project().products.iter().position(|q| q.id == id)
     }
 
     /// The part under `(x, y)`, if any.
@@ -225,28 +250,30 @@ impl Viewer {
         self.model(designer).pick(&view, ray)
     }
 
-    /// The cabinet under `(x, y)` is double-clicked: it is shown alone, or
-    /// with nothing there, the room again. Returns the product's index in
-    /// the project, to edit it.
+    /// `(x, y)` is double-clicked: the view goes inside the cabinet there,
+    /// or with nothing there, back to the room. Returns the cabinet's index
+    /// in the project, to edit it.
     pub fn double_click(&mut self, x: f32, y: f32, designer: &Designer) -> Option<usize> {
         let picked = self.pick(x, y, designer);
-        let product = picked.and_then(|p| {
-            let id = self.model.as_ref()?.instances[p.instance].product;
-            designer.project().products.iter().position(|q| q.id == id)
-        });
+        let product = picked.and_then(|p| self.product_index(p, designer));
         match picked {
             Some(pick) => self.change(|view| {
                 view.isolated = Some(pick.instance);
-                view.selected = Some(pick);
-            }),
-            None => self.change(|view| {
-                view.isolated = None;
                 view.selected = None;
-                view.explode = 0.0;
             }),
+            None => self.leave(),
         }
         self.fit(designer);
         product
+    }
+
+    /// Back to the room from inside a cabinet.
+    pub fn leave(&mut self) {
+        self.change(|view| {
+            view.isolated = None;
+            view.selected = None;
+            view.explode = 0.0;
+        });
     }
 
     /// Comes closer by `steps` notches of the wheel.
@@ -271,34 +298,31 @@ impl Viewer {
             .find(|m| m.id == part.material)
             .map_or("", |m| m.name.as_str());
         let banded = part.edges.iter().filter(|e| e.is_some()).count();
-        let mut holes = 0;
-        let mut grooves = 0;
+        let (mut holes, mut grooves, mut face_b) = (0, 0, false);
         for operation in &part.operations {
-            match operation {
-                Operation::Hole { .. } => holes += 1,
-                Operation::HolePattern { count, .. } => holes += count,
-                Operation::Groove { .. } => grooves += 1,
-            }
+            let face = match operation {
+                Operation::Hole { face, .. } => {
+                    holes += 1;
+                    face
+                }
+                Operation::HolePattern { count, face, .. } => {
+                    holes += count;
+                    face
+                }
+                Operation::Groove { face, .. } => {
+                    grooves += 1;
+                    face
+                }
+            };
+            face_b |= *face == Face::B;
         }
-        let faces: Vec<&str> = part
-            .operations
-            .iter()
-            .map(|o| match o {
-                Operation::Hole { face, .. }
-                | Operation::HolePattern { face, .. }
-                | Operation::Groove { face, .. } => match face {
-                    Face::A => "A",
-                    Face::B => "B",
-                },
-            })
-            .collect();
         let machined = match (holes, grooves) {
             (0, 0) => "nothing machined".to_owned(),
             _ => format!(
                 "{holes} {}, {grooves} {} on face {}",
                 if holes == 1 { "hole" } else { "holes" },
                 if grooves == 1 { "groove" } else { "grooves" },
-                if faces.contains(&"B") { "A and B" } else { "A" }
+                if face_b { "A and B" } else { "A" }
             ),
         };
         format!(

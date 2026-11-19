@@ -8,6 +8,7 @@ pub mod designer;
 pub mod dialogs;
 pub mod drawing;
 pub mod fonts;
+pub mod panes;
 pub mod perf;
 pub mod preferences;
 pub mod user_folder;
@@ -24,12 +25,14 @@ use slint::{
     VecModel,
 };
 
+use crate::designer::PlanPick;
 use crate::designer::{
-    CabinetKind, Designer, Dimension, OpeningKind, RoleChoices, RuleKind, WallView, template,
+    CabinetKind, Designer, Dimension, OpeningKind, RoleChoices, RuleKind, template,
 };
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
+use crate::panes::Panes;
 use crate::preferences::{Preferences, Theme};
-use crate::viewer::{MODES, Viewer};
+use crate::viewer::{Click, MODES};
 use opencabinet_reports::Separator;
 
 /// The code Slint generates from `ui/app.slint`, which follows Slint's
@@ -39,7 +42,7 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::{AppWindow, MaterialRole, RuleRow};
+pub use ui::{AppWindow, MaterialRole, PaneData, RuleRow};
 
 /// The name and version shown to users and written into saved files.
 pub const NAME_AND_VERSION: &str = concat!("OpenCabinet Designer ", env!("CARGO_PKG_VERSION"));
@@ -70,20 +73,35 @@ pub fn create_with(
         on_edited(&window, dimension, move |text| app.edit(dimension, &text));
     }
     connect_room(&window, &app);
-    connect_scene(&window, &app);
+    connect_panes(&window, &app);
     connect_front(&window, &app);
     connect_materials(&window, &app);
     connect_standard(&window, &app);
     let handle = Rc::clone(&app);
     window.on_units_chosen(move |metric| handle.choose_units(metric));
     let handle = Rc::clone(&app);
-    window.on_cabinet_chosen(move |index| handle.choose_cabinet(index));
+    window.on_cabinet_chosen(move |index| {
+        if let Ok(index) = usize::try_from(index) {
+            handle.open_cabinet(index);
+        }
+    });
     let handle = Rc::clone(&app);
     window.on_add_cabinet(move || {
+        // A new cabinet is edited at once, and waits to be placed with a
+        // click on a wall when the room has walls.
+        if let Some(window) = handle.window.upgrade() {
+            window.set_tab_index(0);
+        }
+        handle.designer.borrow_mut().show_walls(false);
         handle.change_cabinets(|d| {
             d.add();
             Ok(())
         });
+        let walls = handle.designer.borrow().has_walls();
+        handle.placing.set(walls);
+        if let Some(window) = handle.window.upgrade() {
+            handle.show_placing(&window);
+        }
     });
     let handle = Rc::clone(&app);
     window.on_duplicate_cabinet(move || {
@@ -176,11 +194,16 @@ struct App {
     /// Where the preferences live, for the same reason optional.
     preferences_path: Option<PathBuf>,
     preferences: RefCell<Preferences>,
-    /// The 3D view.
-    viewer: RefCell<Viewer>,
-    /// Whether the 3D view is to be drawn again once the events waiting
-    /// are handled.
-    redraw_pending: Cell<bool>,
+    /// The views.
+    panes: RefCell<Panes>,
+    /// What the window's views read.
+    pane_model: Rc<VecModel<ui::PaneData>>,
+    /// The views to draw again once the events waiting are handled, one
+    /// bit each.
+    redraw_pending: Cell<u8>,
+    /// Whether the edited cabinet waits to be placed with a click on a
+    /// wall.
+    placing: Cell<bool>,
 }
 
 impl App {
@@ -200,8 +223,10 @@ impl App {
             template_path,
             preferences_path,
             preferences: RefCell::new(preferences),
-            viewer: RefCell::new(Viewer::default()),
-            redraw_pending: Cell::new(false),
+            panes: RefCell::new(Panes::default()),
+            pane_model: Rc::new(VecModel::default()),
+            redraw_pending: Cell::new(0),
+            placing: Cell::new(false),
         });
         window.set_system_theme_title(
             if cfg!(windows) {
@@ -211,6 +236,8 @@ impl App {
             }
             .into(),
         );
+        // The window opens on the project's page.
+        window.set_tab_index(4);
         app.show(window, true);
         app.show_template(window);
         app.show_theme(window);
@@ -757,10 +784,11 @@ impl App {
         show_front(window, &designer, texts);
         show_materials(window, &designer, texts);
         show_standard(window, &designer, texts);
-        show_drawing(window, &designer);
-        self.viewer.borrow_mut().invalidate();
-        self.show_scene(window, &designer);
+        self.panes.borrow_mut().invalidate();
+        self.show_panes(window, &designer);
+        self.show_placing(window);
         let list = designer.cut_list();
+        show_problems(window, &designer, list.problems.len());
         let rows: Vec<ModelRc<StandardListViewItem>> = list
             .rows
             .iter()
@@ -796,7 +824,14 @@ impl App {
             .map(|c| StandardListViewItem::from(c.as_str()))
             .collect();
         window.set_cabinets(ModelRc::new(VecModel::from(cabinets)));
-        window.set_cabinet_index(i32::try_from(designer.selected()).unwrap_or(0));
+        // On the project's page no cabinet is chosen, so a click on any
+        // opens it.
+        let index = if window.get_tab_index() == 4 {
+            -1
+        } else {
+            i32::try_from(designer.selected()).unwrap_or(0)
+        };
+        window.set_cabinet_index(index);
         window.set_window_title(designer.title().into());
         window.set_cabinet_label(designer.label().into());
         let kind = designer
@@ -819,162 +854,319 @@ impl App {
         }
     }
 
-    /// Draws the 3D view, when it is shown, and what is selected in it.
-    fn show_scene(&self, window: &AppWindow, designer: &Designer) {
-        if !window.get_show_3d() {
+    /// Draws every view the layout shows.
+    fn show_panes(&self, window: &AppWindow, designer: &Designer) {
+        let highlight = highlight(window, designer);
+        let rows = self.panes.borrow_mut().all(designer, highlight);
+        panes::update(&self.pane_model, rows);
+    }
+
+    /// Draws view `i` again.
+    fn show_pane(&self, i: usize) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let designer = self.designer.borrow();
+        let highlight = highlight(&window, &designer);
+        let mut panes = self.panes.borrow_mut();
+        if i < panes.count() {
+            let row = panes.data(i, &designer, highlight);
+            drop(panes);
+            if i < slint::Model::row_count(&*self.pane_model) {
+                self.pane_model.set_row_data(i, row);
+            }
+        }
+    }
+
+    /// Opens a page of the panel: 0 the edited cabinet, 1 the walls, 2 the
+    /// materials, 3 the standard, 4 the project.
+    fn open_page(&self, page: i32) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        window.set_tab_index(page);
+        self.designer.borrow_mut().show_walls(page == 1);
+        clear_errors(&window);
+        self.show(&window, true);
+    }
+
+    /// Edits the cabinet at `index`, on its page.
+    fn open_cabinet(&self, index: usize) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_tab_index(0);
+            self.designer.borrow_mut().show_walls(false);
+        }
+        self.choose_cabinet(i32::try_from(index).unwrap_or(0));
+    }
+
+    /// While a cabinet waits to be placed, tells the user how.
+    fn show_placing(&self, window: &AppWindow) {
+        let note = if self.placing.get() {
+            format!(
+                "Click a wall in the plan or the 3D view to place {}",
+                self.designer.borrow().label()
+            )
+        } else {
+            String::new()
+        };
+        window.set_placing_note(note.into());
+    }
+
+    /// A click on the floor or a wall at `(x, y)` of the edited room's
+    /// plan: places the cabinet waiting to be placed on the wall there, or
+    /// edits the wall, or with nothing there, the project.
+    fn clicked_plan(&self, x: f64, y: f64) {
+        let picked = self.designer.borrow().pick_in_plan(x, y);
+        match picked {
+            Some(PlanPick::Cabinet(index)) if !self.placing.get() => self.open_cabinet(index),
+            Some(PlanPick::Wall(wall, along)) if self.placing.get() => {
+                self.placing.set(false);
+                self.change_room(|d| d.place_at(wall, along));
+                if let Some(window) = self.window.upgrade() {
+                    self.show_placing(&window);
+                }
+            }
+            Some(PlanPick::Wall(wall, _)) => {
+                self.designer.borrow_mut().select_wall(wall);
+                self.open_page(1);
+            }
+            _ if self.placing.get() => {}
+            _ => self.open_page(4),
+        }
+    }
+
+    /// The mouse button came up at `(x, y)` in view `i`.
+    fn released(&self, i: usize, x: f32, y: f32) {
+        let kind = self.panes.borrow().panes[i].kind;
+        if kind == panes::Kind::ThreeD {
+            let click = {
+                let designer = self.designer.borrow();
+                self.panes.borrow_mut().panes[i]
+                    .viewer
+                    .release(x, y, &designer)
+            };
+            match click {
+                Some(Click::Cabinet(index)) if !self.placing.get() => self.open_cabinet(index),
+                Some(Click::Empty(Some((px, py)))) => self.clicked_plan(px, py),
+                Some(_) => self.show_pane(i),
+                None => {}
+            }
             return;
         }
-        let mut viewer = self.viewer.borrow_mut();
-        match viewer.draw(designer) {
-            Ok(image) => {
-                window.set_scene_image(image);
-                let note = viewer
-                    .adapter()
-                    .filter(|a| a.starts_with("Drawn without"))
-                    .unwrap_or_default();
-                window.set_scene_note(note.into());
+        let point = {
+            let mut panes = self.panes.borrow_mut();
+            let pane = &mut panes.panes[i];
+            match pane.press.take() {
+                Some((_, moved)) if moved < 4.0 => pane.drawing_point(x, y),
+                _ => None,
             }
-            Err(message) => window.set_scene_note(message.into()),
+        };
+        let Some((px, py)) = point else {
+            return;
+        };
+        match kind {
+            // The plan's shapes have the room's `y` turned up.
+            panes::Kind::Plan => self.clicked_plan(px, -py),
+            panes::Kind::Elevation => {
+                let picked = self.designer.borrow().pick_in_elevation(px, py);
+                match picked {
+                    Some(index) => self.open_cabinet(index),
+                    None => self.open_page(4),
+                }
+            }
+            _ => {}
         }
-        window.set_scene_info(viewer.describe(designer).into());
-        window.set_scene_isolated(viewer.view.isolated.is_some());
     }
 }
 
-/// Draws the 3D view again once the events waiting are handled, so that a
+/// The cabinet the views outline: the edited one, while its page is open.
+fn highlight(window: &AppWindow, designer: &Designer) -> Option<opencabinet_model::Id> {
+    (window.get_tab_index() == 0).then(|| designer.project().products[designer.selected()].id)
+}
+
+/// The view at `i` of the window's callbacks.
+fn pane(i: i32) -> usize {
+    usize::try_from(i).unwrap_or(0).min(3)
+}
+
+/// Changes what the 3D view `i` shows, and draws it again.
+fn change(app: &Rc<App>, i: i32, change: impl FnOnce(&mut opencabinet_view3d::View)) {
+    app.panes.borrow_mut().panes[pane(i)].viewer.change(change);
+    redraw_soon(app, pane(i));
+}
+
+/// Draws view `i` again once the events waiting are handled, so that a
 /// quick drag draws once for many moves.
-fn redraw_soon(app: &Rc<App>) {
-    if app.redraw_pending.replace(true) {
+fn redraw_soon(app: &Rc<App>, i: usize) {
+    let bit = 1 << i;
+    let pending = app.redraw_pending.get();
+    app.redraw_pending.set(pending | bit);
+    if pending != 0 {
         return;
     }
-    let app = Rc::clone(app);
+    // A weak handle: a closed window's views are not drawn.
+    let app = Rc::downgrade(app);
     slint::Timer::single_shot(Duration::ZERO, move || {
-        app.redraw_pending.set(false);
-        if let Some(window) = app.window.upgrade() {
-            app.show_scene(&window, &app.designer.borrow());
+        let Some(app) = app.upgrade() else {
+            return;
+        };
+        let pending = app.redraw_pending.replace(0);
+        for i in 0..4 {
+            if pending & (1 << i) != 0 {
+                app.show_pane(i);
+            }
         }
     });
 }
 
-/// Connects the 3D view: its mouse, its settings and its buttons.
-fn connect_scene(window: &AppWindow, app: &Rc<App>) {
+/// Connects the views: their layout, what each shows, the mouse, and the
+/// 3D views' settings and buttons; and the panel's pages.
+#[allow(clippy::too_many_lines, reason = "one connection per callback")]
+fn connect_panes(window: &AppWindow, app: &Rc<App>) {
+    window.set_panes(panes::model(&app.pane_model));
     let handle = Rc::clone(app);
-    window.on_show_3d_toggled(move |_| redraw_soon(&handle));
+    window.on_layout_chosen(move |layout| {
+        handle.panes.borrow_mut().layout = usize::try_from(layout).unwrap_or(0).min(3);
+        if let Some(window) = handle.window.upgrade() {
+            handle.show_panes(&window, &handle.designer.borrow());
+        }
+    });
     let handle = Rc::clone(app);
-    window.on_scene_resized(move |width, height| {
+    window.on_pane_kind_chosen(move |i, kind| {
+        handle.panes.borrow_mut().panes[pane(i)].kind = panes::Kind::from_index(kind);
+        handle.show_pane(pane(i));
+    });
+    let handle = Rc::clone(app);
+    window.on_pane_resized(move |i, width, height| {
         let Some(window) = handle.window.upgrade() else {
             return;
         };
         let scale = window.window().scale_factor();
-        handle.viewer.borrow_mut().resize(width, height, scale);
-        redraw_soon(&handle);
+        {
+            let mut panes = handle.panes.borrow_mut();
+            let p = &mut panes.panes[pane(i)];
+            p.size = (width, height);
+            p.viewer.resize(width, height, scale);
+        }
+        redraw_soon(&handle, pane(i));
     });
     let handle = Rc::clone(app);
-    window.on_scene_pressed(move |x, y, button, shift| {
-        handle.viewer.borrow_mut().press(x, y, button, shift);
-    });
-    let handle = Rc::clone(app);
-    window.on_scene_dragged(move |x, y| {
-        if handle.viewer.borrow_mut().drag_to(x, y) {
-            redraw_soon(&handle);
+    window.on_pane_pressed(move |i, x, y, button, shift| {
+        let mut panes = handle.panes.borrow_mut();
+        let p = &mut panes.panes[pane(i)];
+        if p.kind == panes::Kind::ThreeD {
+            p.viewer.press(x, y, button, shift);
+        } else if button == 0 {
+            p.press = Some(((x, y), 0.0));
         }
     });
     let handle = Rc::clone(app);
-    window.on_scene_released(move |x, y| {
-        let clicked = {
-            let designer = handle.designer.borrow();
-            handle.viewer.borrow_mut().release(x, y, &designer)
+    window.on_pane_dragged(move |i, x, y| {
+        let turned = {
+            let mut panes = handle.panes.borrow_mut();
+            let p = &mut panes.panes[pane(i)];
+            if let Some(((px, py), moved)) = &mut p.press {
+                *moved = (x - *px).abs() + (y - *py).abs();
+            }
+            p.kind == panes::Kind::ThreeD && p.viewer.drag_to(x, y)
         };
-        if clicked {
-            redraw_soon(&handle);
+        if turned {
+            redraw_soon(&handle, pane(i));
         }
     });
     let handle = Rc::clone(app);
-    window.on_scene_scrolled(move |delta| {
-        handle
+    window.on_pane_released(move |i, x, y| handle.released(pane(i), x, y));
+    let handle = Rc::clone(app);
+    window.on_pane_scrolled(move |i, delta| {
+        handle.panes.borrow_mut().panes[pane(i)]
             .viewer
-            .borrow_mut()
             .zoom((delta / 60.0).clamp(-4.0, 4.0));
-        redraw_soon(&handle);
+        redraw_soon(&handle, pane(i));
     });
     let handle = Rc::clone(app);
-    window.on_scene_double_clicked(move |x, y| {
+    window.on_pane_double_clicked(move |i, x, y| {
+        if handle.panes.borrow().panes[pane(i)].kind != panes::Kind::ThreeD {
+            return;
+        }
         let product = {
             let designer = handle.designer.borrow();
-            handle.viewer.borrow_mut().double_click(x, y, &designer)
+            handle.panes.borrow_mut().panes[pane(i)]
+                .viewer
+                .double_click(x, y, &designer)
         };
-        if let Some(window) = handle.window.upgrade() {
-            window.set_scene_explode(0.0);
-        }
-        handle.viewer.borrow_mut().change(|view| view.explode = 0.0);
-        // The cabinet seen alone is the one the fields edit.
-        match product.and_then(|i| i32::try_from(i).ok()) {
-            Some(index) => handle.choose_cabinet(index),
-            None => redraw_soon(&handle),
+        // The cabinet seen from inside is the one the panel edits.
+        match product {
+            Some(index) => handle.open_cabinet(index),
+            None => handle.show_pane(pane(i)),
         }
     });
     let handle = Rc::clone(app);
-    window.on_scene_mode_chosen(move |index| {
+    window.on_pane_mode_chosen(move |i, index| {
         let mode = usize::try_from(index)
             .ok()
-            .and_then(|i| MODES.get(i))
+            .and_then(|m| MODES.get(m))
             .map_or_else(Default::default, |m| m.1);
-        handle.viewer.borrow_mut().change(|view| view.mode = mode);
-        redraw_soon(&handle);
+        change(&handle, i, |view| view.mode = mode);
     });
     let handle = Rc::clone(app);
-    window.on_scene_fronts_toggled(move |on| {
-        handle.viewer.borrow_mut().change(|view| view.fronts = on);
-        redraw_soon(&handle);
+    window.on_pane_fronts_toggled(move |i, on| {
+        change(&handle, i, |view| view.fronts = on);
     });
     let handle = Rc::clone(app);
-    window.on_scene_explode_changed(move |value| {
-        handle
-            .viewer
-            .borrow_mut()
-            .change(|view| view.explode = value);
-        redraw_soon(&handle);
+    window.on_pane_explode_changed(move |i, value| {
+        change(&handle, i, |view| view.explode = value);
     });
     let handle = Rc::clone(app);
-    window.on_scene_room(move || {
+    window.on_pane_room(move |i| {
         {
             let designer = handle.designer.borrow();
-            let mut viewer = handle.viewer.borrow_mut();
-            viewer.change(|view| {
-                view.isolated = None;
-                view.selected = None;
-                view.explode = 0.0;
-            });
+            let mut panes = handle.panes.borrow_mut();
+            let viewer = &mut panes.panes[pane(i)].viewer;
+            viewer.leave();
             viewer.fit(&designer);
         }
-        if let Some(window) = handle.window.upgrade() {
-            window.set_scene_explode(0.0);
-        }
-        redraw_soon(&handle);
+        handle.show_pane(pane(i));
     });
     let handle = Rc::clone(app);
-    window.on_scene_fit(move || {
-        handle.viewer.borrow_mut().fit(&handle.designer.borrow());
-        redraw_soon(&handle);
+    window.on_pane_fit(move |i| {
+        handle.panes.borrow_mut().panes[pane(i)]
+            .viewer
+            .fit(&handle.designer.borrow());
+        handle.show_pane(pane(i));
+    });
+    let handle = Rc::clone(app);
+    window.on_open_page(move |page| handle.open_page(page));
+    let handle = Rc::clone(app);
+    window.on_cabinet_opened(move |index| {
+        if let Ok(index) = usize::try_from(index) {
+            handle.open_cabinet(index);
+        }
+    });
+    let handle = Rc::clone(app);
+    window.on_cancel_placing(move || {
+        handle.placing.set(false);
+        if let Some(window) = handle.window.upgrade() {
+            handle.show_placing(&window);
+        }
     });
 }
 
-/// The drawing area: the elevation or the cabinet, and what is wrong with
-/// the placements.
-fn show_drawing(window: &AppWindow, designer: &Designer) {
-    window.set_plan_available(designer.plan_available());
-    window.set_view_index(designer.view().index());
-    window.set_drawing(drawing_data(designer.drawing()));
-    let second = designer.second_drawing();
-    window.set_split(second.is_some());
-    if let Some(second) = second {
-        window.set_second_drawing(drawing_data(second));
-    }
+/// What is wrong with the placements, over the views, and how many
+/// warnings the reports have.
+fn show_problems(window: &AppWindow, designer: &Designer, problems: usize) {
     window.set_placement_problems(designer.placement_problems().join("\n").into());
+    window.set_problems_note(
+        match problems {
+            0 => String::new(),
+            1 => "1 warning: see Reports".into(),
+            n => format!("{n} warnings: see Reports"),
+        }
+        .into(),
+    );
 }
 
 /// A drawing as the window takes it.
-fn drawing_data(drawing: drawing::Drawing) -> ui::DrawingData {
+pub(crate) fn drawing_data(drawing: drawing::Drawing) -> ui::DrawingData {
     // An empty path is not drawn; a move alone draws nothing.
     let path = |commands: String| {
         if commands.is_empty() {
@@ -1128,10 +1320,6 @@ fn connect_room(window: &AppWindow, app: &Rc<App>) {
     }
     let handle = Rc::clone(app);
     window.on_tab_chosen(move |tab| handle.update(|d| d.show_walls(tab == 1)));
-    let handle = Rc::clone(app);
-    window.on_view_chosen(move |view| {
-        handle.update(|d| d.choose_view(WallView::from_index(view)));
-    });
     let (handle, choose) = (Rc::clone(app), chosen(Designer::select_room));
     window.on_room_chosen(move |i| handle.update(|d| choose(d, i)));
     let handle = Rc::clone(app);
