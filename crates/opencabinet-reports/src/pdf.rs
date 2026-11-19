@@ -476,12 +476,26 @@ impl Pen<'_, '_> {
             }
             Shape::Circle { .. } => {}
             Shape::Text {
-                at, text, centered, ..
+                at,
+                text,
+                centered,
+                beside,
+                ..
             } => {
                 let size = TEXT_SIZE - 1.5;
                 let (mut x, mut y) = place(*at);
+                let width = fonts.regular.width(text, size) / PT_PER_MM;
+                if let (true, Some((bx, by))) = (*centered, beside) {
+                    // Clear `at` by the text's half size on the page and a
+                    // little more; the page has `y` down.
+                    let gap = size * 0.2 / PT_PER_MM;
+                    #[allow(clippy::cast_possible_truncation, reason = "a direction")]
+                    let (bx, by) = (*bx as f32, *by as f32);
+                    x += bx * (width / 2.0 + gap);
+                    y -= by * (size * 0.5 / PT_PER_MM + gap);
+                }
                 if *centered {
-                    x -= fonts.regular.width(text, size) / PT_PER_MM / 2.0;
+                    x -= width / 2.0;
                     y += size * 0.35 / PT_PER_MM;
                 }
                 self.text(&fonts.regular, (x, y), size, text);

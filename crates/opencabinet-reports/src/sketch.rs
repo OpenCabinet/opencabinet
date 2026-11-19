@@ -60,6 +60,11 @@ pub enum Shape {
         text: String,
         /// Whether `at` is its center rather than its start.
         centered: bool,
+        /// For a centered text, a direction, `y` up, in which it stands
+        /// off `at` rather than on it: its nearest edge then just clears
+        /// `at`, whatever size the text is drawn at, as the window draws
+        /// texts at a fixed size on screen.
+        beside: Option<(f64, f64)>,
     },
 }
 
@@ -93,12 +98,14 @@ impl Shape {
                 height,
                 text,
                 centered,
+                beside,
             } => Self::Text {
                 layer: layer.clone(),
                 at: shift(*at),
                 height: *height,
                 text: text.clone(),
                 centered: *centered,
+                beside: *beside,
             },
         }
     }
@@ -113,6 +120,30 @@ impl Shape {
             | Self::Text { layer, .. } => layer,
         }
     }
+}
+
+/// About how wide a text `height` high is.
+#[allow(clippy::cast_precision_loss, reason = "a short label")]
+pub(crate) fn text_width(text: &str, height: f64) -> f64 {
+    text.chars().count() as f64 * height * 0.6
+}
+
+/// The center of a centered text at `at`, `height` high, standing off
+/// `at` toward `beside` when it is given.
+pub(crate) fn text_center(
+    at: (f64, f64),
+    height: f64,
+    text: &str,
+    beside: Option<(f64, f64)>,
+) -> (f64, f64) {
+    let Some((bx, by)) = beside else {
+        return at;
+    };
+    let gap = height * 0.2;
+    (
+        at.0 + bx * (text_width(text, height) / 2.0 + gap),
+        at.1 + by * (height / 2.0 + gap),
+    )
 }
 
 /// A file name without the characters Windows, macOS and Linux reject.
@@ -212,8 +243,10 @@ pub(crate) fn write_dxf(shapes: &[Shape]) -> Result<Vec<u8>, String> {
                 height,
                 text,
                 centered,
+                beside,
                 ..
             } => {
+                let at = &text_center(*at, *height, text, *beside);
                 let mut entity = Text {
                     location: point(*at),
                     text_height: *height,

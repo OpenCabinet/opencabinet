@@ -17,7 +17,7 @@ use opencabinet_eval::front::Rect;
 use opencabinet_eval::{Dimension, Elevation, FrontKind, FrontView, elevation};
 use opencabinet_model::{Id, Length, Library, Project, Side};
 
-use crate::sketch::{DxfFile, Shape, safe_file_name, write_dxf};
+use crate::sketch::{DxfFile, Shape, safe_file_name, text_center, text_width, write_dxf};
 
 /// The wall's outline.
 pub const WALL: &str = "WALL";
@@ -72,6 +72,7 @@ fn text(layer: &str, at: (f64, f64), value: String) -> Shape {
         height: TEXT_HEIGHT,
         text: value,
         centered: true,
+        beside: None,
     }
 }
 
@@ -215,10 +216,14 @@ pub fn bounds(shapes: &[Shape]) -> ((f64, f64), (f64, f64)) {
                 cover(*to);
             }
             Shape::Text {
-                at, height, text, ..
+                at,
+                height,
+                text,
+                beside,
+                ..
             } => {
-                #[allow(clippy::cast_precision_loss, reason = "a short label")]
-                let half = text.chars().count() as f64 * height * 0.3;
+                let half = text_width(text, *height) / 2.0;
+                let at = text_center(*at, *height, text, *beside);
                 cover((at.0 - half, at.1 - height));
                 cover((at.0 + half, at.1 + height));
             }
