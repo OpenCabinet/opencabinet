@@ -167,7 +167,9 @@ use opencabinet_model::{
 
 use crate::assembly::Axis::{NegX, NegY, NegZ, X, Y, Z};
 pub use crate::assembly::{Axis, Placement};
-pub use crate::elevation::{Dimension, Elevation, PlacedCabinet, elevation, placement_problems};
+pub use crate::elevation::{
+    Dimension, Elevation, PlacedCabinet, elevation, placement_problems, wall_length,
+};
 use crate::front::{Divider, Dividers, Layout, Opening, Rect, lay_out};
 pub use crate::machining::{Face, Operation, Point};
 use crate::machining::{groove_along, hinge_positions, holes_between};

@@ -25,41 +25,6 @@ pub enum OpeningKind {
     Door,
 }
 
-/// How the Walls tab shows the room.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WallView {
-    /// The edited wall's elevation.
-    #[default]
-    Elevation,
-    /// The room's plan.
-    Plan,
-    /// The plan and the elevation together.
-    PlanAndElevation,
-}
-
-impl WallView {
-    /// The view at `index` in the window's list, the elevation for any
-    /// other.
-    #[must_use]
-    pub fn from_index(index: i32) -> Self {
-        match index {
-            1 => Self::Plan,
-            2 => Self::PlanAndElevation,
-            _ => Self::Elevation,
-        }
-    }
-
-    /// Its place in the window's list.
-    #[must_use]
-    pub fn index(self) -> i32 {
-        match self {
-            Self::Elevation => 0,
-            Self::Plan => 1,
-            Self::PlanAndElevation => 2,
-        }
-    }
-}
-
 /// Which room, wall, opening and placement are being edited, and whether
 /// the drawing shows the walls rather than the cabinet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -71,8 +36,6 @@ pub(super) struct RoomSelection {
     /// Among the edited cabinet's placements in the room.
     pub(super) placement: Option<usize>,
     pub(super) showing_walls: bool,
-    /// How the walls are shown.
-    pub(super) view: WallView,
 }
 
 /// A new wall: 10' long, 8' high, 4-1/2" thick.
@@ -126,7 +89,7 @@ fn opening_name(kind: &WallOpeningKind) -> &'static str {
 }
 
 impl Designer {
-    fn room(&self) -> Option<&Room> {
+    pub(super) fn room(&self) -> Option<&Room> {
         self.document.project.rooms.get(self.room_selection.room)
     }
 
@@ -175,7 +138,7 @@ impl Designer {
         self.room()?.placements.get(index)
     }
 
-    fn placement_mut(&mut self) -> Option<&mut Placement> {
+    pub(super) fn placement_mut(&mut self) -> Option<&mut Placement> {
         let index = *self
             .placement_indexes()
             .get(self.room_selection.placement?)?;
@@ -215,6 +178,12 @@ impl Designer {
             .iter()
             .map(|r| r.name.clone())
             .collect()
+    }
+
+    /// Whether the edited room has walls to place a cabinet on.
+    #[must_use]
+    pub fn has_walls(&self) -> bool {
+        self.room().is_some_and(|r| !r.walls.is_empty())
     }
 
     /// Which room is being edited; `None` while the project has none.
@@ -348,30 +317,6 @@ impl Designer {
     /// cabinet's.
     pub fn show_walls(&mut self, walls: bool) {
         self.room_selection.showing_walls = walls;
-    }
-
-    /// How the walls are shown: the edited wall's elevation, the room's
-    /// plan, or both.
-    pub fn choose_view(&mut self, view: WallView) {
-        self.room_selection.view = view;
-    }
-
-    /// Whether the drawing can show the room's plan: while the walls are
-    /// shown and there is a room.
-    #[must_use]
-    pub fn plan_available(&self) -> bool {
-        self.room_selection.showing_walls && self.room().is_some()
-    }
-
-    /// How the drawing shows the walls now: in elevation whenever the
-    /// plan is not available.
-    #[must_use]
-    pub fn view(&self) -> WallView {
-        if self.plan_available() {
-            self.room_selection.view
-        } else {
-            WallView::Elevation
-        }
     }
 
     /// The edited room and wall, for the plan.
@@ -844,6 +789,7 @@ impl Designer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::designer::PlanPick;
     use opencabinet_model::Units;
 
     /// A wall's start and end in inches.
@@ -1089,6 +1035,36 @@ mod tests {
         assert_eq!(
             designer.delete_room(),
             Err("There is no room to delete".into())
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_plan_finds_a_wall_and_places_the_cabinet_there() {
+        // One wall 120" long along x; the room is on its +y side.
+        let mut designer = Designer::default();
+        designer.add_wall();
+        assert_eq!(
+            designer.pick_in_plan(1000.0, 300.0),
+            Some(PlanPick::Wall(0, 1000.0))
+        );
+        assert_eq!(designer.pick_in_plan(1000.0, 2000.0), None);
+        // Centered on the click: 1000 less half of 30", 381 mm.
+        designer.place_at(0, 1000.0).unwrap();
+        assert_eq!(designer.placed_count(), 1);
+        let offset = designer.placement().unwrap().offset.unwrap();
+        assert_eq!(offset, Length::from_nm(619_000_000));
+        assert_eq!(
+            designer.pick_in_plan(1000.0, 300.0),
+            Some(PlanPick::Cabinet(designer.selected()))
+        );
+        // Never past the wall's end.
+        designer.place_at(0, 3040.0).unwrap();
+        let offset = designer.placement().unwrap().offset.unwrap();
+        assert_eq!(offset, Length::from_inches(90));
+        // In elevation, the cabinet is 0 to 34-1/2" up.
+        assert_eq!(
+            designer.pick_in_elevation(1000.0, 400.0),
+            Some(designer.selected())
         );
     }
 }

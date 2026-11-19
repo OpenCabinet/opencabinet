@@ -144,7 +144,7 @@ fn the_kitchen_is_drawn() {
             camera.pitch = 0.6;
             camera.yaw = 0.5;
         }
-        renderer.upload(&model.mesh(&view));
+        renderer.upload(0, &model.mesh(&view));
         #[allow(clippy::cast_precision_loss, reason = "a small image")]
         let frame = Frame {
             view_projection: camera.view_projection(width as f32 / height as f32),
@@ -152,19 +152,25 @@ fn the_kitchen_is_drawn() {
             textured: view.mode == Mode::Textured,
             ghost_opacity: 0.2,
         };
-        renderer.draw(&frame, width, height, &mut pixels).unwrap();
+        renderer
+            .draw(0, &frame, width, height, &mut pixels)
+            .unwrap();
         save(name, &pixels, width, height);
         let (colors, _) = pixels.as_chunks::<4>();
         let different = colors.iter().filter(|c| **c != colors[0]).count();
         assert!(different > pixels.len() / 40, "{name} shows nothing");
     }
-    // How long a frame of the room takes, for ADR-0016's budgets; printed,
-    // since CI's machines vary too much to fail on it.
+    measure(&mut renderer, &model, (width, height), &mut pixels);
+}
+
+/// How long a frame of the room takes, for ADR-0016's budgets; printed,
+/// since CI's machines vary too much to fail on it.
+fn measure(renderer: &mut Renderer, model: &Model, (width, height): (u32, u32), pixels: &mut [u8]) {
     let view = View::default();
     let start = std::time::Instant::now();
     let mesh = model.mesh(&view);
     let built = start.elapsed();
-    renderer.upload(&mesh);
+    renderer.upload(0, &mesh);
     let mut camera = Camera::default();
     let (low, high) = model.bounds(&view);
     camera.frame(low, high);
@@ -177,7 +183,7 @@ fn the_kitchen_is_drawn() {
     };
     let start = std::time::Instant::now();
     for _ in 0..5 {
-        renderer.draw(&frame, width, height, &mut pixels).unwrap();
+        renderer.draw(0, &frame, width, height, pixels).unwrap();
     }
     eprintln!(
         "room: scene built in {built:?}, a {width} × {height} frame drawn and read back in {:?}",

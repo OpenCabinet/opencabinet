@@ -42,7 +42,15 @@ pub struct Frame {
     pub ghost_opacity: f32,
 }
 
+/// One view's mesh and images: several views share the device.
+#[derive(Default)]
+struct Slot {
+    buffers: Buffers,
+    targets: Option<Targets>,
+}
+
 /// The GPU buffers of a mesh.
+#[derive(Default)]
 struct Buffers {
     vertices: Option<wgpu::Buffer>,
     solid: Option<(wgpu::Buffer, u32)>,
@@ -77,8 +85,7 @@ pub struct Renderer {
     ghost: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
-    buffers: Buffers,
-    targets: Option<Targets>,
+    slots: Vec<Slot>,
     /// The adapter, for the user: its name and whether it is the
     /// processor drawing.
     pub adapter: String,
@@ -189,21 +196,22 @@ impl Renderer {
             samples,
             globals,
             bind_group,
-            buffers: Buffers {
-                vertices: None,
-                solid: None,
-                ghost: None,
-                lines: None,
-                overlay: None,
-            },
-            targets: None,
+            slots: Vec::new(),
             adapter: format!("{} ({:?})", info.name, info.backend),
             software,
         })
     }
 
-    /// Sends `mesh` to the GPU, for the frames that follow.
-    pub fn upload(&mut self, mesh: &Mesh) {
+    /// The view `slot`'s mesh and images, made when first used.
+    fn slot(&mut self, slot: usize) -> &mut Slot {
+        if self.slots.len() <= slot {
+            self.slots.resize_with(slot + 1, Slot::default);
+        }
+        &mut self.slots[slot]
+    }
+
+    /// Sends `mesh` to the GPU, for the frames of view `slot` that follow.
+    pub fn upload(&mut self, slot: usize, mesh: &Mesh) {
         let device = &self.device;
         let buffer = |label, contents: &[u8], usage| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -234,7 +242,7 @@ impl Renderer {
                 )
             })
         };
-        self.buffers = Buffers {
+        let buffers = Buffers {
             vertices: (!mesh.vertices.is_empty()).then(|| {
                 buffer(
                     "vertices",
@@ -247,11 +255,13 @@ impl Renderer {
             lines: lines("lines", &mesh.lines),
             overlay: lines("overlay", &mesh.overlay),
         };
+        self.slot(slot).buffers = buffers;
     }
 
     /// Makes the images a frame is drawn into, when their size changed.
-    fn make_targets(&mut self, width: u32, height: u32) {
+    fn make_targets(&mut self, slot: usize, width: u32, height: u32) {
         if self
+            .slot(slot)
             .targets
             .as_ref()
             .is_some_and(|t| t.size == (width, height))
@@ -297,7 +307,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        self.targets = Some(Targets {
+        self.slot(slot).targets = Some(Targets {
             size: (width, height),
             color,
             depth,
@@ -308,7 +318,7 @@ impl Renderer {
         });
     }
 
-    /// Draws the uploaded mesh as `frame` says, `width` by `height`
+    /// Draws view `slot`'s uploaded mesh as `frame` says, `width` by `height`
     /// pixels, into `pixels`: four bytes a pixel, RGBA, sRGB, row by row
     /// from the top.
     ///
@@ -316,6 +326,7 @@ impl Renderer {
     /// When the GPU fails: a message for the user.
     pub fn draw(
         &mut self,
+        slot: usize,
         frame: &Frame,
         width: u32,
         height: u32,
@@ -334,8 +345,9 @@ impl Renderer {
         };
         self.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
-        self.make_targets(width, height);
-        let Some(targets) = self.targets.as_ref() else {
+        self.make_targets(slot, width, height);
+        let view = &self.slots[slot];
+        let Some(targets) = view.targets.as_ref() else {
             return Err("The 3D view has nothing to draw into".into());
         };
         let mut encoder = self
@@ -343,7 +355,7 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
-        self.encode(&mut encoder, targets);
+        self.encode(&mut encoder, &view.buffers, targets);
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &targets.source,
@@ -371,7 +383,7 @@ impl Renderer {
 
     /// The frame's drawing: the sky, the opaque triangles, those seen
     /// through, the edges and the selected part's edges over everything.
-    fn encode(&self, encoder: &mut wgpu::CommandEncoder, targets: &Targets) {
+    fn encode(&self, encoder: &mut wgpu::CommandEncoder, b: &Buffers, targets: &Targets) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("frame"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -398,7 +410,6 @@ impl Renderer {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_pipeline(&self.sky);
         pass.draw(0..3, 0..1);
-        let b = &self.buffers;
         if let Some(vertices) = &b.vertices {
             pass.set_vertex_buffer(0, vertices.slice(..));
             for (pipeline, indices) in [(&self.solid, &b.solid), (&self.ghost, &b.ghost)] {

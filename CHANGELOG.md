@@ -13,6 +13,21 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A window built around the views:** the views take most of the window,
+  laid out as one, two side by side, two stacked or four (**Views**). Each
+  shows the project in 3D, the room's plan, an elevation or the edited
+  cabinet, chosen in its own header; each 3D view has its own camera and
+  display.
+- **One panel that follows what you do:** it opens on the project, to add a
+  cabinet, choose one, or open the rooms and walls, the materials or the
+  construction standard. Clicking a cabinet in a 3D view, the plan or an
+  elevation opens its options; clicking a wall in the plan opens the walls;
+  clicking empty space goes back to the project. **Panel** hides it.
+- **Place a new cabinet with a click:** after **Add cabinet**, a click on a
+  wall in the plan or the 3D view places the cabinet there, centered on the
+  click.
+- **Reports on demand:** the cut list and bill of materials open with
+  **Reports**; the status bar says how many warnings they hold.
 - **3D view:** the **3D** button shows the room in 3D: its floor and walls
   with their windows and doors, and every placed cabinet built part by part,
   with wood grain that follows each part, plywood edges, melamine colors,
@@ -37,15 +52,11 @@ follow [Semantic Versioning](https://semver.org/).
   project's rooms, each with its own walls. Cabinets still belong to the
   project and can be placed in any room; deleting a room that holds walls
   or placed cabinets asks first, and keeps the cabinets.
-- **Plan view:** on the Walls tab, **View** shows the chosen room from above
-  instead of the wall's elevation: walls at their thickness, cut by doors
+- **Plan view:** a view shows the chosen room from above: walls at their thickness, cut by doors
   and pass-throughs, with a line for each window; every placed cabinet's
   footprint with its label, dashed when it hangs off the floor; and each
   wall's name and length outside the room. The edited wall and the edited
   cabinet are outlined. The plan is on screen only for now.
-- **Plan and elevation together:** a third **View** choice shows the room's
-  plan and the edited wall's elevation at once, side by side when the
-  drawing area is wider than high and one above the other otherwise.
 
 ### Changed
 

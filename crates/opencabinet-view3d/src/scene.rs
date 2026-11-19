@@ -132,6 +132,9 @@ pub struct View {
     pub fronts: bool,
     /// How far the parts are pulled apart, from 0 (assembled) to 1.
     pub explode: f32,
+    /// The product whose edges are drawn in the selection's color: the
+    /// one being edited.
+    pub highlight: Option<Id>,
 }
 
 impl Default for View {
@@ -142,6 +145,7 @@ impl Default for View {
             selected: None,
             fronts: true,
             explode: 0.0,
+            highlight: None,
         }
     }
 }
@@ -744,6 +748,8 @@ impl Model {
                 }
                 let edge = if selected {
                     [0.10, 0.42, 1.0, 1.0]
+                } else if view.highlight == Some(instance.product) {
+                    [0.10, 0.42, 1.0, 0.85]
                 } else if lines_only {
                     [0.05, 0.07, 0.10, 0.9]
                 } else {

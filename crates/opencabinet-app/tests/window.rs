@@ -71,13 +71,14 @@ fn the_window_edits_saves_and_reopens_a_project() {
     i_slint_backend_testing::init_integration_test_with_system_time();
     let answers = Rc::new(Answers::default());
     let window = opencabinet_app::create_with(answers.clone(), None).unwrap();
+    // Tall enough that the cabinet's fields are on screen without scrolling,
+    // below the toolbar and the page's buttons.
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1280.0, 1000.0));
     assert_eq!(window.get_width_text(), "30\"");
     assert_eq!(window.get_window_title(), "Untitled — OpenCabinet Designer");
-    // A cabinet that is not placed on a wall is drawn alone.
-    assert_eq!(
-        ElementHandle::find_by_accessible_label(&window, "B1, not placed on a wall").count(),
-        1
-    );
+    opens_on_the_project(&window);
 
     // The cut list shows the starter cabinet's fourteen parts, drawer box
     // included, with nothing left out.
@@ -251,113 +252,123 @@ fn rooms(answers: &Rc<Answers>) {
     plan_view(&window);
 }
 
-/// The 3D view: a double-click shows the cabinet under the mouse alone and
-/// edits it, a click selects one of its parts and describes it, and Room
-/// shows everything again. Picking needs no graphics adapter; drawing does,
-/// and CI requires one that draws on the processor.
+/// The window opens on the project; a click on the cabinet in the list
+/// opens its page, and a view can show it alone.
+fn opens_on_the_project(window: &AppWindow) {
+    assert_eq!(window.get_tab_index(), 4);
+    window.invoke_cabinet_chosen(0);
+    assert_eq!(window.get_tab_index(), 0);
+    // A cabinet that is not placed on a wall is drawn alone.
+    window.invoke_pane_kind_chosen(0, 3);
+    assert_eq!(
+        ElementHandle::find_by_accessible_label(window, "B1, not placed on a wall").count(),
+        1
+    );
+    window.invoke_pane_kind_chosen(0, 0);
+}
+
+/// What view `i` shows.
+fn pane(window: &AppWindow, i: usize) -> opencabinet_app::PaneData {
+    window.get_panes().row_data(i).unwrap()
+}
+
+/// A 3D view: a click on a cabinet edits it and a click on nothing edits
+/// the project; a double-click goes inside a cabinet, where a click selects
+/// one of its parts and describes it, and Room leaves it. Picking needs no
+/// graphics adapter; drawing does, and CI requires one that draws on the
+/// processor.
 fn three_d(answers: &Rc<Answers>) {
     let window = opencabinet_app::create_with(answers.clone(), None).unwrap();
     let settle = || slint::platform::update_timers_and_animations();
-    window.set_show_3d(true);
-    window.invoke_show_3d_toggled(true);
-    window.invoke_scene_resized(800.0, 500.0);
+    // The window opens on the project, with one 3D view.
+    assert_eq!(window.get_tab_index(), 4);
+    assert_eq!(window.get_panes().row_count(), 1);
+    assert_eq!(pane(&window, 0).kind, 0);
+    window.invoke_pane_resized(0, 800.0, 500.0);
     settle();
-    let note = window.get_scene_note().to_string();
+    let note = pane(&window, 0).note.to_string();
     if std::env::var_os("OPENCABINET_REQUIRE_3D").is_some() {
         assert!(!note.starts_with("No graphics"), "{note}");
     }
-    assert!(!window.get_scene_isolated());
 
     // The project has no room, so its one cabinet fills the view.
-    window.invoke_scene_double_clicked(400.0, 250.0);
-    assert!(window.get_scene_isolated());
-    window.invoke_scene_pressed(400.0, 250.0, 0, false);
-    window.invoke_scene_released(400.0, 250.0);
-    settle();
-    let info = window.get_scene_info().to_string();
+    let click = |x: f32, y: f32| {
+        window.invoke_pane_pressed(0, x, y, 0, false);
+        window.invoke_pane_released(0, x, y);
+        settle();
+    };
+    click(400.0, 250.0);
+    assert_eq!(window.get_tab_index(), 0);
+    click(5.0, 5.0);
+    assert_eq!(window.get_tab_index(), 4);
+
+    window.invoke_pane_double_clicked(0, 400.0, 250.0);
+    assert!(pane(&window, 0).isolated);
+    assert_eq!(window.get_tab_index(), 0);
+    click(400.0, 250.0);
+    let info = pane(&window, 0).info.to_string();
     assert!(info.contains(" · ") && info.contains(" × "), "{info}");
 
     // A drag turns the view and selects nothing new.
-    window.invoke_scene_pressed(400.0, 250.0, 0, false);
-    window.invoke_scene_dragged(460.0, 230.0);
-    window.invoke_scene_released(460.0, 230.0);
+    window.invoke_pane_pressed(0, 400.0, 250.0, 0, false);
+    window.invoke_pane_dragged(0, 460.0, 230.0);
+    window.invoke_pane_released(0, 460.0, 230.0);
     settle();
-    assert_eq!(window.get_scene_info().to_string(), info);
+    assert_eq!(pane(&window, 0).info.to_string(), info);
 
-    window.invoke_scene_mode_chosen(2);
-    window.invoke_scene_fronts_toggled(false);
-    window.invoke_scene_explode_changed(0.5);
-    window.invoke_scene_scrolled(120.0);
+    window.invoke_pane_mode_chosen(0, 2);
+    window.invoke_pane_fronts_toggled(0, false);
+    window.invoke_pane_explode_changed(0, 0.5);
+    window.invoke_pane_scrolled(0, 120.0);
     settle();
-    window.invoke_scene_room();
+    assert_eq!(pane(&window, 0).mode, 2);
+    assert!(!pane(&window, 0).fronts);
+    window.invoke_pane_room(0);
     settle();
-    assert!(!window.get_scene_isolated());
-    assert_eq!(window.get_scene_info(), "");
+    assert!(!pane(&window, 0).isolated);
+    assert_eq!(pane(&window, 0).info, "");
+
+    // Reports are hidden until asked for.
+    assert!(!window.get_show_reports());
+    assert_eq!(
+        ElementHandle::find_by_accessible_label(&window, "Cut list").count(),
+        0
+    );
 }
 
-/// On the Walls tab the drawing shows the room's plan, the wall's
-/// elevation, or both; the choice is kept while other tabs show the
-/// cabinet.
+/// Four views show the 3D view, the room's plan, the edited wall's
+/// elevation and the edited cabinet; each can show something else.
 fn plan_view(window: &AppWindow) {
-    let views = |w: &AppWindow| ElementHandle::find_by_accessible_label(w, "View").count();
-    assert!(window.get_plan_available());
-    assert!(views(window) > 0);
-    assert_eq!(window.get_view_index(), 0);
-    assert!(window.get_drawing().title.starts_with("Elevation of wall"));
-
-    window.set_view_index(1);
-    window.invoke_view_chosen(1);
-    assert_eq!(window.get_drawing().title, "Plan of Laundry");
-    assert_eq!(window.get_view_index(), 1);
+    window.set_layout_index(3);
+    window.invoke_layout_chosen(3);
+    assert_eq!(window.get_panes().row_count(), 4);
+    let titles: Vec<String> = (0..4)
+        .map(|i| pane(window, i).drawing.title.to_string())
+        .collect();
+    assert_eq!(titles[1], "Plan of Laundry");
+    assert!(titles[2].starts_with("Elevation of wall"), "{titles:?}");
+    assert!(titles[3].contains("not placed on a wall") || !titles[3].is_empty());
     // The edited wall and the edited cabinet's footprint are outlined.
-    assert!(window.get_drawing().highlight.matches('Z').count() >= 2);
-    assert!(
-        window
-            .get_drawing()
-            .labels
-            .iter()
-            .any(|l| l.text.starts_with("Wall A · "))
-    );
-
-    window.set_tab_index(0);
-    window.invoke_tab_chosen(0);
-    assert!(!window.get_plan_available());
-    assert_ne!(window.get_drawing().title, "Plan of Laundry");
-
-    window.set_tab_index(1);
-    window.invoke_tab_chosen(1);
-    assert_eq!(window.get_drawing().title, "Plan of Laundry");
-    assert!(!window.get_split());
-
-    // Both: the plan, and beside it the edited wall's elevation, each
-    // outlining what is edited.
-    window.set_view_index(2);
-    window.invoke_view_chosen(2);
-    assert_eq!(window.get_view_index(), 2);
-    assert!(window.get_split());
-    let (first, second) = (window.get_drawing(), window.get_second_drawing());
-    assert_eq!(first.title, "Plan of Laundry");
-    assert!(second.title.starts_with("Elevation of wall"));
-    assert!(!first.highlight.is_empty() && !second.highlight.is_empty());
-    for title in [&first.title, &second.title] {
+    let plan = pane(window, 1).drawing;
+    assert!(plan.highlight.matches('Z').count() >= 2);
+    assert!(plan.labels.iter().any(|l| l.text.starts_with("Wall A · ")));
+    for title in &titles[1..] {
         assert_eq!(
             ElementHandle::find_by_accessible_label(window, title).count(),
             1,
             "{title}"
         );
     }
-    // The cabinet alone on the other tabs, then both again.
-    window.set_tab_index(0);
-    window.invoke_tab_chosen(0);
-    assert!(!window.get_split());
-    window.set_tab_index(1);
-    window.invoke_tab_chosen(1);
-    assert!(window.get_split());
 
-    window.set_view_index(0);
-    window.invoke_view_chosen(0);
-    assert!(!window.get_split());
-    assert!(window.get_drawing().title.starts_with("Elevation of wall"));
+    // The first view shows the plan instead of 3D.
+    window.invoke_pane_kind_chosen(0, 1);
+    assert_eq!(pane(window, 0).kind, 1);
+    assert_eq!(pane(window, 0).drawing.title, "Plan of Laundry");
+    window.invoke_pane_kind_chosen(0, 0);
+
+    window.set_layout_index(0);
+    window.invoke_layout_chosen(0);
+    assert_eq!(window.get_panes().row_count(), 1);
 }
 
 /// A theme chosen in one window is shown at once and remembered for the next
@@ -640,7 +651,9 @@ fn material_choices(window: &AppWindow) {
 
     // Each list shows the edited cabinet's choice, also when the next
     // cabinet offers the same parts, which keeps the lists in place.
-    // The lists are out of view at the usual size: a tall window shows them.
+    // They are on the cabinet's page, out of view at the usual size: a tall
+    // window shows them.
+    window.invoke_open_page(0);
     let usual_size = window.window().size();
     window
         .window()
@@ -903,7 +916,10 @@ fn walls_and_placements(window: &AppWindow) {
     assert_eq!(window.get_wall_length_reading(), "= 144\"");
     window.invoke_add_window();
     assert_eq!(items(window.get_openings()), ["Window · 36\" at 54\""]);
-    assert_eq!(window.get_drawing().title, "Elevation of wall Wall A");
+    window.set_layout_index(2);
+    window.invoke_layout_chosen(2);
+    window.invoke_pane_kind_chosen(1, 2);
+    assert_eq!(pane(window, 1).drawing.title, "Elevation of wall Wall A");
 
     // A wall cabinet goes 54" up.
     window.set_tab_index(0);
