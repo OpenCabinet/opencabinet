@@ -13,6 +13,13 @@ all-features = true
 # Unmaintained crates are reported, not fatal: a replacement needs a plan.
 unmaintained = "workspace"
 yanked = "deny"
+ignore = [
+  # chrono was declared unmaintained in November 2026. It comes through the
+  # `dxf` crate (ADR-0015) and Slint, not our own code, and has no
+  # replacement until they move to jiff or time. Approved by Andrés on
+  # 2026-11-19; remove this once neither depends on chrono.
+  { id = "RUSTSEC-2026-0543", reason = "chrono, through dxf and Slint; no replacement yet" },
+]
 
 [licenses]
 # Every license here is compatible with GPL-3.0-or-later. Adding one needs
