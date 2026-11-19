@@ -31,3 +31,4 @@ Accepted ADRs are not edited; a new ADR supersedes them.
 | [0013](0013-gpl-or-later.md) | Keep "or later" in the GPL and AGPL licenses | Accepted |
 | [0014](0014-modest-hardware-budgets.md) | Performance budgets for modest computers | Accepted |
 | [0015](0015-export-libraries-and-font.md) | Libraries for PDF and DXF export, and a bundled font | Accepted |
+| [0016](0016-3d-view.md) | A 3D view drawn with wgpu into an image | Accepted |

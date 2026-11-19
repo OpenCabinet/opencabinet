@@ -191,6 +191,7 @@ fn the_window_edits_saves_and_reopens_a_project() {
     shop_template(&answers, &dir);
     theme(&answers, &dir);
     rooms(&answers);
+    three_d(&answers);
 }
 
 /// Rooms are added, renamed, chosen and deleted on the Walls tab, each with
@@ -248,6 +249,50 @@ fn rooms(answers: &Rc<Answers>) {
     assert_eq!(names(&window), ["Laundry"]);
 
     plan_view(&window);
+}
+
+/// The 3D view: a double-click shows the cabinet under the mouse alone and
+/// edits it, a click selects one of its parts and describes it, and Room
+/// shows everything again. Picking needs no graphics adapter; drawing does,
+/// and CI requires one that draws on the processor.
+fn three_d(answers: &Rc<Answers>) {
+    let window = opencabinet_app::create_with(answers.clone(), None).unwrap();
+    let settle = || slint::platform::update_timers_and_animations();
+    window.set_show_3d(true);
+    window.invoke_show_3d_toggled(true);
+    window.invoke_scene_resized(800.0, 500.0);
+    settle();
+    let note = window.get_scene_note().to_string();
+    if std::env::var_os("OPENCABINET_REQUIRE_3D").is_some() {
+        assert!(!note.starts_with("No graphics"), "{note}");
+    }
+    assert!(!window.get_scene_isolated());
+
+    // The project has no room, so its one cabinet fills the view.
+    window.invoke_scene_double_clicked(400.0, 250.0);
+    assert!(window.get_scene_isolated());
+    window.invoke_scene_pressed(400.0, 250.0, 0, false);
+    window.invoke_scene_released(400.0, 250.0);
+    settle();
+    let info = window.get_scene_info().to_string();
+    assert!(info.contains(" · ") && info.contains(" × "), "{info}");
+
+    // A drag turns the view and selects nothing new.
+    window.invoke_scene_pressed(400.0, 250.0, 0, false);
+    window.invoke_scene_dragged(460.0, 230.0);
+    window.invoke_scene_released(460.0, 230.0);
+    settle();
+    assert_eq!(window.get_scene_info().to_string(), info);
+
+    window.invoke_scene_mode_chosen(2);
+    window.invoke_scene_fronts_toggled(false);
+    window.invoke_scene_explode_changed(0.5);
+    window.invoke_scene_scrolled(120.0);
+    settle();
+    window.invoke_scene_room();
+    settle();
+    assert!(!window.get_scene_isolated());
+    assert_eq!(window.get_scene_info(), "");
 }
 
 /// On the Walls tab the drawing shows the room's plan or the wall's

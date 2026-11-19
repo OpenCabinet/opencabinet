@@ -129,6 +129,19 @@
 //!   `bottomGrooveSetback`): as wide as the bottom is thick, the full
 //!   length of the box's sides, front and back.
 //!
+//! # Where parts go
+//!
+//! Every part carries its [`Placement`] in the product: the case's left
+//! side at `x = o`, standing on the toe kick at `y = K`, its back edge at
+//! `z = 0`; the face frame and the fronts' backs at `z = D`, overlay fronts
+//! in front of it and inset fronts in it. The back sits in its grooves, or
+//! behind the case when applied; a base's back stretcher stands in front
+//! of the back. Drawer boxes run from the front of the case back, centered
+//! in their opening's height but never below the top of the bottom or
+//! above the underside of the top. Shelves are spread evenly up their
+//! opening, the same space above, below and between them. See
+//! [`assembly`] for the frames.
+//!
 //! Without a rule that only places machining, the parts are still given
 //! and the evaluator notes what it could not machine.
 //!
@@ -136,6 +149,7 @@
 //! and overrides, makes the product an error rather than giving parts that
 //! would be wrong.
 
+pub mod assembly;
 pub mod elevation;
 pub mod front;
 pub mod machining;
@@ -151,12 +165,14 @@ use opencabinet_model::{
     Project, SheetMaterial, Side, SplitDirection,
 };
 
+use crate::assembly::Axis::{NegX, NegY, NegZ, X, Y, Z};
+pub use crate::assembly::{Axis, Placement};
 pub use crate::elevation::{Dimension, Elevation, PlacedCabinet, elevation, placement_problems};
 use crate::front::{Divider, Dividers, Layout, Opening, Rect, lay_out};
 pub use crate::machining::{Face, Operation, Point};
 use crate::machining::{groove_along, hinge_positions, holes_between};
 pub use crate::plan::{Plan, PlanCabinet, PlanWall, plan};
-use crate::rules::{Back, FaceFrame, Fronts, Overlay, Rules};
+use crate::rules::{Back, Drawers, FaceFrame, Fronts, Overlay, Rules};
 pub use crate::view::{FrontKind, FrontShape, FrontView, front_openings, front_view};
 
 /// The four edges of a part: `x0` and `x1` are the ends of its length,
@@ -193,6 +209,18 @@ pub struct Part {
     pub quantity: u32,
     /// What is machined into it, in its own coordinates.
     pub operations: Vec<Operation>,
+    /// Where it sits in its product.
+    pub placement: Placement,
+}
+
+impl Part {
+    /// The part placed at `(x, y, z)`, its length, width and thickness
+    /// along `axes`.
+    #[must_use]
+    pub fn at(mut self, x: Length, y: Length, z: Length, axes: [Axis; 3]) -> Self {
+        self.placement = Placement::new(x, y, z, axes);
+        self
+    }
 }
 
 /// Something about a product that the user should know.
@@ -341,13 +369,7 @@ pub fn evaluate_product(
     if box_height <= t * 2 || inner_width <= Length::ZERO || case_depth <= Length::ZERO {
         return Err("the cabinet is too small for its toe kick and sides".into());
     }
-    // The top of the bottom is flush with the top of the frame's bottom rail.
-    let bottom_raise = face_frame.map_or(Length::ZERO, |f| f.bottom_rail() - t);
-    if bottom_raise < Length::ZERO {
-        return Err(
-            "the face frame's bottom rail is narrower than the case bottom is thick".into(),
-        );
-    }
+    let bottom_raise = bottom_raise(face_frame, t)?;
 
     let maker = PartMaker { product, quantity };
     let front_edge = banded(case_band, &[Y1]);
@@ -357,9 +379,10 @@ pub fn evaluate_product(
         width: case_width,
         depth: case_depth,
         bottom_raise,
+        left: overhang,
+        floor: toe_kick,
     };
     let mut parts = case_parts(kind, size, &rules, &maker, (case, back), front_edge);
-    let back_front = back_front(&rules.back, back, &lookup);
 
     let face = Rect {
         x: Length::ZERO,
@@ -371,10 +394,13 @@ pub fn evaluate_product(
     let (layout, fit) = (plan.layout, plan.fit);
     if let (Some(frame), Some(material)) = (face_frame, frame_material) {
         fit.check_frame(frame, &layout.dividers)?;
-        parts.extend(frame_parts(frame, material, face, &layout.dividers, &maker));
+        let members = frame_parts(frame, material, face, &layout.dividers, &maker, d);
+        parts.extend(members);
     }
+    let front_plane = FrontPlane { depth: d, fit };
     if let Some(blind) = plan.blind {
-        parts.extend(blind_parts(blind, frame_material, &lookup, &maker)?);
+        let panel = blind_parts(blind, frame_material, &lookup, &maker, front_plane)?;
+        parts.extend(panel);
     }
     let mut cabinet = Cabinet {
         lookup: &lookup,
@@ -383,12 +409,14 @@ pub fn evaluate_product(
         fit,
         blind: blind.map(|b| b.side),
         face,
+        front_plane,
+        case_left: overhang,
         inner_width,
         depth: case_depth,
         // From the top of the bottom to the underside of the top or the
         // stretchers, up the sides.
         inside: (t + bottom_raise, box_height - t),
-        back_front,
+        back_front: back_front(&rules.back, back, &lookup),
         sides: [Vec::new(), Vec::new()],
         hardware: Vec::new(),
     };
@@ -404,6 +432,18 @@ pub fn evaluate_product(
     })
 }
 
+/// How far the bottom sits above the bottom of the sides: its top is flush
+/// with the top of the face frame's bottom rail, if there is one.
+fn bottom_raise(face_frame: Option<&FaceFrame>, t: Length) -> Result<Length, String> {
+    let raise = face_frame.map_or(Length::ZERO, |f| f.bottom_rail() - t);
+    if raise < Length::ZERO {
+        return Err(
+            "the face frame's bottom rail is narrower than the case bottom is thick".into(),
+        );
+    }
+    Ok(raise)
+}
+
 /// A blind corner's fixed panel, made like a slab door, and with a face
 /// frame the mullion beside it.
 fn blind_parts(
@@ -411,28 +451,32 @@ fn blind_parts(
     frame_material: Option<&SheetMaterial>,
     lookup: &Lookup<'_>,
     maker: &PartMaker<'_>,
+    plane: FrontPlane,
 ) -> Result<Vec<Part>, String> {
     let mut parts = Vec::new();
     if let (Some(mullion), Some(material)) = (mullion, frame_material) {
-        parts.push(maker.part(
+        let part = maker.part(
             "frame/mullion.blind",
             "frameMullion",
             material,
             mullion.height,
             mullion.width,
             BARE,
-        ));
+        );
+        parts.push(part.at(mullion.x, mullion.y, plane.depth, [Y, X, NegZ]));
     }
     let material = lookup.material_or("blindPanel", "doors")?;
     let bands = banded(lookup.band("edgeBandFronts"), &[0, 1, 2, 3]);
-    parts.push(maker.part(
+    let part = maker.part(
         "front/blindPanel",
         "blindPanel",
         material,
         panel.height,
         panel.width,
         bands,
-    ));
+    );
+    let z = plane.face_b(material.actual_thickness);
+    parts.push(part.at(panel.x, panel.y, z, [Y, X, NegZ]));
     Ok(parts)
 }
 
@@ -513,6 +557,24 @@ fn face_frame(method: Method, rules: &Rules) -> Result<Option<&FaceFrame>, Strin
     }
 }
 
+/// Where fronts stand: the front of the box or its face frame is at
+/// `depth`; overlay fronts stand in front of it, inset fronts in it.
+#[derive(Clone, Copy)]
+struct FrontPlane {
+    depth: Length,
+    fit: Fit,
+}
+
+impl FrontPlane {
+    /// How far forward face B of a front `thickness` thick is.
+    fn face_b(self, thickness: Length) -> Length {
+        match self.fit {
+            Fit::Framed { by, .. } if by < Length::ZERO => self.depth,
+            _ => self.depth + thickness,
+        }
+    }
+}
+
 /// A product's front laid out.
 struct FrontPlan<'p> {
     /// The openings of its front tree, and the frame members between them.
@@ -565,31 +627,61 @@ fn frame_parts(
     face: Rect,
     dividers: &[Divider<'_>],
     maker: &PartMaker<'_>,
+    depth: Length,
 ) -> Vec<Part> {
     let stile = frame.stile_width;
     let between = face.width - stile * 2;
-    let part =
-        |key: &str, role, length, width| maker.part(key, role, material, length, width, BARE);
-    // Every member runs its grain along its length.
+    // Every member runs its grain along its length, face A toward the
+    // case: stiles and mullions up, rails across.
+    let part = |key: &str, role, length, width, (x, y), up: bool| {
+        let axes = if up { [Y, X, NegZ] } else { [X, Y, NegZ] };
+        maker
+            .part(key, role, material, length, width, BARE)
+            .at(x, y, depth, axes)
+    };
+    let top = face.y + face.height - frame.top_rail();
     let mut parts = vec![
-        part("frame/stile.left", "frameStile", face.height, stile),
-        part("frame/stile.right", "frameStile", face.height, stile),
-        part("frame/rail.top", "frameRail", between, frame.top_rail()),
+        part(
+            "frame/stile.left",
+            "frameStile",
+            face.height,
+            stile,
+            (face.x, face.y),
+            true,
+        ),
+        part(
+            "frame/stile.right",
+            "frameStile",
+            face.height,
+            stile,
+            (face.x + face.width - stile, face.y),
+            true,
+        ),
+        part(
+            "frame/rail.top",
+            "frameRail",
+            between,
+            frame.top_rail(),
+            (face.x + stile, top),
+            false,
+        ),
         part(
             "frame/rail.bottom",
             "frameRail",
             between,
             frame.bottom_rail(),
+            (face.x + stile, face.y),
+            false,
         ),
     ];
     for divider in dividers {
         let r = divider.rect;
-        let (name, role, length, width) = match divider.direction {
-            SplitDirection::Horizontal => ("rail", "frameRail", r.width, r.height),
-            SplitDirection::Vertical => ("mullion", "frameMullion", r.height, r.width),
+        let (name, role, length, width, up) = match divider.direction {
+            SplitDirection::Horizontal => ("rail", "frameRail", r.width, r.height, false),
+            SplitDirection::Vertical => ("mullion", "frameMullion", r.height, r.width, true),
         };
         let key = format!("frame/{}/{name}.{}", divider.split.id, divider.index);
-        parts.push(part(&key, role, length, width));
+        parts.push(part(&key, role, length, width, (r.x, r.y), up));
     }
     parts
 }
@@ -761,6 +853,10 @@ struct CaseSize {
     depth: Length,
     /// How far the bottom sits above the bottom of the sides.
     bottom_raise: Length,
+    /// Where the left side's outer face is.
+    left: Length,
+    /// Where the sides stand: the top of the toe kick.
+    floor: Length,
 }
 
 /// The case's parts: sides, bottom, top or stretchers, and back.
@@ -778,13 +874,31 @@ fn case_parts(
         width: w,
         depth: d,
         bottom_raise,
+        left,
+        floor,
     } = size;
     let t = case.actual_thickness;
+    let zero = Length::ZERO;
+    let (inside, top) = (left + t, floor + box_height);
     let mut parts = vec![
-        maker.part("case/side.left", "side", case, box_height, d, front_edge),
-        maker.part("case/side.right", "side", case, box_height, d, front_edge),
-        maker.part("case/bottom", "bottom", case, inner_width, d, front_edge),
+        maker
+            .part("case/side.left", "side", case, box_height, d, front_edge)
+            .at(left, floor, zero, [Y, Z, X]),
+        maker
+            .part("case/side.right", "side", case, box_height, d, front_edge)
+            .at(left + w, floor, zero, [Y, Z, NegX]),
+        maker
+            .part("case/bottom", "bottom", case, inner_width, d, front_edge)
+            .at(inside, floor + bottom_raise, zero, [X, Z, Y]),
     ];
+    // Where the back's rear face is, and how far in its front face is.
+    let (back_z, back_front) = match rules.back {
+        Back::Grooved { setback, .. } => {
+            let setback = setback.unwrap_or_default();
+            (setback, setback + back.actual_thickness)
+        }
+        Back::Applied => (-back.actual_thickness, zero),
+    };
     // A base cabinet is tied at the top by two stretchers, so its back is
     // grooved into the bottom only; wall and tall cabinets have a full top,
     // grooved like the bottom.
@@ -792,38 +906,54 @@ fn case_parts(
         Kind::Base => {
             let stretcher = rules.case.stretcher_width;
             parts.extend([
-                maker.part(
-                    "case/stretcher.front",
-                    "stretcher",
-                    case,
-                    inner_width,
-                    stretcher,
-                    front_edge,
-                ),
-                maker.part(
-                    "case/stretcher.back",
-                    "stretcher",
-                    case,
-                    inner_width,
-                    stretcher,
-                    BARE,
-                ),
+                maker
+                    .part(
+                        "case/stretcher.front",
+                        "stretcher",
+                        case,
+                        inner_width,
+                        stretcher,
+                        front_edge,
+                    )
+                    .at(inside, top, d - stretcher, [X, Z, NegY]),
+                maker
+                    .part(
+                        "case/stretcher.back",
+                        "stretcher",
+                        case,
+                        inner_width,
+                        stretcher,
+                        BARE,
+                    )
+                    .at(inside, top, back_front, [X, Z, NegY]),
             ]);
             1
         }
         Kind::Wall | Kind::Tall => {
-            parts.push(maker.part("case/top", "top", case, inner_width, d, front_edge));
+            parts.push(
+                maker
+                    .part("case/top", "top", case, inner_width, d, front_edge)
+                    .at(inside, top, zero, [X, Z, NegY]),
+            );
             2
         }
     };
-    let (back_length, back_width) = match rules.back {
+    let (back_length, back_width, back_corner) = match rules.back {
         Back::Grooved { groove_depth, .. } => (
             box_height - (t - groove_depth) * grooved_ends - bottom_raise,
             inner_width + groove_depth * 2,
+            (
+                inside - groove_depth,
+                floor + bottom_raise + t - groove_depth,
+            ),
         ),
-        Back::Applied => (box_height, w),
+        Back::Applied => (box_height, w, (left, floor)),
     };
-    parts.push(maker.part("case/back", "back", back, back_length, back_width, BARE));
+    parts.push(
+        maker
+            .part("case/back", "back", back, back_length, back_width, BARE)
+            .at(back_corner.0, back_corner.1, back_z, [Y, X, Z]),
+    );
 
     // The back's groove runs the full length of the sides, the bottom and
     // any top.
@@ -968,6 +1098,10 @@ struct Cabinet<'c, 'p> {
     blind: Option<Side>,
     /// The front of the box, from the floor: where the sides stand.
     face: Rect,
+    /// Where the fronts stand.
+    front_plane: FrontPlane,
+    /// Where the left side's outer face is.
+    case_left: Length,
     /// Between the sides.
     inner_width: Length,
     /// Of the case, behind any face frame.
@@ -983,6 +1117,12 @@ struct Cabinet<'c, 'p> {
 }
 
 impl<'p> Cabinet<'_, 'p> {
+    /// Where the inside of the case starts, from the product's left.
+    fn inside_left(&self) -> Length {
+        // The case is centered in the product's width.
+        self.case_left + (self.face.width - self.case_left * 2 - self.inner_width).div_round(2)
+    }
+
     /// The bands on a slab front's four edges.
     fn front_bands(&self) -> Bands<'p> {
         banded(self.lookup.band("edgeBandFronts"), &[0, 1, 2, 3])
@@ -1014,14 +1154,11 @@ impl<'p> Cabinet<'_, 'p> {
                     } else {
                         // Slab doors run their grain up.
                         let (length, width) = (door.height, door.width);
-                        let part = self.maker.part(
-                            &key,
-                            "door",
-                            material,
-                            length,
-                            width,
-                            self.front_bands(),
-                        );
+                        let z = self.front_plane.face_b(material.actual_thickness);
+                        let part = self
+                            .maker
+                            .part(&key, "door", material, length, width, self.front_bands())
+                            .at(door.x, door.y, z, [Y, X, NegZ]);
                         parts.push(part);
                     }
                     // The cups go in the door, or in the stile on its
@@ -1054,9 +1191,11 @@ impl<'p> Cabinet<'_, 'p> {
                 } else {
                     // Slab drawer and false fronts run their grain across.
                     let (length, width) = (front.width, front.height);
-                    let part =
-                        self.maker
-                            .part(&key, role, material, length, width, self.front_bands());
+                    let z = self.front_plane.face_b(material.actual_thickness);
+                    let part = self
+                        .maker
+                        .part(&key, role, material, length, width, self.front_bands())
+                        .at(front.x, front.y, z, [X, Y, NegZ]);
                     parts.push(part);
                 }
                 if insert.kind == InsertKind::Drawer {
@@ -1235,33 +1374,66 @@ impl<'p> Cabinet<'_, 'p> {
         }
         let g = rules.panel_groove_depth;
         let float = rules.panel_clearance;
-        let part = |name: &str, role, material, length, width| {
-            self.maker.part(
-                &format!("{key}/{name}"),
-                role,
-                material,
-                length,
-                width,
-                BARE,
-            )
+        let j = rules.joint_depth;
+        let z = self.front_plane.face_b(frame.actual_thickness);
+        // The panel floats in the middle of the frame's thickness.
+        let panel_z = z - (frame.actual_thickness - panel.actual_thickness).div_round(2);
+        let part = |name: &str, role, material, length, width, (x, y, z), axes| {
+            self.maker
+                .part(
+                    &format!("{key}/{name}"),
+                    role,
+                    material,
+                    length,
+                    width,
+                    BARE,
+                )
+                .at(x, y, z, axes)
         };
+        let (up, across) = ([Y, X, NegZ], [X, Y, NegZ]);
+        let right = front.x + front.width - stile;
+        let top = front.y + front.height - rail;
+        let inner = (
+            front.x + stile - g + float.div_round(2),
+            front.y + rail - g + float.div_round(2),
+        );
         parts.extend([
             // Stiles run their grain up, rails across, the panel up.
-            part("stile.left", "stile", frame, front.height, stile),
-            part("stile.right", "stile", frame, front.height, stile),
+            part(
+                "stile.left",
+                "stile",
+                frame,
+                front.height,
+                stile,
+                (front.x, front.y, z),
+                up,
+            ),
+            part(
+                "stile.right",
+                "stile",
+                frame,
+                front.height,
+                stile,
+                (right, front.y, z),
+                up,
+            ),
             part(
                 "rail.top",
                 "rail",
                 frame,
-                between + rules.joint_depth * 2,
+                between + j * 2,
                 rail,
+                (front.x + stile - j, top, z),
+                across,
             ),
             part(
                 "rail.bottom",
                 "rail",
                 frame,
-                between + rules.joint_depth * 2,
+                between + j * 2,
                 rail,
+                (front.x + stile - j, front.y, z),
+                across,
             ),
             part(
                 "panel",
@@ -1269,6 +1441,8 @@ impl<'p> Cabinet<'_, 'p> {
                 panel,
                 panel_height + g * 2 - float,
                 between + g * 2 - float,
+                (inner.0, inner.1, panel_z),
+                up,
             ),
         ]);
         Ok(())
@@ -1317,25 +1491,16 @@ impl<'p> Cabinet<'_, 'p> {
         if height <= Length::ZERO || between <= Length::ZERO {
             return Err("the drawer opening is too small for a drawer box".into());
         }
+        let (left, low) = self.drawer_corner(rules, opening, height);
+        let back = self.depth - depth;
         let g = rules.bottom_groove_depth;
-        // The bottom's groove runs the full length of the sides, the front
-        // and the back.
-        let groove = if let Some(setback) = rules.bottom_groove_setback {
-            let width = bottom.actual_thickness;
-            if setback + width >= height {
-                return Err("the drawer box is too low for its bottom's groove".into());
-            }
-            Some((setback + width.div_round(2), width))
-        } else {
-            self.lookup.note(
-                "drawer bottoms' grooves are not machined: the standard's `drawers` \
-                     rules have no `bottomGrooveSetback`",
-            );
-            None
-        };
-        let part = |name: &str, role, material, length, width| {
+        let groove = self.bottom_groove(rules, bottom, height)?;
+        let part = |name: &str, role, material, length, width, (x, y, z), axes| {
             let key = format!("{prefix}/drawer/box.{name}");
-            let mut part = self.maker.part(&key, role, material, length, width, BARE);
+            let mut part = self
+                .maker
+                .part(&key, role, material, length, width, BARE)
+                .at(x, y, z, axes);
             if let (Some((y, groove_width)), "drawerSide" | "drawerSubFront" | "drawerBack") =
                 (groove, role)
             {
@@ -1344,20 +1509,94 @@ impl<'p> Cabinet<'_, 'p> {
             }
             part
         };
+        let bottom_y = low + groove.map_or(Length::ZERO, |(y, w)| y - w.div_round(2));
         parts.extend([
-            part("side.left", "drawerSide", sides, depth, height),
-            part("side.right", "drawerSide", sides, depth, height),
-            part("front", "drawerSubFront", sides, between, height),
-            part("back", "drawerBack", sides, between, height),
+            part(
+                "side.left",
+                "drawerSide",
+                sides,
+                depth,
+                height,
+                (left, low, back),
+                [Z, Y, X],
+            ),
+            part(
+                "side.right",
+                "drawerSide",
+                sides,
+                depth,
+                height,
+                (left + width, low, back),
+                [Z, Y, NegX],
+            ),
+            part(
+                "front",
+                "drawerSubFront",
+                sides,
+                between,
+                height,
+                (left + t, low, self.depth),
+                [X, Y, NegZ],
+            ),
+            part(
+                "back",
+                "drawerBack",
+                sides,
+                between,
+                height,
+                (left + t, low, back),
+                [X, Y, Z],
+            ),
             part(
                 "bottom",
                 "drawerBottom",
                 bottom,
                 between + g * 2,
                 depth - t * 2 + g * 2,
+                (left + t - g, bottom_y, back + t - g),
+                [X, Z, Y],
             ),
         ]);
         Ok(())
+    }
+
+    /// Where a drawer box `height` high for `opening` has its left and
+    /// bottom: beside the slides' clearance, and centered in the opening's
+    /// height but within the inside of the case.
+    fn drawer_corner(&self, rules: &Drawers, opening: Rect, height: Length) -> (Length, Length) {
+        let left = match self.fit {
+            Fit::Frameless { .. } => self.inside_left(),
+            Fit::Framed { .. } => opening.x,
+        } + rules.side_clearance;
+        let (floor, ceiling) = (self.face.y + self.inside.0, self.face.y + self.inside.1);
+        let mut low = (opening.y + rules.vertical_clearance.div_round(2)).max(floor);
+        if low + height > ceiling {
+            low = ceiling - height;
+        }
+        (left, low)
+    }
+
+    /// The groove for a drawer box's `bottom`, which runs the full length
+    /// of the sides, the front and the back: its center up from their
+    /// bottom edge and its width.
+    fn bottom_groove(
+        &self,
+        rules: &Drawers,
+        bottom: &SheetMaterial,
+        height: Length,
+    ) -> Result<Option<(Length, Length)>, String> {
+        let Some(setback) = rules.bottom_groove_setback else {
+            self.lookup.note(
+                "drawer bottoms' grooves are not machined: the standard's `drawers` \
+                     rules have no `bottomGrooveSetback`",
+            );
+            return Ok(None);
+        };
+        let width = bottom.actual_thickness;
+        if setback + width >= height {
+            return Err("the drawer box is too low for its bottom's groove".into());
+        }
+        Ok(Some((setback + width.div_round(2), width)))
     }
 
     /// `count` adjustable shelves across the cabinet's inside, in
@@ -1399,12 +1638,23 @@ impl<'p> Cabinet<'_, 'p> {
         // Four pins hold each shelf.
         self.hardware
             .push((HardwareKind::ShelfPin, 4 * u32::from(count)));
-        for i in 1..=count {
+        // Spread evenly up the inside of the opening.
+        let (floor, ceiling) = (self.face.y + self.inside.0, self.face.y + self.inside.1);
+        let low = opening.y.max(floor);
+        let high = (opening.y + opening.height).min(ceiling);
+        let t = material.actual_thickness;
+        let space = (high - low - t * i64::from(count)).max(Length::ZERO);
+        let x = self.inside_left() + rules.side_clearance.div_round(2);
+        let mut y = low;
+        for (i, gap) in (1..=count).zip(space.split(u32::from(count) + 1)) {
+            y += gap;
             let key = format!("{prefix}/shelf.{i}");
             let part = self
                 .maker
-                .part(&key, "shelf", material, length, width, front);
+                .part(&key, "shelf", material, length, width, front)
+                .at(x, y, rules.back_allowance, [X, Z, Y]);
             parts.push(part);
+            y += t;
         }
         Ok(())
     }
@@ -1517,6 +1767,7 @@ impl PartMaker<'_> {
             edges: bands.map(|b| b.map(|b| b.id)),
             quantity: self.quantity,
             operations: Vec::new(),
+            placement: Placement::default(),
         }
     }
 }

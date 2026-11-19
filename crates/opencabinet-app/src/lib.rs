@@ -11,10 +11,12 @@ pub mod fonts;
 pub mod perf;
 pub mod preferences;
 pub mod user_folder;
+pub mod viewer;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use opencabinet_model::{Method, Side, Units};
 use slint::{
@@ -27,6 +29,7 @@ use crate::designer::{
 };
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
 use crate::preferences::{Preferences, Theme};
+use crate::viewer::{MODES, Viewer};
 use opencabinet_reports::Separator;
 
 /// The code Slint generates from `ui/app.slint`, which follows Slint's
@@ -67,6 +70,7 @@ pub fn create_with(
         on_edited(&window, dimension, move |text| app.edit(dimension, &text));
     }
     connect_room(&window, &app);
+    connect_scene(&window, &app);
     connect_front(&window, &app);
     connect_materials(&window, &app);
     connect_standard(&window, &app);
@@ -172,6 +176,11 @@ struct App {
     /// Where the preferences live, for the same reason optional.
     preferences_path: Option<PathBuf>,
     preferences: RefCell<Preferences>,
+    /// The 3D view.
+    viewer: RefCell<Viewer>,
+    /// Whether the 3D view is to be drawn again once the events waiting
+    /// are handled.
+    redraw_pending: Cell<bool>,
 }
 
 impl App {
@@ -191,6 +200,8 @@ impl App {
             template_path,
             preferences_path,
             preferences: RefCell::new(preferences),
+            viewer: RefCell::new(Viewer::default()),
+            redraw_pending: Cell::new(false),
         });
         window.set_system_theme_title(
             if cfg!(windows) {
@@ -747,6 +758,8 @@ impl App {
         show_materials(window, &designer, texts);
         show_standard(window, &designer, texts);
         show_drawing(window, &designer);
+        self.viewer.borrow_mut().invalidate();
+        self.show_scene(window, &designer);
         let list = designer.cut_list();
         let rows: Vec<ModelRc<StandardListViewItem>> = list
             .rows
@@ -805,6 +818,145 @@ impl App {
             window.set_status(message.into());
         }
     }
+
+    /// Draws the 3D view, when it is shown, and what is selected in it.
+    fn show_scene(&self, window: &AppWindow, designer: &Designer) {
+        if !window.get_show_3d() {
+            return;
+        }
+        let mut viewer = self.viewer.borrow_mut();
+        match viewer.draw(designer) {
+            Ok(image) => {
+                window.set_scene_image(image);
+                let note = viewer
+                    .adapter()
+                    .filter(|a| a.starts_with("Drawn without"))
+                    .unwrap_or_default();
+                window.set_scene_note(note.into());
+            }
+            Err(message) => window.set_scene_note(message.into()),
+        }
+        window.set_scene_info(viewer.describe(designer).into());
+        window.set_scene_isolated(viewer.view.isolated.is_some());
+    }
+}
+
+/// Draws the 3D view again once the events waiting are handled, so that a
+/// quick drag draws once for many moves.
+fn redraw_soon(app: &Rc<App>) {
+    if app.redraw_pending.replace(true) {
+        return;
+    }
+    let app = Rc::clone(app);
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        app.redraw_pending.set(false);
+        if let Some(window) = app.window.upgrade() {
+            app.show_scene(&window, &app.designer.borrow());
+        }
+    });
+}
+
+/// Connects the 3D view: its mouse, its settings and its buttons.
+fn connect_scene(window: &AppWindow, app: &Rc<App>) {
+    let handle = Rc::clone(app);
+    window.on_show_3d_toggled(move |_| redraw_soon(&handle));
+    let handle = Rc::clone(app);
+    window.on_scene_resized(move |width, height| {
+        let Some(window) = handle.window.upgrade() else {
+            return;
+        };
+        let scale = window.window().scale_factor();
+        handle.viewer.borrow_mut().resize(width, height, scale);
+        redraw_soon(&handle);
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_pressed(move |x, y, button, shift| {
+        handle.viewer.borrow_mut().press(x, y, button, shift);
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_dragged(move |x, y| {
+        if handle.viewer.borrow_mut().drag_to(x, y) {
+            redraw_soon(&handle);
+        }
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_released(move |x, y| {
+        let clicked = {
+            let designer = handle.designer.borrow();
+            handle.viewer.borrow_mut().release(x, y, &designer)
+        };
+        if clicked {
+            redraw_soon(&handle);
+        }
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_scrolled(move |delta| {
+        handle
+            .viewer
+            .borrow_mut()
+            .zoom((delta / 60.0).clamp(-4.0, 4.0));
+        redraw_soon(&handle);
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_double_clicked(move |x, y| {
+        let product = {
+            let designer = handle.designer.borrow();
+            handle.viewer.borrow_mut().double_click(x, y, &designer)
+        };
+        if let Some(window) = handle.window.upgrade() {
+            window.set_scene_explode(0.0);
+        }
+        handle.viewer.borrow_mut().change(|view| view.explode = 0.0);
+        // The cabinet seen alone is the one the fields edit.
+        match product.and_then(|i| i32::try_from(i).ok()) {
+            Some(index) => handle.choose_cabinet(index),
+            None => redraw_soon(&handle),
+        }
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_mode_chosen(move |index| {
+        let mode = usize::try_from(index)
+            .ok()
+            .and_then(|i| MODES.get(i))
+            .map_or_else(Default::default, |m| m.1);
+        handle.viewer.borrow_mut().change(|view| view.mode = mode);
+        redraw_soon(&handle);
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_fronts_toggled(move |on| {
+        handle.viewer.borrow_mut().change(|view| view.fronts = on);
+        redraw_soon(&handle);
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_explode_changed(move |value| {
+        handle
+            .viewer
+            .borrow_mut()
+            .change(|view| view.explode = value);
+        redraw_soon(&handle);
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_room(move || {
+        {
+            let designer = handle.designer.borrow();
+            let mut viewer = handle.viewer.borrow_mut();
+            viewer.change(|view| {
+                view.isolated = None;
+                view.selected = None;
+                view.explode = 0.0;
+            });
+            viewer.fit(&designer);
+        }
+        if let Some(window) = handle.window.upgrade() {
+            window.set_scene_explode(0.0);
+        }
+        redraw_soon(&handle);
+    });
+    let handle = Rc::clone(app);
+    window.on_scene_fit(move || {
+        handle.viewer.borrow_mut().fit(&handle.designer.borrow());
+        redraw_soon(&handle);
+    });
 }
 
 /// The drawing area: the elevation or the cabinet, and what is wrong with
