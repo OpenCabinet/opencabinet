@@ -13,6 +13,21 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **3D view:** the **3D** button shows the room in 3D: its floor and walls
+  with their windows and doors, and every placed cabinet built part by part,
+  with wood grain that follows each part, plywood edges, melamine colors,
+  edge bands, holes, grooves, and hinges, slides and shelf pins as simple
+  shapes. Drag to turn, right-drag to slide, scroll to zoom. Double-click a
+  cabinet to see it alone and edit it; click a part to read its name,
+  material, size, edges and machining. **Display** draws it textured,
+  shaded, in X-ray or as edges; **Fronts** hides doors and drawer fronts to
+  see inside; **Explode** pulls the parts apart. Cabinets that cannot be
+  built yet show as see-through boxes. Without a usable graphics card the
+  view is drawn on the processor, slower; everything else is unchanged
+  (ADR-0016).
+- **Where every part goes:** the evaluator places each part in its cabinet
+  (RFC-0001 §9), and a test checks that no two parts are in the same place
+  except where a joint puts one into the other.
 - **Light and dark themes:** **View → Theme** chooses light, dark or the
   same as the system, which is the usual choice. The program remembers it in
   the user's folder, beside the shop template, and exported PDF and DXF files

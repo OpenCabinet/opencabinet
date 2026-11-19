@@ -59,7 +59,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends             libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libgl1-mesa-dri
+          sudo apt-get install -y --no-install-recommends             libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libgl1-mesa-dri mesa-vulkan-drivers
       - name: Fetch dependencies
         run: cargo fetch --locked
       - name: Format
@@ -68,6 +68,18 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets
       - name: Test
         run: cargo test --locked --workspace
+        env:
+          # The 3D view is drawn on the processor (lavapipe, WARP); without
+          # an adapter its test fails rather than skips.
+          OPENCABINET_REQUIRE_3D: "1"
+      # Pictures of the sample kitchen in 3D, to look at.
+      - name: Keep the 3D pictures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: view3d-${{ matrix.os }}
+          path: target/view3d/
+          if-no-files-found: ignore
       - name: Documentation
         run: cargo doc --locked --workspace --no-deps
       # The cut list PDF, read back by independent open source readers.

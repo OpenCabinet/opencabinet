@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import {
-    Button, ComboBox, LineEdit, Palette, ScrollView, StandardListView, StandardTableView,
+    Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Slider, StandardListView,
+    StandardTableView,
     TabWidget,
 } from "std-widgets.slint";
 
@@ -398,6 +399,29 @@ export component AppWindow inherits Window {
         lines: "M 0 0", marks: "M 0 0", highlight: "M 0 0", dimensions: "M 0 0",
     };
     in property <string> placement-problems;
+    // The 3D view, in place of the drawing: the picture the program draws,
+    // what is selected in it, and how it is shown.
+    in-out property <bool> show-3d;
+    callback show-3d-toggled(on: bool);
+    in property <image> scene-image;
+    in property <string> scene-info;
+    in property <string> scene-note;
+    in property <bool> scene-isolated;
+    in property <[string]> scene-modes: ["Textured", "Shaded", "X-ray", "Wireframe"];
+    in-out property <int> scene-mode-index;
+    in-out property <bool> scene-fronts: true;
+    in-out property <float> scene-explode;
+    callback scene-resized(width: length, height: length);
+    callback scene-pressed(x: length, y: length, button: int, shift: bool);
+    callback scene-dragged(x: length, y: length);
+    callback scene-released(x: length, y: length);
+    callback scene-scrolled(delta: length);
+    callback scene-double-clicked(x: length, y: length);
+    callback scene-mode-chosen(index: int);
+    callback scene-fronts-toggled(on: bool);
+    callback scene-explode-changed(value: float);
+    callback scene-room();
+    callback scene-fit();
     // The cut list: one row of text cells per part, and what could not be
     // evaluated.
     in property <[[StandardListViewItem]]> cut-rows;
@@ -1155,26 +1179,126 @@ export component AppWindow inherits Window {
             VerticalLayout {
                 horizontal-stretch: 1;
 
-                if root.plan-available: HorizontalLayout {
+                HorizontalLayout {
                     padding: 4px;
                     spacing: 8px;
                     alignment: start;
-                    Text {
+                    Button {
+                        text: "3D";
+                        accessible-label: "3D view";
+                        checkable: true;
+                        checked <=> root.show-3d;
+                        clicked => { root.show-3d-toggled(self.checked); }
+                    }
+                    if root.plan-available && !root.show-3d: Text {
                         text: "View";
                         vertical-alignment: center;
                     }
-                    ComboBox {
+                    if root.plan-available && !root.show-3d: ComboBox {
                         accessible-label: "View";
                         width: 180px;
                         model: ["Elevation", "Plan", "Plan and elevation"];
                         current-index <=> root.view-index;
                         selected => { root.view-chosen(self.current-index); }
                     }
+                    if root.show-3d: ComboBox {
+                        accessible-label: "Display";
+                        width: 130px;
+                        model: root.scene-modes;
+                        current-index <=> root.scene-mode-index;
+                        selected => { root.scene-mode-chosen(self.current-index); }
+                    }
+                    if root.show-3d: CheckBox {
+                        text: "Fronts";
+                        checked <=> root.scene-fronts;
+                        toggled => { root.scene-fronts-toggled(self.checked); }
+                    }
+                    if root.show-3d: Text {
+                        text: "Explode";
+                        vertical-alignment: center;
+                    }
+                    if root.show-3d: Slider {
+                        accessible-label: "Explode";
+                        width: 110px;
+                        minimum: 0;
+                        maximum: 1;
+                        value <=> root.scene-explode;
+                        changed(value) => { root.scene-explode-changed(value); }
+                    }
+                    if root.show-3d: Button {
+                        text: "Fit";
+                        clicked => { root.scene-fit(); }
+                    }
+                    if root.show-3d && root.scene-isolated: Button {
+                        text: "Room";
+                        clicked => { root.scene-room(); }
+                    }
+                }
+
+                if root.show-3d: Rectangle {
+                    vertical-stretch: 1;
+                    background: #c4cedb;
+                    accessible-role: image;
+                    accessible-label: "3D view";
+                    init => { root.scene-resized(self.width, self.height); }
+                    changed width => { root.scene-resized(self.width, self.height); }
+                    changed height => { root.scene-resized(self.width, self.height); }
+
+                    Image {
+                        width: 100%;
+                        height: 100%;
+                        source: root.scene-image;
+                        image-fit: fill;
+                    }
+                    TouchArea {
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down) {
+                                root.scene-pressed(self.mouse-x, self.mouse-y,
+                                    event.button == PointerEventButton.left ? 0
+                                        : event.button == PointerEventButton.right ? 1 : 2,
+                                    event.modifiers.shift);
+                            } else if (event.kind == PointerEventKind.up) {
+                                root.scene-released(self.mouse-x, self.mouse-y);
+                            }
+                        }
+                        moved => { root.scene-dragged(self.mouse-x, self.mouse-y); }
+                        double-clicked => { root.scene-double-clicked(self.mouse-x, self.mouse-y); }
+                        scroll-event(event) => {
+                            root.scene-scrolled(event.delta-y);
+                            accept
+                        }
+                    }
+                    if root.scene-info != "": Rectangle {
+                        x: 12px;
+                        y: 12px;
+                        width: info-text.preferred-width + 24px;
+                        height: info-text.preferred-height + 16px;
+                        background: Palette.background.with-alpha(0.9);
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #1a6bff;
+                        info-text := Text {
+                            x: 12px;
+                            y: 8px;
+                            text: root.scene-info;
+                            font-size: 12px;
+                        }
+                    }
+                    Text {
+                        x: 12px;
+                        y: parent.height - self.height - 8px;
+                        width: parent.width - 24px;
+                        text: root.scene-note != "" ? root.scene-note
+                            : "Drag to turn · right-drag to slide · scroll to zoom · click a part · double-click a cabinet to see it alone";
+                        color: #20242a;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
                 }
 
                 // The drawing area: one drawing, or two side by side when it is
                 // wider than high and one above the other when it is not.
-                drawing-area := Rectangle {
+                if !root.show-3d: drawing-area := Rectangle {
                     vertical-stretch: 1;
                     property <bool> wide: self.width >= self.height;
                     property <length> gap: 4px;

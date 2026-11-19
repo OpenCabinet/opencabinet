@@ -24,9 +24,11 @@ Accepted ADRs are not edited; a new ADR supersedes them.
 | [0006](0006-trunk-based-workflow.md) | Trunk-based workflow, Conventional Commits and SemVer | Accepted |
 | [0007](0007-english-as-repository-language.md) | English as the repository language | Accepted |
 | [0008](0008-imperial-default-units.md) | Imperial units by default, metric as an option | Accepted |
+| [0009](0009-length-representation.md) | Represent lengths as integer nanometers | Accepted |
 | [0010](0010-project-and-module-names.md) | Project and module names | Accepted |
 | [0011](0011-core-technical-stack.md) | Rust for the core | Accepted |
 | [0012](0012-desktop-ui-toolkit.md) | Desktop user interface toolkit | Accepted |
 | [0013](0013-gpl-or-later.md) | Keep "or later" in the GPL and AGPL licenses | Accepted |
 | [0014](0014-modest-hardware-budgets.md) | Performance budgets for modest computers | Accepted |
 | [0015](0015-export-libraries-and-font.md) | Libraries for PDF and DXF export, and a bundled font | Accepted |
+| [0016](0016-3d-view.md) | A 3D view drawn with wgpu into an image | Accepted |

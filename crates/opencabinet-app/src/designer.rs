@@ -528,6 +528,18 @@ impl Designer {
         self.modified = true;
     }
 
+    /// The project being edited.
+    #[must_use]
+    pub fn project(&self) -> &Project {
+        &self.document.project
+    }
+
+    /// The project's library.
+    #[must_use]
+    pub fn library(&self) -> &Library {
+        &self.document.library
+    }
+
     /// The units lengths are typed and shown in.
     #[must_use]
     pub fn units(&self) -> Units {
@@ -662,7 +674,8 @@ impl Designer {
     }
 
     /// A length in the current units and precision.
-    fn show(&self, length: Length) -> String {
+    #[must_use]
+    pub fn show(&self, length: Length) -> String {
         length.show(self.units(), self.precision()).text
     }
 
