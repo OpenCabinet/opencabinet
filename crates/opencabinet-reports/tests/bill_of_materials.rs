@@ -97,12 +97,17 @@ fn the_sample_kitchen_matches_the_counts_worked_out_by_hand() {
                 "16",
                 "4 for each adjustable shelf"
             ],
+            // Each base's bottom, 24" deep, takes six dowels at each end
+            // and each stretcher two: 20 a cabinet, for the two B30s and the
+            // BC42. The W30's case is 285.75 deep behind its frame: three at
+            // each end of its bottom and its top, 12.
+            ["Hardware", "Dowel 8 × 35 mm", "72", "joining the cases"],
         ]
     );
     assert_eq!(
         bom.notes,
         [
-            "Sheet counts are estimates from the parts' area; pulls, legs, screws and glue are \
+            "Sheet counts are estimates from the parts' area; pulls, legs, nails, screws other than confirmat and glue are \
           not counted yet"
         ]
     );

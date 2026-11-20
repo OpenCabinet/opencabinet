@@ -257,6 +257,58 @@ pub(super) fn new_hinge() -> Hardware {
     }
 }
 
+/// A connector from the library's hardware, named `name`, with its
+/// `dimensions` in millimeters.
+fn new_connector(name: &str, dimensions: &[(&str, i64)]) -> Hardware {
+    Hardware {
+        id: Id::new(),
+        version: 1,
+        category: "connector".into(),
+        name: name.into(),
+        dimensions: dimensions
+            .iter()
+            .map(|&(key, mm)| (key.to_owned(), Length::from_mm(mm)))
+            .collect(),
+        unknown: BTreeMap::default(),
+    }
+}
+
+/// An 8 mm dowel 35 mm long, and a 7 × 50 mm confirmat screw.
+pub(super) fn new_connectors() -> (Hardware, Hardware) {
+    (
+        new_connector("Dowel 8 × 35 mm", &[("diameter", 8), ("length", 35)]),
+        new_connector(
+            "Confirmat screw 7 × 50 mm",
+            &[("shankDiameter", 7), ("pilotDiameter", 5), ("length", 50)],
+        ),
+    )
+}
+
+/// The usual joinery: dowels in every joint of the case, on the 32 mm
+/// grid, with `dowel` and `screw` for the dowels and confirmat screws.
+pub(super) fn usual_joinery(dowel: Id, screw: Id) -> Value {
+    json!({
+        "bottom": "dowels",
+        "top": "dowels",
+        "stretchers": "dowels",
+        "dowels": {
+            "hardware": dowel,
+            "faceDepth": Length::from_mm(12),
+            "edgeDepth": Length::from_mm(25),
+            "endDistance": Length::from_mm(32),
+            "spacing": Length::from_mm(96),
+            "minimum": 2,
+        },
+        "confirmat": {
+            "hardware": screw,
+            "countersink": Length::from_mm(10),
+            "extraDepth": Length::from_mm(3),
+            "endDistance": Length::from_mm(50),
+            "spacing": Length::from_mm(256),
+        },
+    })
+}
+
 /// The usual rules of a standard built by `method`, with `hinge` for its
 /// doors. A shop is expected to change them.
 pub(super) fn usual_rules(method: Method, hinge: Id) -> Value {
@@ -1127,7 +1179,8 @@ mod tests {
         );
         designer.add_rule_group("hinges");
         assert_eq!(row(&designer, "hinges.@name").text, "Cup hinge 35 mm");
-        assert_eq!(designer.document.library.hardware.len(), 1);
+        // The library's hinge, beside its dowel and screw.
+        assert_eq!(designer.document.library.hardware.len(), 3);
 
         // Rules the window does not show survive editing and saving.
         designer.edit_rule("toeKick.height", "3").unwrap();

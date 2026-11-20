@@ -13,6 +13,15 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Joinery:** construction standards can join the case with dowels,
+  confirmat screws or both (`joinery` rules): the sides to the bottom, the
+  top and the stretchers. Dowels stand in a row on the 32 mm grid,
+  centered on each joint; their holes are bored into the sides' faces and
+  the other parts' edges, so they always meet. The parts' DXF draws holes
+  in edges on layers of their own, the bill of materials counts dowels and
+  screws, and the 3D view shows them, solid in X-ray and between the parts
+  when exploded. The sample standards and new projects use 8 × 35 mm
+  dowels; the standard's page does not edit these rules yet.
 - **A window built around the views:** the views take most of the window,
   laid out as one, two side by side, two stacked or four (**Views**). Each
   shows the project in 3D, the room's plan, an elevation or the edited

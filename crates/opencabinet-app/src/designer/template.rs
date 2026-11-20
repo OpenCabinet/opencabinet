@@ -395,7 +395,8 @@ mod tests {
         assert_eq!(method_of(&started), Some(Method::FaceFrame));
         let library = &started.document.library;
         assert_eq!(library.standards.len(), 2);
-        assert_eq!(library.hardware.len(), 1);
+        // The hinge, the dowel and the screw, the hinge shared.
+        assert_eq!(library.hardware.len(), 3);
         let blocking = evaluate(&started.document.project, library)
             .problems
             .into_iter()

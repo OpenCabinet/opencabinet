@@ -77,6 +77,27 @@
         "cupDepth": 13000000,
         "cupDiameter": 35000000
       }
+    },
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000123",
+      "version": 1,
+      "category": "connector",
+      "name": "Dowel 8 × 35 mm",
+      "dimensions": {
+        "diameter": 8000000,
+        "length": 35000000
+      }
+    },
+    {
+      "id": "0199f8b0-0000-7000-8000-000000000124",
+      "version": 1,
+      "category": "connector",
+      "name": "Confirmat screw 7 × 50 mm",
+      "dimensions": {
+        "length": 50000000,
+        "pilotDiameter": 5000000,
+        "shankDiameter": 7000000
+      }
     }
   ],
   "standards": [
@@ -142,6 +163,26 @@
           ],
           "endDistance": 76200000,
           "hardware": "0199f8b0-0000-7000-8000-000000000121"
+        },
+        "joinery": {
+          "bottom": "dowels",
+          "confirmat": {
+            "countersink": 10000000,
+            "endDistance": 50000000,
+            "extraDepth": 3000000,
+            "hardware": "0199f8b0-0000-7000-8000-000000000124",
+            "spacing": 256000000
+          },
+          "dowels": {
+            "edgeDepth": 25000000,
+            "endDistance": 32000000,
+            "faceDepth": 12000000,
+            "hardware": "0199f8b0-0000-7000-8000-000000000123",
+            "minimum": 2,
+            "spacing": 96000000
+          },
+          "stretchers": "dowels",
+          "top": "dowels"
         },
         "shelves": {
           "backAllowance": 19050000,
@@ -230,6 +271,26 @@
           ],
           "endDistance": 76200000,
           "hardware": "0199f8b0-0000-7000-8000-000000000121"
+        },
+        "joinery": {
+          "bottom": "dowels",
+          "confirmat": {
+            "countersink": 10000000,
+            "endDistance": 50000000,
+            "extraDepth": 3000000,
+            "hardware": "0199f8b0-0000-7000-8000-000000000124",
+            "spacing": 256000000
+          },
+          "dowels": {
+            "edgeDepth": 25000000,
+            "endDistance": 32000000,
+            "faceDepth": 12000000,
+            "hardware": "0199f8b0-0000-7000-8000-000000000123",
+            "minimum": 2,
+            "spacing": 96000000
+          },
+          "stretchers": "dowels",
+          "top": "dowels"
         },
         "shelves": {
           "backAllowance": 19050000,

@@ -298,9 +298,13 @@ impl Viewer {
             .find(|m| m.id == part.material)
             .map_or("", |m| m.name.as_str());
         let banded = part.edges.iter().filter(|e| e.is_some()).count();
-        let (mut holes, mut grooves, mut face_b) = (0, 0, false);
+        let (mut holes, mut grooves, mut face_b, mut edge_holes) = (0, 0, false, 0);
         for operation in &part.operations {
             let face = match operation {
+                Operation::EdgeHole { .. } => {
+                    edge_holes += 1;
+                    continue;
+                }
                 Operation::Hole { face, .. } => {
                     holes += 1;
                     face
@@ -316,14 +320,25 @@ impl Viewer {
             };
             face_b |= *face == Face::B;
         }
-        let machined = match (holes, grooves) {
-            (0, 0) => "nothing machined".to_owned(),
-            _ => format!(
+        let mut machined = match (holes, grooves) {
+            (0, 0) => Vec::new(),
+            _ => vec![format!(
                 "{holes} {}, {grooves} {} on face {}",
                 if holes == 1 { "hole" } else { "holes" },
                 if grooves == 1 { "groove" } else { "grooves" },
                 if face_b { "A and B" } else { "A" }
-            ),
+            )],
+        };
+        if edge_holes > 0 {
+            machined.push(format!(
+                "{edge_holes} {} in edges",
+                if edge_holes == 1 { "hole" } else { "holes" }
+            ));
+        }
+        let machined = if machined.is_empty() {
+            "nothing machined".to_owned()
+        } else {
+            machined.join(", ")
         };
         format!(
             "{} · {}\n{material}\n{} × {} × {}\n{} · {machined}",

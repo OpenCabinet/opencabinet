@@ -47,6 +47,85 @@ pub struct Rules {
     /// What the bill of materials adds to the parts' own sizes.
     #[serde(default)]
     pub bill_of_materials: Option<BillOfMaterials>,
+    /// How the case's parts are joined: dowels, confirmat screws or both.
+    #[serde(default)]
+    pub joinery: Option<CaseJoinery>,
+}
+
+/// How the sides are joined to the parts they hold: the bottom, a top and
+/// the stretchers.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaseJoinery {
+    /// The bottom to the sides.
+    pub bottom: Fastening,
+    /// A wall or tall cabinet's top to the sides.
+    pub top: Fastening,
+    /// A base cabinet's stretchers to the sides.
+    pub stretchers: Fastening,
+    /// The dowels, needed when a joint takes them.
+    #[serde(default)]
+    pub dowels: Option<Dowels>,
+    /// The confirmat screws, needed when a joint takes them.
+    #[serde(default)]
+    pub confirmat: Option<Confirmat>,
+}
+
+/// What holds a joint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Fastening {
+    /// Glued dowels.
+    Dowels,
+    /// Confirmat screws.
+    Confirmat,
+    /// Dowels and confirmat screws in one row, alternating from the front.
+    Both,
+    /// Nothing the program bores, such as nails or biscuits.
+    None,
+}
+
+/// Dowels: the dowel from the library's hardware, whose `diameter` and
+/// `length` size the holes.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Dowels {
+    /// The dowel, from the library's hardware.
+    pub hardware: Id,
+    /// How deep the hole in the side's face goes.
+    pub face_depth: Length,
+    /// How deep the hole in the other part's edge goes.
+    pub edge_depth: Length,
+    /// The least distance from the ends of the joint to the nearest dowel.
+    pub end_distance: Length,
+    /// Between dowels.
+    pub spacing: Length,
+    /// The fewest dowels in a joint.
+    #[serde(default = "two")]
+    pub minimum: u32,
+}
+
+fn two() -> u32 {
+    2
+}
+
+/// Confirmat screws: the screw from the library's hardware, whose
+/// `shankDiameter`, `pilotDiameter` and `length` size the holes. The side
+/// is bored through from outside for the shank, countersunk for the head;
+/// the other part's edge takes the thread.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Confirmat {
+    /// The screw, from the library's hardware.
+    pub hardware: Id,
+    /// The diameter of the countersink for the head.
+    pub countersink: Length,
+    /// How much deeper the hole in the edge goes than the screw reaches.
+    pub extra_depth: Length,
+    /// The least distance from the ends of the joint to the nearest screw.
+    pub end_distance: Length,
+    /// Between screws.
+    pub spacing: Length,
 }
 
 /// What the bill of materials adds to the parts' own sizes, as the shop

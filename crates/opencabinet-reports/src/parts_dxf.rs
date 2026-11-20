@@ -13,13 +13,16 @@
 //! Layers name the tool and depth, so an operator maps each layer to a
 //! tool once in the CAM program: `OUTLINE` for the part's contour,
 //! `HOLE_A_D5_Z12` for 5 mm holes 12 mm deep in face A,
-//! `GROOVE_A_W12_Z9.525` for 12 mm grooves 9.525 mm deep, `LABEL` for the
+//! `GROOVE_A_W12_Z9.525` for 12 mm grooves 9.525 mm deep,
+//! `COUNTERSINK_B_D10` for the 10 mm countersinks of screw holes,
+//! `EDGE_X0_D8_Z25` for 8 mm holes 25 mm deep bored into the `x0` edge,
+//! drawn as the area they take inside the part, and `LABEL` for the
 //! texts. Files are DXF 2000, the oldest version that declares its units,
 //! in millimeters.
 
 use std::collections::BTreeSet;
 
-use opencabinet_eval::{Face, Operation, Part, evaluate};
+use opencabinet_eval::{Edge, Face, Operation, Part, evaluate};
 use opencabinet_model::{Grain, Length, Library, Project};
 
 use crate::cut_list::part_name;
@@ -225,7 +228,55 @@ fn operation_shapes(part: &Part, (dx, dy): (Length, Length)) -> Vec<Shape> {
                 at: p,
                 diameter,
                 depth,
-            } => shapes.push(hole(*face, at(p.x, p.y), *diameter, *depth)),
+                countersink,
+            } => {
+                shapes.push(hole(*face, at(p.x, p.y), *diameter, *depth));
+                if let Some(countersink) = countersink {
+                    shapes.push(Shape::Circle {
+                        layer: format!(
+                            "COUNTERSINK_{}_D{}",
+                            face_letter(*face),
+                            mm_text(*countersink)
+                        ),
+                        center: at(p.x, p.y),
+                        radius: mm(*countersink) / 2.0,
+                    });
+                }
+            }
+            Operation::EdgeHole {
+                edge,
+                along,
+                diameter,
+                depth,
+            } => {
+                let layer = format!(
+                    "EDGE_{}_D{}_Z{}",
+                    edge_name(*edge),
+                    mm_text(*diameter),
+                    mm_text(*depth)
+                );
+                // The area the hole takes, seen from face A, from its edge
+                // in, at the finished size like every operation.
+                let half = diameter.div_round(2);
+                let (a, b) = match edge {
+                    Edge::X0 => (at(Length::ZERO, *along - half), at(*depth, *along + half)),
+                    Edge::X1 => (
+                        at(part.length - *depth, *along - half),
+                        at(part.length, *along + half),
+                    ),
+                    Edge::Y0 => (at(*along - half, Length::ZERO), at(*along + half, *depth)),
+                    Edge::Y1 => (
+                        at(*along - half, part.width - *depth),
+                        at(*along + half, part.width),
+                    ),
+                };
+                let clip = |(x, y): (f64, f64)| (x.clamp(0.0, mm(length)), y.clamp(0.0, mm(width)));
+                let ((x0, y0), (x1, y1)) = (clip(a), clip(b));
+                shapes.push(Shape::Polygon {
+                    layer,
+                    points: vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+                });
+            }
             Operation::HolePattern {
                 face,
                 start,
@@ -261,6 +312,16 @@ fn operation_shapes(part: &Part, (dx, dy): (Length, Length)) -> Vec<Shape> {
         }
     }
     shapes
+}
+
+/// An edge's name in a layer.
+fn edge_name(edge: Edge) -> &'static str {
+    match edge {
+        Edge::X0 => "X0",
+        Edge::X1 => "X1",
+        Edge::Y0 => "Y0",
+        Edge::Y1 => "Y1",
+    }
 }
 
 /// A hole on its tool's layer.

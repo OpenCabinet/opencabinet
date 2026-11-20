@@ -17,6 +17,20 @@ pub enum Face {
     B,
 }
 
+/// An edge of a part: `X0` and `X1` the ends of its length, `Y0` and `Y1`
+/// the sides of its width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Edge {
+    /// The end at `x = 0`.
+    X0,
+    /// The end at `x = length`.
+    X1,
+    /// The side at `y = 0`.
+    Y0,
+    /// The side at `y = width`.
+    Y1,
+}
+
 /// A point on a face of a part: `x` along its length from its `x0` end,
 /// `y` across its width from its `y0` edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +50,21 @@ pub enum Operation {
         face: Face,
         /// Its center.
         at: Point,
+        /// Its diameter.
+        diameter: Length,
+        /// How deep it goes.
+        depth: Length,
+        /// The diameter of the cone that sinks a screw's head flush, if
+        /// any.
+        countersink: Option<Length>,
+    },
+    /// A hole bored into an edge, centered in the part's thickness: the
+    /// horizontal boring of dowels and connectors.
+    EdgeHole {
+        /// The edge it is bored into.
+        edge: Edge,
+        /// Its center along the edge: `y` on an end, `x` on a side.
+        along: Length,
         /// Its diameter.
         diameter: Length,
         /// How deep it goes.

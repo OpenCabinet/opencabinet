@@ -1065,10 +1065,18 @@ fn inches(numerator: i64, denominator: i64) -> Length {
 
 /// 3/4" plywood for the case and fronts, 1/4" plywood for the back and
 /// drawer bottoms, 1/2" plywood for drawer boxes, solid wood for face frames,
-/// a 0.5 mm edge band, a cup hinge and a frameless and a face frame standard,
-/// in that order.
+/// a 0.5 mm edge band, a cup hinge, a dowel and a confirmat screw, and a
+/// frameless and a face frame standard joined with dowels, in that order.
 fn starter_library() -> Library {
     let hinge = standard::new_hinge();
+    let (dowel, screw) = standard::new_connectors();
+    let joined = |mut standard: Standard| {
+        standard.rules.insert(
+            "joinery".into(),
+            standard::usual_joinery(dowel.id, screw.id),
+        );
+        standard
+    };
     let solid_wood = SheetMaterial {
         length: Length::from_inches(96),
         width: inches(11, 2),
@@ -1083,10 +1091,10 @@ fn starter_library() -> Library {
         ],
         edge_bands: vec![materials::new_band("Edge band 0.5 mm")],
         standards: vec![
-            new_standard("Frameless", Method::Frameless, hinge.id),
-            new_standard("Face frame", Method::FaceFrame, hinge.id),
+            joined(new_standard("Frameless", Method::Frameless, hinge.id)),
+            joined(new_standard("Face frame", Method::FaceFrame, hinge.id)),
         ],
-        hardware: vec![hinge],
+        hardware: vec![hinge, dowel, screw],
         unknown: BTreeMap::default(),
     }
 }

@@ -100,6 +100,19 @@ impl Placement {
         point
     }
 
+    /// The point `p` of the product in the part's own `(u, v, w)`: the
+    /// inverse of [`Placement::point`].
+    #[must_use]
+    pub fn local(&self, p: [Length; 3]) -> [Length; 3] {
+        self.axes.map(|axis| {
+            let mut along = Length::ZERO;
+            for ((p, o), d) in p.iter().zip(self.origin).zip(axis.unit()) {
+                along += (*p - o) * d;
+            }
+            along
+        })
+    }
+
     /// The lowest and highest corners of a part `length` by `width` by
     /// `thickness` placed here.
     #[must_use]
@@ -142,5 +155,9 @@ mod tests {
             side.bounds(mm(700), mm(500), mm(18)),
             ([mm(582), mm(100), mm(0)], [mm(600), mm(800), mm(500)])
         );
+        let point = [mm(590), mm(450), mm(120)];
+        assert_eq!(side.local(point), [mm(350), mm(120), mm(10)]);
+        let [u, v, w] = side.local(point);
+        assert_eq!(side.point(u, v, w), point);
     }
 }
