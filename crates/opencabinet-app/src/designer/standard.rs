@@ -20,6 +20,9 @@ use super::{Designer, capitalize, inches};
 /// The most hinges a door takes.
 const MAX_HINGES: u32 = 10;
 
+/// The most fasteners a joint can be asked to take at the fewest.
+const MAX_FASTENERS: u32 = 10;
+
 /// What a rule holds, and how it is typed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Holds {
@@ -34,14 +37,17 @@ enum Holds {
     Percent,
     /// Lengths separated by commas, kept shortest first.
     Sizes,
+    /// A whole number of fasteners, at least one.
+    Count,
     /// `height = count` pairs separated by commas, shortest first.
     HingeTable,
-    /// The name of the standard's hinge.
-    HingeName,
-    /// A size of the standard's hinge.
-    HingeSize,
-    /// One of a list, which the code knows how to store.
-    Choice(&'static [&'static str]),
+    /// The name of the library's hardware that the rules name in the
+    /// `hardware` beside the field.
+    HardwareName,
+    /// A size of that hardware, named as the field's last key.
+    HardwareSize,
+    /// One of a list: what the window shows, and what the file keeps.
+    Choice(&'static [&'static str], &'static [&'static str]),
 }
 
 struct Field {
@@ -61,7 +67,14 @@ const fn field(key: &'static str, label: &'static str, holds: Holds) -> Field {
 }
 
 const BACKS: &[&str] = &["Grooved", "Applied"];
+const BACK_KEYS: &[&str] = &["grooved", "applied"];
 const OVERLAYS: &[&str] = &["Partial overlay", "Inset"];
+const OVERLAY_KEYS: &[&str] = &["partial", "inset"];
+const FASTENINGS: &[&str] = &["Dowels", "Confirmat screws", "Both", "None"];
+const FASTENING_KEYS: &[&str] = &["dowels", "confirmat", "both", "none"];
+
+/// The joints of the case that the joinery rules hold.
+const JOINTS: [&str; 3] = ["bottom", "top", "stretchers"];
 
 /// The keys in the file of a hinge's sizes.
 const CUP_DIAMETER: &str = "cupDiameter";
@@ -83,7 +96,11 @@ const GROUPS: &[Group] = &[
         key: "back",
         title: "Back",
         fields: &[
-            field("construction", "Back construction", Holds::Choice(BACKS)),
+            field(
+                "construction",
+                "Back construction",
+                Holds::Choice(BACKS, BACK_KEYS),
+            ),
             field("grooveDepth", "Groove depth", Holds::Size),
             field(
                 "setback",
@@ -96,7 +113,11 @@ const GROUPS: &[Group] = &[
         key: "fronts",
         title: "Fronts",
         fields: &[
-            field("overlay", "How fronts sit", Holds::Choice(OVERLAYS)),
+            field(
+                "overlay",
+                "How fronts sit",
+                Holds::Choice(OVERLAYS, OVERLAY_KEYS),
+            ),
             field("overlayAmount", "Overlay on the frame", Holds::Size),
             field("gap", "Gap between fronts", Holds::SizeOrZero),
         ],
@@ -185,12 +206,65 @@ const GROUPS: &[Group] = &[
         key: "hinges",
         title: "Hinges",
         fields: &[
-            field("@name", "Hinge name", Holds::HingeName),
-            field(CUP_DIAMETER, "Cup diameter", Holds::HingeSize),
-            field(CUP_DEPTH, "Cup depth", Holds::HingeSize),
+            field("@name", "Hinge name", Holds::HardwareName),
+            field(CUP_DIAMETER, "Cup diameter", Holds::HardwareSize),
+            field(CUP_DEPTH, "Cup depth", Holds::HardwareSize),
             field("boringDistance", "Cup from door edge", Holds::Size),
             field("endDistance", "Cup from door end", Holds::Size),
             field("counts", "Door height = hinges", Holds::HingeTable),
+        ],
+    },
+    Group {
+        key: "joinery",
+        title: "Case joinery",
+        fields: &[
+            field(
+                "bottom",
+                "Bottom to sides",
+                Holds::Choice(FASTENINGS, FASTENING_KEYS),
+            ),
+            field(
+                "top",
+                "Top to sides",
+                Holds::Choice(FASTENINGS, FASTENING_KEYS),
+            ),
+            field(
+                "stretchers",
+                "Stretchers to sides",
+                Holds::Choice(FASTENINGS, FASTENING_KEYS),
+            ),
+            field("dowels.@name", "Dowel name", Holds::HardwareName),
+            field("dowels.diameter", "Dowel diameter", Holds::HardwareSize),
+            field("dowels.length", "Dowel length", Holds::HardwareSize),
+            field("dowels.faceDepth", "Dowel hole in the side", Holds::Size),
+            field("dowels.edgeDepth", "Dowel hole in the edge", Holds::Size),
+            field("dowels.endDistance", "Dowels from joint ends", Holds::Size),
+            field("dowels.spacing", "Dowel spacing", Holds::Size),
+            field("dowels.minimum", "Fewest dowels a joint", Holds::Count),
+            field("confirmat.@name", "Screw name", Holds::HardwareName),
+            field(
+                "confirmat.shankDiameter",
+                "Screw shank diameter",
+                Holds::HardwareSize,
+            ),
+            field(
+                "confirmat.pilotDiameter",
+                "Screw pilot diameter",
+                Holds::HardwareSize,
+            ),
+            field("confirmat.length", "Screw length", Holds::HardwareSize),
+            field("confirmat.countersink", "Countersink diameter", Holds::Size),
+            field(
+                "confirmat.extraDepth",
+                "Pilot past the screw",
+                Holds::SizeOrZero,
+            ),
+            field(
+                "confirmat.endDistance",
+                "Screws from joint ends",
+                Holds::Size,
+            ),
+            field("confirmat.spacing", "Screw spacing", Holds::Size),
         ],
     },
     Group {
@@ -257,6 +331,46 @@ pub(super) fn new_hinge() -> Hardware {
     }
 }
 
+/// The first of `hardware` that `is`, or `new` added to it.
+fn find_or_add(
+    hardware: &mut Vec<Hardware>,
+    is: impl Fn(&Hardware) -> bool,
+    new: impl FnOnce() -> Hardware,
+) -> Id {
+    if let Some(found) = hardware.iter().find(|h| is(h)) {
+        return found.id;
+    }
+    let new = new();
+    let id = new.id;
+    hardware.push(new);
+    id
+}
+
+/// Whether `hardware` is a dowel: a connector with a `diameter`.
+fn is_dowel(hardware: &Hardware) -> bool {
+    hardware.category == "connector"
+        && hardware.dimensions.contains_key("diameter")
+        && !hardware.dimensions.contains_key("shankDiameter")
+}
+
+/// Whether `hardware` is a confirmat screw: a connector with a shank.
+fn is_screw(hardware: &Hardware) -> bool {
+    hardware.category == "connector" && hardware.dimensions.contains_key("shankDiameter")
+}
+
+/// An 8 mm dowel 35 mm long.
+fn new_dowel() -> Hardware {
+    new_connector("Dowel 8 × 35 mm", &[("diameter", 8), ("length", 35)])
+}
+
+/// A 7 × 50 mm confirmat screw.
+fn new_screw() -> Hardware {
+    new_connector(
+        "Confirmat screw 7 × 50 mm",
+        &[("shankDiameter", 7), ("pilotDiameter", 5), ("length", 50)],
+    )
+}
+
 /// A connector from the library's hardware, named `name`, with its
 /// `dimensions` in millimeters.
 fn new_connector(name: &str, dimensions: &[(&str, i64)]) -> Hardware {
@@ -275,13 +389,7 @@ fn new_connector(name: &str, dimensions: &[(&str, i64)]) -> Hardware {
 
 /// An 8 mm dowel 35 mm long, and a 7 × 50 mm confirmat screw.
 pub(super) fn new_connectors() -> (Hardware, Hardware) {
-    (
-        new_connector("Dowel 8 × 35 mm", &[("diameter", 8), ("length", 35)]),
-        new_connector(
-            "Confirmat screw 7 × 50 mm",
-            &[("shankDiameter", 7), ("pilotDiameter", 5), ("length", 50)],
-        ),
-    )
+    (new_dowel(), new_screw())
 }
 
 /// The usual joinery: dowels in every joint of the case, on the 32 mm
@@ -385,11 +493,54 @@ fn length_of(value: &Value) -> Option<Length> {
     serde_json::from_value(value.clone()).ok()
 }
 
+/// The rule at `path`, keys separated by dots, in `group`.
+fn rule_at<'a>(standard: &'a Standard, group: &str, path: &str) -> Option<&'a Value> {
+    path.split('.')
+        .try_fold(standard.rules.get(group)?, |value, key| value.get(key))
+}
+
+/// The rules at `path` in `group`, or the group's own without a path, to
+/// change.
+fn rules_at_mut<'a>(
+    standard: &'a mut Standard,
+    group: &str,
+    path: Option<&str>,
+) -> Option<&'a mut serde_json::Map<String, Value>> {
+    path.into_iter()
+        .flat_map(|p| p.split('.'))
+        .try_fold(standard.rules.get_mut(group)?, |value, key| {
+            value.get_mut(key)
+        })?
+        .as_object_mut()
+}
+
+/// For a hardware field, where its rules keep the hardware's id, and its
+/// last key: the name or the size it shows.
+fn hardware_keys(field: &str) -> (String, &str) {
+    match field.rsplit_once('.') {
+        Some((rules, last)) => (format!("{rules}.hardware"), last),
+        None => ("hardware".to_owned(), field),
+    }
+}
+
 /// Whether the standard shows `field` of `group` as things stand: only what
 /// it can use is offered, and the rest stays in the file.
 fn shown(standard: &Standard, group: &str, field: &str) -> bool {
     let rule = |key: &str| standard.rules.get(group).and_then(|g| g.get(key));
+    // Whether a joint of the case is held by `fastening`, alone or both.
+    let holds = |fastening: &str| {
+        JOINTS.iter().any(|joint| {
+            rule(joint)
+                .and_then(Value::as_str)
+                .is_some_and(|f| f == fastening || f == "both")
+        })
+    };
     match (group, field) {
+        ("joinery", field) => match field.split_once('.') {
+            Some(("dowels", _)) => holds("dowels"),
+            Some(("confirmat", _)) => holds("confirmat"),
+            _ => true,
+        },
         ("back", "grooveDepth" | "setback") => {
             rule("construction").and_then(Value::as_str) != Some("applied")
         }
@@ -560,15 +711,15 @@ impl Designer {
     pub fn edit_rule(&mut self, key: &str, text: &str) -> Result<(), String> {
         let (group, field) = find_field(key).ok_or("There is no such rule")?;
         match field.holds {
-            Holds::HingeName => self.set_hinge_name(text),
-            Holds::HingeSize => {
+            Holds::HardwareName => self.set_hardware_name(group.key, field.key, text),
+            Holds::HardwareSize => {
                 let size = parse_size(text, self)?;
                 if size <= Length::ZERO {
                     return Err("Must be greater than zero".into());
                 }
-                self.set_hinge_size(field.key, size)
+                self.set_hardware_size(group.key, field.key, size)
             }
-            Holds::Choice(_) => Err("Choose from the list".into()),
+            Holds::Choice(..) => Err("Choose from the list".into()),
             holds => {
                 let value = parse_rule(holds, text, self)?;
                 self.store_rule(group.key, field.key, value)
@@ -576,75 +727,108 @@ impl Designer {
         }
     }
 
-    /// Chooses from the list of the rule `key`. A choice that needs a size
-    /// the standard does not have yet gets the usual one.
+    /// Chooses from the list of the rule `key`. A choice that needs rules
+    /// the standard does not have yet gets the usual ones, and one that
+    /// leaves a size unused drops it.
     pub fn choose_rule(&mut self, key: &str, choice: usize) {
-        let changes: [(&str, &str, Option<Value>); 2] = match (key, choice) {
-            ("back.construction", 0) => [
-                ("construction", "grooved", None),
-                ("grooveDepth", "", Some(json!(inches(3, 8)))),
-            ],
-            ("back.construction", 1) => {
-                [("construction", "applied", None), ("grooveDepth", "", None)]
-            }
-            ("fronts.overlay", 0) => [
-                ("overlay", "partial", None),
-                ("overlayAmount", "", Some(json!(inches(1, 2)))),
-            ],
-            ("fronts.overlay", 1) => [("overlay", "inset", None), ("overlayAmount", "", None)],
-            _ => return,
-        };
-        let Some(index) = self.selected_standard() else {
+        let Some((group, field)) = find_field(key) else {
             return;
         };
-        let group = key.split('.').next().unwrap_or_default();
-        let Some(Value::Object(rules)) =
-            self.document.library.standards[index].rules.get_mut(group)
-        else {
+        let Holds::Choice(_, stored) = field.holds else {
             return;
         };
-        let (rule, value, _) = &changes[0];
-        if rules.get(*rule).and_then(Value::as_str) == Some(value) {
+        let (Some(&value), Some(index)) = (stored.get(choice), self.selected_standard()) else {
+            return;
+        };
+        let standard = &self.document.library.standards[index];
+        let Some(rules) = standard.rules.get(group.key).and_then(Value::as_object) else {
+            return;
+        };
+        if rules.get(field.key).and_then(Value::as_str) == Some(value) {
             return;
         }
-        rules.insert((*rule).to_owned(), Value::from(*value));
-        let (rule, _, usual) = &changes[1];
-        if let Some(usual) = usual {
-            rules.entry((*rule).to_owned()).or_insert(usual.clone());
+        let (needs, drops): (&[&str], &[&str]) = match (group.key, value) {
+            ("back", "grooved") => (&["grooveDepth"], &[]),
+            ("back", "applied") => (&[], &["grooveDepth"]),
+            ("fronts", "partial") => (&["overlayAmount"], &[]),
+            ("fronts", "inset") => (&[], &["overlayAmount"]),
+            ("joinery", "dowels") => (&["dowels"], &[]),
+            ("joinery", "confirmat") => (&["confirmat"], &[]),
+            ("joinery", "both") => (&["dowels", "confirmat"], &[]),
+            _ => (&[], &[]),
+        };
+        let missing: Vec<&str> = needs
+            .iter()
+            .copied()
+            .filter(|k| !rules.contains_key(*k))
+            .collect();
+        let usual = if missing.is_empty() {
+            None
+        } else {
+            self.usual_group(index, group.key, &missing)
+        };
+        let standard = &mut self.document.library.standards[index];
+        let Some(rules) = rules_at_mut(standard, group.key, None) else {
+            return;
+        };
+        rules.insert(field.key.to_owned(), Value::from(value));
+        for drop in drops {
+            rules.remove(*drop);
+        }
+        for key in missing {
+            if let Some(rule) = usual.as_ref().and_then(|u| u.get(key)) {
+                rules.insert(key.to_owned(), rule.clone());
+            }
         }
         self.modified = true;
     }
 
     /// Gives the edited standard the usual rules of a group it does not
-    /// have. Hinges take the library's first, or a new one.
+    /// have, with the library's hardware for them, or new hardware.
     pub fn add_rule_group(&mut self, group: &str) {
         let Some(index) = self.selected_standard() else {
             return;
         };
-        let library = &mut self.document.library;
-        if library.standards[index].rules.contains_key(group) {
+        if self.document.library.standards[index]
+            .rules
+            .contains_key(group)
+        {
             return;
         }
-        let existing = library
-            .hardware
-            .iter()
-            .find(|h| h.category == "hinge")
-            .map(|h| h.id);
-        let hinge = existing.unwrap_or_else(|| {
-            let hinge = new_hinge();
-            let id = hinge.id;
-            if group == "hinges" {
-                library.hardware.push(hinge);
-            }
-            id
-        });
-        let usual = usual_rules(library.standards[index].method, hinge);
-        if let Some(rules) = usual.get(group) {
-            library.standards[index]
+        if let Some(rules) = self.usual_group(index, group, &["dowels", "confirmat"]) {
+            self.document.library.standards[index]
                 .rules
-                .insert(group.to_owned(), rules.clone());
+                .insert(group.to_owned(), rules);
             self.modified = true;
         }
+    }
+
+    /// The usual rules of `group` for the standard at `index`. The hardware
+    /// they name comes from the library, which gets new hardware where it
+    /// has none: a hinge for the hinges, and for the joinery only the dowel
+    /// or screw that `needs` names.
+    fn usual_group(&mut self, index: usize, group: &str, needs: &[&str]) -> Option<Value> {
+        let library = &mut self.document.library;
+        let method = library.standards[index].method;
+        let hardware = &mut library.hardware;
+        if group == "joinery" {
+            let mut take = |rules: &str, is: fn(&Hardware) -> bool, new: fn() -> Hardware| {
+                if needs.contains(&rules) {
+                    find_or_add(hardware, is, new)
+                } else {
+                    Id::new()
+                }
+            };
+            let dowel = take("dowels", is_dowel, new_dowel);
+            let screw = take("confirmat", is_screw, new_screw);
+            return Some(usual_joinery(dowel, screw));
+        }
+        let hinge = if group == "hinges" {
+            find_or_add(hardware, |h| h.category == "hinge", new_hinge)
+        } else {
+            Id::new()
+        };
+        usual_rules(method, hinge).get(group).cloned()
     }
 
     fn edited_standard(&self) -> Option<&Standard> {
@@ -654,19 +838,12 @@ impl Designer {
 
     /// A row for `field`; `None` for a hinge the library does not have.
     fn rule_row(&self, standard: &Standard, group: &Group, field: &Field) -> Option<RuleRow> {
-        let rule = standard.rules.get(group.key).and_then(|g| g.get(field.key));
+        let rule = rule_at(standard, group.key, field.key);
         let size = |length: Length| (self.exact_text(length), self.rule_reading(length));
         let (kind, text, reading) = match field.holds {
-            Holds::Choice(options) => {
-                let stored = rule.and_then(Value::as_str).unwrap_or_default();
-                let chosen = match field.key {
-                    "construction" => Some(usize::from(stored == "applied")),
-                    _ => match stored {
-                        "partial" => Some(0),
-                        "inset" => Some(1),
-                        _ => None,
-                    },
-                };
+            Holds::Choice(options, keys) => {
+                let stored = rule.and_then(Value::as_str);
+                let chosen = keys.iter().position(|k| Some(*k) == stored);
                 let kind = RuleKind::Choice { options, chosen };
                 (kind, String::new(), String::new())
             }
@@ -680,7 +857,7 @@ impl Designer {
                     .map_or((String::new(), when_empty.to_owned()), size);
                 (RuleKind::Field, text, reading)
             }
-            Holds::Percent => {
+            Holds::Percent | Holds::Count => {
                 let text = rule.map(ToString::to_string).unwrap_or_default();
                 (RuleKind::Field, text, String::new())
             }
@@ -709,15 +886,15 @@ impl Designer {
                 });
                 (RuleKind::Field, table.unwrap_or_default(), String::new())
             }
-            Holds::HingeName => {
-                let hinge = self.standard_hinge(standard)?;
-                (RuleKind::Field, hinge.name.clone(), String::new())
+            Holds::HardwareName => {
+                let hardware = self.standard_hardware(standard, group.key, field.key)?;
+                (RuleKind::Field, hardware.name.clone(), String::new())
             }
-            Holds::HingeSize => {
-                let hinge = self.standard_hinge(standard)?;
-                let (text, reading) = hinge
+            Holds::HardwareSize => {
+                let hardware = self.standard_hardware(standard, group.key, field.key)?;
+                let (text, reading) = hardware
                     .dimensions
-                    .get(field.key)
+                    .get(hardware_keys(field.key).1)
                     .copied()
                     .map(size)
                     .unwrap_or_default();
@@ -741,42 +918,50 @@ impl Designer {
         format!("{sign} {}", shown.text)
     }
 
-    fn standard_hinge(&self, standard: &Standard) -> Option<&Hardware> {
-        let id = standard.rules.get("hinges")?.get("hardware")?;
+    /// The library's hardware that a hardware field of `group` shows.
+    fn standard_hardware(
+        &self,
+        standard: &Standard,
+        group: &str,
+        field: &str,
+    ) -> Option<&Hardware> {
+        let id = rule_at(standard, group, &hardware_keys(field).0)?;
         let id: Id = serde_json::from_value(id.clone()).ok()?;
         self.document.library.hardware.iter().find(|h| h.id == id)
     }
 
-    fn standard_hinge_mut(&mut self) -> Result<&mut Hardware, String> {
+    fn standard_hardware_mut(&mut self, group: &str, field: &str) -> Result<&mut Hardware, String> {
+        const MISSING: &str = "The standard's hardware is not in the library";
         let id = self
             .edited_standard()
-            .and_then(|s| self.standard_hinge(s))
+            .and_then(|s| self.standard_hardware(s, group, field))
             .map(|h| h.id)
-            .ok_or("The standard's hinge is not in the library")?;
+            .ok_or(MISSING)?;
         self.document
             .library
             .hardware
             .iter_mut()
             .find(|h| h.id == id)
-            .ok_or_else(|| "The standard's hinge is not in the library".into())
+            .ok_or_else(|| MISSING.into())
     }
 
-    fn set_hinge_name(&mut self, text: &str) -> Result<(), String> {
+    fn set_hardware_name(&mut self, group: &str, field: &str, text: &str) -> Result<(), String> {
         let name = text.trim();
         if name.is_empty() {
             return Err("A name cannot be empty".into());
         }
-        let hinge = self.standard_hinge_mut()?;
-        if hinge.name != name {
-            name.clone_into(&mut hinge.name);
+        let hardware = self.standard_hardware_mut(group, field)?;
+        if hardware.name != name {
+            name.clone_into(&mut hardware.name);
             self.modified = true;
         }
         Ok(())
     }
 
-    fn set_hinge_size(&mut self, key: &str, size: Length) -> Result<(), String> {
-        let hinge = self.standard_hinge_mut()?;
-        if hinge.dimensions.insert(key.to_owned(), size) != Some(size) {
+    fn set_hardware_size(&mut self, group: &str, field: &str, size: Length) -> Result<(), String> {
+        let hardware = self.standard_hardware_mut(group, field)?;
+        let key = hardware_keys(field).1;
+        if hardware.dimensions.insert(key.to_owned(), size) != Some(size) {
             self.modified = true;
         }
         Ok(())
@@ -789,7 +974,11 @@ impl Designer {
             .selected_standard()
             .ok_or("There is no standard to edit")?;
         let standard = &mut self.document.library.standards[index];
-        let Some(Value::Object(rules)) = standard.rules.get_mut(group) else {
+        let (path, field) = match field.rsplit_once('.') {
+            Some((path, field)) => (Some(path), field),
+            None => (None, field),
+        };
+        let Some(rules) = rules_at_mut(standard, group, path) else {
             return Err("The standard does not have these rules".into());
         };
         let old = rules.get(field).cloned();
@@ -802,7 +991,7 @@ impl Designer {
         };
         set(rules, value);
         if let Err(message) = Rules::of(standard) {
-            if let Some(Value::Object(rules)) = standard.rules.get_mut(group) {
+            if let Some(rules) = rules_at_mut(standard, group, path) {
                 set(rules, old);
             }
             return Err(capitalize(&message));
@@ -847,6 +1036,10 @@ fn parse_rule(holds: Holds, text: &str, designer: &Designer) -> Result<Option<Va
             Ok(percent) if percent <= 100 => json!(percent),
             _ => return Err("Must be a whole number from 0 to 100".into()),
         },
+        Holds::Count => match text.trim().parse::<u32>() {
+            Ok(count) if (1..=MAX_FASTENERS).contains(&count) => json!(count),
+            _ => return Err(format!("Must be a whole number from 1 to {MAX_FASTENERS}")),
+        },
         Holds::Sizes => {
             let mut sizes = text
                 .split(',')
@@ -877,7 +1070,7 @@ fn parse_rule(holds: Holds, text: &str, designer: &Designer) -> Result<Option<Va
                     .collect::<Vec<_>>()
             )
         }
-        Holds::HingeName | Holds::HingeSize | Holds::Choice(_) => {
+        Holds::HardwareName | Holds::HardwareSize | Holds::Choice(..) => {
             return Err("Not a value for this rule".into());
         }
     }))
@@ -887,7 +1080,7 @@ fn parse_rule(holds: Holds, text: &str, designer: &Designer) -> Result<Option<Va
 mod tests {
     use std::path::PathBuf;
 
-    use opencabinet_eval::rules::Back;
+    use opencabinet_eval::rules::{Back, Fastening};
     use opencabinet_eval::{Part, evaluate};
     use opencabinet_format::Document;
     use opencabinet_model::Units;
@@ -1065,6 +1258,13 @@ mod tests {
             ("hinges.@name", " ", "A name cannot be empty"),
             ("hinges.cupDiameter", "0", "Must be greater than zero"),
             ("back.construction", "1", "Choose from the list"),
+            (
+                "joinery.dowels.minimum",
+                "0",
+                "Must be a whole number from 1 to 10",
+            ),
+            ("joinery.dowels.length", "0", "Must be greater than zero"),
+            ("joinery.dowels.@name", "", "A name cannot be empty"),
             ("nothing.here", "1", "There is no such rule"),
         ];
         for (key, text, message) in refused {
@@ -1194,6 +1394,90 @@ mod tests {
         assert_eq!(rules["toeKick"]["futureField"], 7);
         assert_eq!(rules["toeKick"]["height"], json!(Length::from_inches(3)));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_joinery_is_edited_and_reaches_the_evaluator() {
+        let mut designer = Designer::default();
+        assert_eq!(
+            row(&designer, "joinery.bottom").kind,
+            RuleKind::Choice {
+                options: FASTENINGS,
+                chosen: Some(0)
+            }
+        );
+        // Every joint takes dowels: the screw's rules are not shown.
+        let shown = keys(&designer);
+        assert!(shown.contains(&"joinery.dowels.spacing".to_owned()));
+        assert!(!shown.contains(&"joinery.confirmat.spacing".to_owned()));
+        assert_eq!(
+            row(&designer, "joinery.dowels.@name").text,
+            "Dowel 8 × 35 mm"
+        );
+        assert_eq!(row(&designer, "joinery.dowels.minimum").text, "2");
+
+        designer
+            .edit_rule("joinery.dowels.spacing", "64 mm")
+            .unwrap();
+        designer.edit_rule("joinery.dowels.minimum", "3").unwrap();
+        designer
+            .edit_rule("joinery.dowels.length", "30 mm")
+            .unwrap();
+        let dowels = rules(&designer).joinery.unwrap().dowels.unwrap();
+        assert_eq!(dowels.spacing, Length::from_mm(64));
+        assert_eq!(dowels.minimum, 3);
+        let dowel = &designer.document.library.hardware[1];
+        assert_eq!(dowel.dimensions["length"], Length::from_mm(30));
+        // The stretcher's dowels are 30 long, 12 of them in the side.
+        let stretcher = &parts(&designer, "stretcher")[0];
+        let fastener = &stretcher.fasteners[0];
+        let along = |i: usize| (fastener.end[i] - fastener.start[i]).nm().abs();
+        assert_eq!((0..3).map(along).max(), Some(Length::from_mm(30).nm()));
+
+        // Screws for the bottom: their rules are shown, and the cabinet
+        // still builds.
+        designer.choose_rule("joinery.bottom", 1);
+        let joinery = rules(&designer).joinery.unwrap();
+        assert_eq!(joinery.bottom, Fastening::Confirmat);
+        assert!(keys(&designer).contains(&"joinery.confirmat.spacing".to_owned()));
+        assert!(problems(&designer).is_empty(), "{:?}", problems(&designer));
+    }
+
+    #[test]
+    fn a_fastening_without_its_rules_gets_the_usual_ones() {
+        let mut designer = Designer::default();
+        // A standard and library without screws.
+        designer.document.library.hardware.retain(|h| !is_screw(h));
+        for standard in &mut designer.document.library.standards {
+            if let Some(Value::Object(joinery)) = standard.rules.get_mut("joinery") {
+                joinery.remove("confirmat");
+            }
+        }
+        designer.choose_rule("joinery.top", 2);
+        let joinery = rules(&designer).joinery.unwrap();
+        assert_eq!(joinery.top, Fastening::Both);
+        let screw = joinery.confirmat.unwrap();
+        assert_eq!(screw.spacing, Length::from_mm(256));
+        let hardware = &designer.document.library.hardware;
+        assert_eq!(hardware.len(), 3);
+        assert!(
+            hardware
+                .iter()
+                .any(|h| h.id == screw.hardware && is_screw(h))
+        );
+        assert!(problems(&designer).is_empty(), "{:?}", problems(&designer));
+
+        // A standard without joinery gets the usual, with the library's
+        // dowel and screw.
+        designer.document.library.standards[0]
+            .rules
+            .remove("joinery");
+        assert_eq!(row(&designer, "joinery").kind, RuleKind::MissingGroup);
+        designer.add_rule_group("joinery");
+        let joinery = rules(&designer).joinery.unwrap();
+        assert_eq!(joinery.bottom, Fastening::Dowels);
+        assert_eq!(joinery.confirmat.unwrap().hardware, screw.hardware);
+        assert_eq!(designer.document.library.hardware.len(), 3);
     }
 
     #[test]

@@ -21,7 +21,10 @@ follow [Semantic Versioning](https://semver.org/).
   in edges on layers of their own, the bill of materials counts dowels and
   screws, and the 3D view shows them, solid in X-ray and between the parts
   when exploded. The sample standards and new projects use 8 × 35 mm
-  dowels; the standard's page does not edit these rules yet.
+  dowels. The standard's page edits them under **Case joinery**: what
+  holds each joint, the dowel's and the screw's sizes and their holes. A
+  joint set to screws in a standard without their rules gets the usual
+  ones, and the library a screw if it has none.
 - **A window built around the views:** the views take most of the window,
   laid out as one, two side by side, two stacked or four (**Views**). Each
   shows the project in 3D, the room's plan, an elevation or the edited
