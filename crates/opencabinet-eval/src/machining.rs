@@ -125,6 +125,53 @@ pub(crate) fn hinge_positions(height: Length, end: Length, count: u32) -> Vec<Le
     positions
 }
 
+/// The point of a grid that starts at `origin` and repeats every `spacing`
+/// nearest to `at`; halfway between two, the lower one.
+pub(crate) fn nearest_on_grid(at: Length, origin: Length, spacing: Length) -> Length {
+    let step = spacing.nm();
+    let from = (at - origin).nm();
+    let (below, rest) = (from.div_euclid(step), from.rem_euclid(step));
+    let index = below + i64::from(rest * 2 > step);
+    origin + Length::from_nm(index * step)
+}
+
+/// Whether `operation` is a single hole that one of `patterns` bores
+/// already: the same face, size and depth, on one of the pattern's holes.
+pub(crate) fn bored_by_patterns(operation: &Operation, patterns: &[Operation]) -> bool {
+    let Operation::Hole {
+        face,
+        at,
+        diameter,
+        depth,
+        countersink: None,
+    } = *operation
+    else {
+        return false;
+    };
+    patterns.iter().any(|pattern| {
+        let Operation::HolePattern {
+            face: f,
+            start,
+            step,
+            count,
+            diameter: d,
+            depth: z,
+        } = *pattern
+        else {
+            return false;
+        };
+        f == face
+            && d == diameter
+            && z == depth
+            && (0..i64::from(count)).any(|k| {
+                Point {
+                    x: start.x + step.x * k,
+                    y: start.y + step.y * k,
+                } == at
+            })
+    })
+}
+
 /// The holes of a grid that starts at `origin` and repeats every `spacing`
 /// which fall between `low` and `high`, both included: the first one and
 /// how many there are.
@@ -167,6 +214,46 @@ mod tests {
             hinge_positions(nm(1200), nm(100), 4),
             [nm(100), nm(434), nm(767), nm(1100)]
         );
+    }
+
+    #[test]
+    fn a_point_moves_to_the_nearest_on_the_grid() {
+        assert_eq!(nearest_on_grid(mm(78), mm(34), mm(32)), mm(66));
+        assert_eq!(nearest_on_grid(mm(83), mm(34), mm(32)), mm(98));
+        // Halfway: the lower one.
+        assert_eq!(nearest_on_grid(mm(82), mm(34), mm(32)), mm(66));
+        assert_eq!(nearest_on_grid(mm(10), mm(34), mm(32)), mm(2));
+    }
+
+    #[test]
+    fn a_hole_the_line_boring_has_is_bored_once() {
+        let hole = |x| Operation::Hole {
+            face: Face::A,
+            at: Point {
+                x: mm(x),
+                y: mm(500),
+            },
+            diameter: mm(5),
+            depth: mm(12),
+            countersink: None,
+        };
+        let column = Operation::HolePattern {
+            face: Face::A,
+            start: Point {
+                x: mm(82),
+                y: mm(500),
+            },
+            step: Point {
+                x: mm(32),
+                y: mm(0),
+            },
+            count: 16,
+            diameter: mm(5),
+            depth: mm(12),
+        };
+        assert!(bored_by_patterns(&hole(530), std::slice::from_ref(&column)));
+        assert!(!bored_by_patterns(&hole(50), std::slice::from_ref(&column)));
+        assert!(!bored_by_patterns(&hole(531), &[column]));
     }
 
     #[test]

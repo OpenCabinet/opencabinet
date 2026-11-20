@@ -8,7 +8,8 @@
 //! edge, 3/8" deep; bore shelf pin holes 5 mm across and 12 mm deep every
 //! 32 mm in columns 37 mm from the front edge and 37 mm in front of the
 //! back, 2" clear of an opening's ends; bore 35 mm hinge cups 13 mm deep,
-//! 4 mm from the door's edge and 3" from its ends, two of them up to 40";
+//! 4 mm from the door's edge and 3" from its ends, two of them up to 40",
+//! each moved to where its plate's holes land on the sides' 32 mm grid;
 //! groove drawer boxes for their 12 mm bottoms 1/2" from the bottom
 //! edge, 1/4" deep; and join the case with 8 × 35 mm dowels, 12 mm into
 //! the sides and 25 mm into the other parts' edges, 96 mm apart and at
@@ -150,15 +151,17 @@ fn the_sides_of_a_frameless_base_are_grooved_and_bored() {
     // The B30: sides 774.7 × 609.6 mm, x up from their bottom end, y
     // forward from their rear edge.
     let (project, library) = kitchen();
-    let plates = |x: [&str; 4]| x.map(|x| format!("hole A ({x}, 572.6) ⌀5 × 12")).to_vec();
     let mut left = vec![
         // The back's groove: 1/4" plus half of 12 mm from the rear edge.
         "groove A (0, 12.35)–(774.7, 12.35) 12 × 9.525".to_owned(),
     ];
     // Door 1 hangs on the left side. It starts 1/16" above the side's
-    // bottom end; its cups are 76.2 and 542.925 up it, so the plates' holes
-    // are 16 mm either side of 77.7875 and 544.5125, 609.6 − 37 forward.
-    left.extend(plates(["61.7875", "93.7875", "528.5125", "560.5125"]));
+    // bottom end, so cups 3" from its ends would be 77.7875 and 544.5125 up
+    // the side. The grid runs every 32 from the top of the bottom, 18, so a
+    // plate's two holes are on it when its center is at 34 + 32k: the cups
+    // move to 66 and 546, and the plates' holes, 609.6 − 37 forward, are
+    // 50 and 82, and 530 and 562. The front column bores all but 50.
+    left.push("hole A (50, 572.6) ⌀5 × 12".to_owned());
     // The shelves' opening runs from the bottom end to 622.3; the inside
     // starts at the top of the bottom, 18. Holes every 32 from 18 that are
     // 2" clear of both: 82 to 562. The rear column is 37 in front of the
@@ -175,7 +178,7 @@ fn the_sides_of_a_frameless_base_are_grooved_and_bored() {
     );
     // Door 2 hangs on the right side, at the same heights.
     let mut right = vec!["groove A (0, 12.35)–(774.7, 12.35) 12 × 9.525".to_owned()];
-    right.extend(plates(["61.7875", "93.7875", "528.5125", "560.5125"]));
+    right.push("hole A (50, 572.6) ⌀5 × 12".to_owned());
     right.extend(columns);
     right.extend(dowels());
     assert_eq!(
@@ -229,23 +232,75 @@ fn dowels() -> Vec<String> {
 }
 
 #[test]
+fn no_two_holes_in_a_side_run_together() {
+    // Hinge plates, shelf pins and dowels share the sides' face A.
+    let (project, library) = kitchen();
+    for side in evaluate(&project, &library)
+        .parts
+        .iter()
+        .filter(|p| p.role == "side")
+    {
+        let mut circles: Vec<(i64, i64, i64)> = Vec::new();
+        for operation in &side.operations {
+            match *operation {
+                Operation::Hole {
+                    face: Face::A,
+                    at,
+                    diameter,
+                    ..
+                } => circles.push((at.x.nm(), at.y.nm(), diameter.nm() / 2)),
+                Operation::HolePattern {
+                    face: Face::A,
+                    start,
+                    step,
+                    count,
+                    diameter,
+                    ..
+                } => {
+                    for k in 0..i64::from(count) {
+                        circles.push((
+                            start.x.nm() + step.x.nm() * k,
+                            start.y.nm() + step.y.nm() * k,
+                            diameter.nm() / 2,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (i, &(ax, ay, ar)) in circles.iter().enumerate() {
+            for &(bx, by, br) in &circles[i + 1..] {
+                let apart = i128::from(ax - bx).pow(2) + i128::from(ay - by).pow(2);
+                assert!(
+                    apart >= i128::from(ar + br).pow(2),
+                    "holes run together in {} at ({ax}, {ay})",
+                    side.key
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn doors_are_bored_for_hinge_cups_on_their_hinge_edge() {
     // The B30's doors, 619.125 high and 377.825 wide: x up from the
-    // bottom, y from the left edge seen from the front. Two cups 3" from
-    // the ends, centered 4 + 35 / 2 from the hinge edge.
+    // bottom, y from the left edge seen from the front. Two cups about 3"
+    // from the ends, where their plates land on the sides' grid: 66 and 546
+    // up the side, less the 1.5875 the door starts above it. They are
+    // centered 4 + 35 / 2 from the hinge edge.
     let (project, library) = kitchen();
     assert_eq!(
         operations(&project, &library, "B30", "front/403/door.1"),
         [
-            "hole A (76.2, 21.5) ⌀35 × 13",
-            "hole A (542.925, 21.5) ⌀35 × 13",
+            "hole A (64.4125, 21.5) ⌀35 × 13",
+            "hole A (544.4125, 21.5) ⌀35 × 13",
         ]
     );
     assert_eq!(
         operations(&project, &library, "B30", "front/403/door.2"),
         [
-            "hole A (76.2, 356.325) ⌀35 × 13",
-            "hole A (542.925, 356.325) ⌀35 × 13",
+            "hole A (64.4125, 356.325) ⌀35 × 13",
+            "hole A (544.4125, 356.325) ⌀35 × 13",
         ]
     );
     assert_eq!(

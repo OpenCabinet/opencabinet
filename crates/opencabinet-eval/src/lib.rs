@@ -123,8 +123,10 @@
 //!   cups' edge `k` from the hinge edge, in the door or its hinge stile. A
 //!   pair hinges on its outer edges; a single door on its `hingeSide`. In
 //!   a frameless cabinet, two holes on the front column of the side, `p`
-//!   apart around each cup, take the hinge's plate; face frame hinges screw
-//!   to the frame.
+//!   apart around each cup, take the hinge's plate: each hinge moves to the
+//!   nearest place where those holes are on the side's grid, every `p`
+//!   from the top of the bottom, so they are the line boring's holes where
+//!   it has them. Face frame hinges screw to the frame.
 //! - **Drawer bottom groove** (the `drawers` rules'
 //!   `bottomGrooveSetback`): as wide as the bottom is thick, the full
 //!   length of the box's sides, front and back.
@@ -177,7 +179,9 @@ pub use crate::elevation::{
 use crate::front::{Divider, Dividers, Layout, Opening, Rect, lay_out};
 pub use crate::joinery::{Fastener, FastenerKind};
 pub use crate::machining::{Edge, Face, Operation, Point};
-use crate::machining::{groove_along, hinge_positions, holes_between};
+use crate::machining::{
+    bored_by_patterns, groove_along, hinge_positions, holes_between, nearest_on_grid,
+};
 pub use crate::plan::{Plan, PlanCabinet, PlanWall, plan};
 use crate::rules::{Back, Drawers, FaceFrame, Fronts, Overlay, Rules};
 pub use crate::view::{FrontKind, FrontShape, FrontView, front_openings, front_view};
@@ -519,9 +523,17 @@ fn door_hinge(insert: &Insert, count: u32, index: usize, blind: Option<Side>) ->
     }
 }
 
-/// Adds what the inserts machine into the left and right sides.
+/// Adds what the inserts machine into the left and right sides, each hole
+/// once: a hinge plate's hole that the line boring bores already is left
+/// out.
 fn machine_sides(parts: &mut [Part], [left, right]: [Vec<Operation>; 2]) {
-    for (key, operations) in [("case/side.left", left), ("case/side.right", right)] {
+    for (key, mut operations) in [("case/side.left", left), ("case/side.right", right)] {
+        let patterns: Vec<Operation> = operations
+            .iter()
+            .filter(|o| matches!(o, Operation::HolePattern { .. }))
+            .cloned()
+            .collect();
+        operations.retain(|operation| !bored_by_patterns(operation, &patterns));
         if let Some(side) = parts.iter_mut().find(|p| p.key == key) {
             side.operations.extend(operations);
         }
@@ -1283,7 +1295,40 @@ impl<'p> Cabinet<'_, 'p> {
             Side::Left => from_edge,
             Side::Right => part.width - from_edge,
         };
-        let positions = hinge_positions(door.height, rules.end_distance, count);
+        let mut positions = hinge_positions(door.height, rules.end_distance, count);
+        // Frameless, the hinges' plates mount on the side's front column;
+        // face frame hinges screw to the frame.
+        let plates = if matches!(self.fit, Fit::Framed { .. }) {
+            None
+        } else {
+            let index = self.hinge_side(opening, side)?;
+            let holes = self.rules.system_holes.as_ref();
+            if holes.is_none() {
+                self.lookup.note(
+                    "the sides are not bored for hinge plates: the standard has no \
+                     `systemHoles` rules",
+                );
+            }
+            holes.map(|holes| (index, holes))
+        };
+        // Where the door starts, up the side.
+        let offset = door.y - self.face.y;
+        if let Some((_, holes)) = plates {
+            // Each hinge moves to the nearest place where its plate's two
+            // holes land on the side's 32 mm grid, which starts at the top
+            // of the bottom: its center halfway between two grid holes.
+            let centers = self.inside.0 + holes.spacing.div_round(2);
+            for position in &mut positions {
+                *position = nearest_on_grid(offset + *position, centers, holes.spacing) - offset;
+            }
+            let radius = diameter.div_round(2);
+            let fits = positions.windows(2).all(|pair| pair[0] < pair[1])
+                && positions.first().is_some_and(|&p| p >= radius)
+                && positions.last().is_some_and(|&p| p + radius <= door.height);
+            if !fits {
+                return Err("the hinges do not fit the door on the 32 mm grid".into());
+            }
+        }
         self.hardware
             .push((HardwareKind::Hinge(rules.hardware), count));
         for &x in &positions {
@@ -1295,37 +1340,15 @@ impl<'p> Cabinet<'_, 'p> {
                 countersink: None,
             });
         }
-        if matches!(self.fit, Fit::Framed { .. }) {
-            // Face frame hinges screw to the frame.
-            return Ok(());
-        }
-        let (on_side, index) = match side {
-            Side::Left => (opening.rect.x == self.face.x, 0),
-            Side::Right => (
-                opening.rect.x + opening.rect.width == self.face.x + self.face.width,
-                1,
-            ),
-        };
-        if !on_side {
-            return Err(
-                "a door hinged away from the cabinet's sides has nothing to mount its \
-                 hinges on"
-                    .into(),
-            );
-        }
-        let Some(holes) = &self.rules.system_holes else {
-            self.lookup.note(
-                "the sides are not bored for hinge plates: the standard has no \
-                 `systemHoles` rules",
-            );
+        let Some((index, holes)) = plates else {
             return Ok(());
         };
         // Two holes on the front column, a spacing apart, centered on each
-        // cup.
+        // cup: grid holes, which the line boring may bore already.
         let y = self.depth - holes.front_setback;
         let half = holes.spacing.div_round(2);
         for x in positions {
-            let x = door.y - self.face.y + x;
+            let x = offset + x;
             for at in [x - half, x - half + holes.spacing] {
                 self.sides[index].push(Operation::Hole {
                     face: Face::A,
@@ -1337,6 +1360,27 @@ impl<'p> Cabinet<'_, 'p> {
             }
         }
         Ok(())
+    }
+
+    /// The side, 0 left or 1 right, that a door in `opening` hinged on
+    /// `side` mounts its hinges on.
+    fn hinge_side(&self, opening: &Opening<'_>, side: Side) -> Result<usize, String> {
+        let (on_side, index) = match side {
+            Side::Left => (opening.rect.x == self.face.x, 0),
+            Side::Right => (
+                opening.rect.x + opening.rect.width == self.face.x + self.face.width,
+                1,
+            ),
+        };
+        if on_side {
+            Ok(index)
+        } else {
+            Err(
+                "a door hinged away from the cabinet's sides has nothing to mount its \
+                 hinges on"
+                    .into(),
+            )
+        }
     }
 
     /// Bores both sides for shelf pins across `opening`: a front and a rear

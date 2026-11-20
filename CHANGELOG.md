@@ -73,6 +73,10 @@ follow [Semantic Versioning](https://semver.org/).
 - Elevations are named after their room and wall, as "Kitchen - North", on
   each page of the PDF and in each DXF file's name, and placement warnings
   say which room when the project has more than one.
+- **Hinges on the 32 mm grid:** in a frameless cabinet, each hinge moves
+  from 3" from the door's end to the nearest place where its plate's two
+  holes land on the side's 32 mm grid, so the plate uses the shelf pin
+  holes instead of running into them; a hole they share is bored once.
 
 ## [0.1.0-beta.2] - 2026-11-07
 

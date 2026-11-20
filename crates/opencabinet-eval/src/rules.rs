@@ -169,7 +169,9 @@ pub struct Hinges {
     pub hardware: Id,
     /// From the hinge edge of the door to the edge of the cup.
     pub boring_distance: Length,
-    /// From each end of the door to the center of the nearest cup.
+    /// From each end of the door to the center of the nearest cup; in a
+    /// frameless cabinet, as near to it as puts the plates on the 32 mm
+    /// grid.
     pub end_distance: Length,
     /// How many hinges a door takes, by its height, shortest first.
     pub counts: Vec<HingeCount>,
