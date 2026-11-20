@@ -128,6 +128,15 @@ fn the_kitchen_is_drawn() {
             },
         ),
         (
+            "joinery.png",
+            View {
+                isolated: Some(0),
+                mode: Mode::XRay,
+                fronts: false,
+                ..View::default()
+            },
+        ),
+        (
             "exploded.png",
             View {
                 isolated: Some(0),

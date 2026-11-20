@@ -120,7 +120,7 @@ pub fn bill_of_materials(
     rows.extend(count.edge_bands(&evaluation.parts));
     rows.extend(count.hardware(&evaluation.hardware));
     notes.push(
-        "Sheet counts are estimates from the parts' area; pulls, legs, screws and glue are \
+        "Sheet counts are estimates from the parts' area; pulls, legs, nails, screws other than confirmat and glue are \
          not counted yet"
             .into(),
     );
@@ -273,6 +273,15 @@ impl Counting<'_> {
                         format!("Drawer slides {}", self.show(length)),
                         plural(count, "pair", "pairs"),
                         String::new(),
+                    ),
+                    HardwareKind::Fastener(id) => (
+                        self.library
+                            .hardware
+                            .iter()
+                            .find(|h| h.id == id)
+                            .map_or_else(|| "Fastener".to_owned(), |h| h.name.clone()),
+                        count.to_string(),
+                        "joining the cases".to_owned(),
                     ),
                     HardwareKind::ShelfPin => (
                         "Shelf pins".to_owned(),

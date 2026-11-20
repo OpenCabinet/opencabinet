@@ -133,6 +133,36 @@ fn a_side_is_drawn_with_its_groove_and_holes() {
 }
 
 #[test]
+fn the_bottom_is_drawn_with_the_holes_in_its_ends() {
+    // 726 long: six 8 mm dowel holes 25 deep in each end, drawn as the area
+    // they take, 4 either side of their centers.
+    let (project, library) = kitchen();
+    let files = parts_dxf(&project, &library).unwrap();
+    let bottom = load(file(&files, "B30 - Bottom.dxf"));
+    let left = on_layer(&bottom, "EDGE_X0_D8_Z25");
+    assert_eq!(left.len(), 6);
+    assert_eq!(
+        left[0],
+        [
+            (0, 540_800),
+            (25_000, 540_800),
+            (25_000, 548_800),
+            (0, 548_800)
+        ]
+    );
+    let right = on_layer(&bottom, "EDGE_X1_D8_Z25");
+    assert_eq!(
+        right[5],
+        [
+            (701_000, 60_800),
+            (726_000, 60_800),
+            (726_000, 68_800),
+            (701_000, 68_800)
+        ]
+    );
+}
+
+#[test]
 fn holes_shift_by_the_bands_on_the_left_and_bottom_edges() {
     // Door 1 is banded 0.5 mm on all four edges: cut 618.125 × 376.825,
     // and its cups, 76.2 and 542.925 up and 21.5 in on the banded door,

@@ -128,6 +128,9 @@
 //! - **Drawer bottom groove** (the `drawers` rules'
 //!   `bottomGrooveSetback`): as wide as the bottom is thick, the full
 //!   length of the box's sides, front and back.
+//! - **Joinery** (the `joinery` rules): dowels or confirmat screws join
+//!   the sides to the bottom, a top and the stretchers, bored into the
+//!   sides' faces and the other parts' ends; see [`joinery`].
 //!
 //! # Where parts go
 //!
@@ -152,6 +155,7 @@
 pub mod assembly;
 pub mod elevation;
 pub mod front;
+pub mod joinery;
 pub mod machining;
 pub mod plan;
 pub mod rules;
@@ -171,7 +175,8 @@ pub use crate::elevation::{
     Dimension, Elevation, PlacedCabinet, elevation, placement_problems, wall_length,
 };
 use crate::front::{Divider, Dividers, Layout, Opening, Rect, lay_out};
-pub use crate::machining::{Face, Operation, Point};
+pub use crate::joinery::{Fastener, FastenerKind};
+pub use crate::machining::{Edge, Face, Operation, Point};
 use crate::machining::{groove_along, hinge_positions, holes_between};
 pub use crate::plan::{Plan, PlanCabinet, PlanWall, plan};
 use crate::rules::{Back, Drawers, FaceFrame, Fronts, Overlay, Rules};
@@ -213,6 +218,8 @@ pub struct Part {
     pub operations: Vec<Operation>,
     /// Where it sits in its product.
     pub placement: Placement,
+    /// The dowels and screws set into it, joining it to other parts.
+    pub fasteners: Vec<Fastener>,
 }
 
 impl Part {
@@ -256,6 +263,8 @@ pub enum HardwareKind {
     SlidePair(Length),
     /// A pin an adjustable shelf rests on.
     ShelfPin,
+    /// A dowel or screw from the library that joins parts.
+    Fastener(Id),
 }
 
 /// The result of evaluating a project.
@@ -425,13 +434,27 @@ pub fn evaluate_product(
     for opening in &layout.openings {
         cabinet.insert(opening, &mut parts)?;
     }
-    let hardware = tally(product.id, cabinet.hardware, quantity);
     machine_sides(&mut parts, cabinet.sides);
+    let placed = [cabinet.hardware, join(&mut parts, &rules, &lookup)?].concat();
     Ok(Evaluated {
         parts,
-        hardware,
+        hardware: tally(product.id, placed, quantity),
         notes: lookup.notes.into_inner(),
     })
+}
+
+/// Joins the case's parts by the standard's `joinery` rules, if it has
+/// them: the fasteners used.
+fn join(
+    parts: &mut [Part],
+    rules: &Rules,
+    lookup: &Lookup<'_>,
+) -> Result<Vec<(HardwareKind, u32)>, String> {
+    if let Some(joinery) = &rules.joinery {
+        return joinery::join_case(parts, joinery, lookup);
+    }
+    lookup.note("the case is not bored for joinery: the standard has no `joinery` rules");
+    Ok(Vec::new())
 }
 
 /// How far the bottom sits above the bottom of the sides: its top is flush
@@ -1230,7 +1253,7 @@ impl<'p> Cabinet<'_, 'p> {
                 .note("doors are not bored for hinges: the standard has no `hinges` rules");
             return Ok(());
         };
-        let hinge = self.lookup.hardware(rules.hardware)?;
+        let hinge = self.lookup.hardware(rules.hardware, "hinge")?;
         let dimension = |name: &str| {
             hinge
                 .dimensions
@@ -1269,6 +1292,7 @@ impl<'p> Cabinet<'_, 'p> {
                 at: Point { x, y },
                 diameter,
                 depth,
+                countersink: None,
             });
         }
         if matches!(self.fit, Fit::Framed { .. }) {
@@ -1308,6 +1332,7 @@ impl<'p> Cabinet<'_, 'p> {
                     at: Point { x: at, y },
                     diameter: holes.diameter,
                     depth: holes.depth,
+                    countersink: None,
                 });
             }
         }
@@ -1683,12 +1708,13 @@ impl<'p> Lookup<'p> {
             .ok_or_else(|| format!("the material for `{role}` is not in the library"))
     }
 
-    fn hardware(&self, id: Id) -> Result<&'p Hardware, String> {
+    /// The standard's `what`, from the library's hardware.
+    fn hardware(&self, id: Id, what: &str) -> Result<&'p Hardware, String> {
         self.library
             .hardware
             .iter()
             .find(|h| h.id == id)
-            .ok_or_else(|| "the standard's hinge is not in the library".into())
+            .ok_or_else(|| format!("the standard's {what} is not in the library"))
     }
 
     /// The material for `role`, or for `fallback` when `role` has none.
@@ -1770,6 +1796,7 @@ impl PartMaker<'_> {
             quantity: self.quantity,
             operations: Vec::new(),
             placement: Placement::default(),
+            fasteners: Vec::new(),
         }
     }
 }

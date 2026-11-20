@@ -952,7 +952,9 @@ mod tests {
 
     #[test]
     fn the_hardware_follows_the_sections() {
-        // Three pairs of slides for three drawers, no hinges.
+        // Three pairs of slides for three drawers, no hinges; and the case's
+        // dowels, six in each end of the bottom and two in each end of each
+        // stretcher.
         let mut designer = Designer::default();
         designer.select_section(1);
         designer.set_section_kind(SectionKind::Drawer);
@@ -967,7 +969,13 @@ mod tests {
             .collect();
         assert_eq!(
             used,
-            [(HardwareKind::SlidePair(Length::from_inches(22)), 3)]
+            [
+                (HardwareKind::SlidePair(Length::from_inches(22)), 3),
+                (
+                    HardwareKind::Fastener(designer.document.library.hardware[1].id),
+                    20
+                ),
+            ]
         );
     }
 }

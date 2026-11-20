@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use opencabinet_eval::{Axis, Face, Operation, Part, evaluate, plan};
+use opencabinet_eval::{Axis, Edge, Face, FastenerKind, Operation, Part, evaluate, plan};
 use opencabinet_model::{Id, Length, Library, Project, Wall};
 
 use crate::math::{Ray, Vec3};
@@ -745,6 +745,7 @@ impl Model {
                     mesh.part(&shape, view.mode == Mode::Shaded);
                     mesh.machining(&shape);
                     mesh.hardware(&shape);
+                    mesh.fasteners(&shape);
                 }
                 let edge = if selected {
                     [0.10, 0.42, 1.0, 1.0]
@@ -1154,14 +1155,32 @@ impl Mesh {
     ) {
         let (du, dv, dw) = (shape.axis(0), shape.axis(1), shape.axis(2));
         let center = shape.point(u, v, z) + dw * out;
-        let normal = dw * out.signum();
-        let ghost = shape.flags & GHOST != 0;
         let params = [surface.code(), shape.seed, flag(shape.flags & GHOST), 0.0];
+        let rgba = [color[0], color[1], color[2], 1.0];
+        let ghost = shape.flags & GHOST != 0;
+        self.fan(
+            (center, du, dv, dw * out.signum()),
+            radius,
+            rgba,
+            params,
+            ghost,
+        );
+    }
+
+    /// A flat disc around `center` in the plane of `a` and `b`, facing
+    /// `normal`.
+    fn fan(
+        &mut self,
+        (center, a, b, normal): (Vec3, Vec3, Vec3, Vec3),
+        radius: f32,
+        rgba: [f32; 4],
+        params: [f32; 4],
+        ghost: bool,
+    ) {
         let segments = 20;
         let Ok(first) = u32::try_from(self.vertices.len()) else {
             return;
         };
-        let rgba = [color[0], color[1], color[2], 1.0];
         self.vertices.push(Vertex {
             position: center.to_array(),
             normal: normal.to_array(),
@@ -1173,7 +1192,7 @@ impl Mesh {
             #[allow(clippy::cast_precision_loss, reason = "a few segments")]
             let angle = k as f32 / segments as f32 * std::f32::consts::TAU;
             let (s, c) = angle.sin_cos();
-            let p = center + du * (c * radius) + dv * (s * radius);
+            let p = center + a * (c * radius) + b * (s * radius);
             self.vertices.push(Vertex {
                 position: p.to_array(),
                 normal: normal.to_array(),
@@ -1193,6 +1212,83 @@ impl Mesh {
         }
     }
 
+    /// A round rod from `a` to `b`, points of the world, `radius` thick,
+    /// with flat ends; `x` and `y` are two directions square to it.
+    fn rod(
+        &mut self,
+        (a, b): (Vec3, Vec3),
+        (x, y): (Vec3, Vec3),
+        radius: f32,
+        (rgba, params): ([f32; 4], [f32; 4]),
+        ghost: bool,
+    ) {
+        let segments = 12;
+        let along = (b - a).normalized();
+        let ring = |k: i32| {
+            #[allow(clippy::cast_precision_loss, reason = "a few segments")]
+            let angle = k as f32 / segments as f32 * std::f32::consts::TAU;
+            let (s, c) = angle.sin_cos();
+            x * c + y * s
+        };
+        for k in 0..segments {
+            let (r0, r1) = (ring(k), ring(k + 1));
+            let normal = (r0 + r1).normalized();
+            self.quad(
+                [
+                    a + r0 * radius,
+                    a + r1 * radius,
+                    b + r1 * radius,
+                    b + r0 * radius,
+                ],
+                normal,
+                [[0.0; 2]; 4],
+                rgba,
+                params,
+                ghost,
+            );
+        }
+        self.fan((a, x, y, -along), radius, rgba, params, ghost);
+        self.fan((b, x, y, along), radius, rgba, params, ghost);
+    }
+
+    /// The dowels and screws set into a part: light wooden rods and steel
+    /// ones, a screw's head a short wide rod where it sits in the side.
+    /// They stay solid in X-ray, where the parts around them are seen
+    /// through, so the joinery shows.
+    fn fasteners(&mut self, shape: &PartShape<'_>) {
+        let ghost = false;
+        for fastener in &shape.part.fasteners {
+            let p = |q: [Length; 3]| shape.point(mm(q[0]), mm(q[1]), mm(q[2]));
+            let (a, b) = (p(fastener.start), p(fastener.end));
+            // A fastener lies along one of the part's axes; the other two
+            // are square to it.
+            let run = (0..3)
+                .max_by_key(|&i| (fastener.end[i] - fastener.start[i]).nm().abs())
+                .unwrap_or(0);
+            let across = (shape.axis((run + 1) % 3), shape.axis((run + 2) % 3));
+            let radius = mm(fastener.diameter) / 2.0;
+            let params = |surface: Surface| [surface.code(), 0.0, 0.0, 0.0];
+            match fastener.kind {
+                FastenerKind::Dowel => {
+                    let wood = [0.86, 0.70, 0.47, 1.0];
+                    self.rod(
+                        (a, b),
+                        across,
+                        radius,
+                        (wood, params(Surface::Plain)),
+                        ghost,
+                    );
+                }
+                FastenerKind::Confirmat { head } => {
+                    let steel = ([0.30, 0.31, 0.33, 1.0], params(Surface::Metal));
+                    self.rod((a, b), across, radius * 0.8, steel, ghost);
+                    let neck = a + (b - a).normalized() * 4.0;
+                    self.rod((a, neck), across, mm(head) / 2.0, steel, ghost);
+                }
+            }
+        }
+    }
+
     /// Holes and grooves, as dark marks on their face.
     fn machining(&mut self, shape: &PartShape<'_>) {
         let (_, _, t) = shape.size();
@@ -1204,11 +1300,46 @@ impl Mesh {
         for operation in &shape.part.operations {
             match *operation {
                 Operation::Hole {
-                    face, at, diameter, ..
+                    face,
+                    at,
+                    diameter,
+                    countersink,
+                    ..
                 } => {
                     let (z, out) = side(face);
-                    let r = mm(diameter) / 2.0;
+                    let r = mm(countersink.unwrap_or(diameter)) / 2.0;
                     self.disc(shape, (mm(at.x), mm(at.y), z), r, out, dark, Surface::Hole);
+                }
+                Operation::EdgeHole {
+                    edge,
+                    along,
+                    diameter,
+                    ..
+                } => {
+                    let (l, w, _) = shape.size();
+                    let (du, dv, dw) = (shape.axis(0), shape.axis(1), shape.axis(2));
+                    let along = mm(along);
+                    let (center, a, b, normal) = match edge {
+                        Edge::X0 => (shape.point(-0.4, along, t / 2.0), dv, dw, -du),
+                        Edge::X1 => (shape.point(l + 0.4, along, t / 2.0), dv, dw, du),
+                        Edge::Y0 => (shape.point(along, -0.4, t / 2.0), du, dw, -dv),
+                        Edge::Y1 => (shape.point(along, w + 0.4, t / 2.0), du, dw, dv),
+                    };
+                    let params = [
+                        Surface::Hole.code(),
+                        shape.seed,
+                        flag(shape.flags & GHOST),
+                        0.0,
+                    ];
+                    let rgba = [dark[0], dark[1], dark[2], 1.0];
+                    let ghost = shape.flags & GHOST != 0;
+                    self.fan(
+                        (center, a, b, normal),
+                        mm(diameter) / 2.0,
+                        rgba,
+                        params,
+                        ghost,
+                    );
                 }
                 Operation::HolePattern {
                     face,

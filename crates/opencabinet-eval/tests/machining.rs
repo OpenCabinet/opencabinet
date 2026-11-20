@@ -9,8 +9,10 @@
 //! 32 mm in columns 37 mm from the front edge and 37 mm in front of the
 //! back, 2" clear of an opening's ends; bore 35 mm hinge cups 13 mm deep,
 //! 4 mm from the door's edge and 3" from its ends, two of them up to 40";
-//! and groove drawer boxes for their 12 mm bottoms 1/2" from the bottom
-//! edge, 1/4" deep.
+//! groove drawer boxes for their 12 mm bottoms 1/2" from the bottom
+//! edge, 1/4" deep; and join the case with 8 × 35 mm dowels, 12 mm into
+//! the sides and 25 mm into the other parts' edges, 96 mm apart and at
+//! least 32 mm from the ends of each joint.
 
 use std::path::PathBuf;
 
@@ -62,10 +64,23 @@ fn describe(operation: &Operation) -> String {
             at,
             diameter,
             depth,
+            countersink,
         } => format!(
-            "hole {} {} ⌀{} × {}",
+            "hole {} {} ⌀{} × {}{}",
             face(*f),
             point(*at),
+            mm(*diameter),
+            mm(*depth),
+            countersink.map_or_else(String::new, |c| format!(" countersunk ⌀{}", mm(c)))
+        ),
+        Operation::EdgeHole {
+            edge,
+            along,
+            diameter,
+            depth,
+        } => format!(
+            "edge hole {edge:?} at {} ⌀{} × {}",
+            mm(*along),
             mm(*diameter),
             mm(*depth)
         ),
@@ -153,6 +168,7 @@ fn the_sides_of_a_frameless_base_are_grooved_and_bored() {
         "16 holes A (82, 55.35) every (32, 0) ⌀5 × 12".to_owned(),
     ];
     left.extend(columns.clone());
+    left.extend(dowels());
     assert_eq!(
         operations(&project, &library, "B30", "case/side.left"),
         left
@@ -161,21 +177,55 @@ fn the_sides_of_a_frameless_base_are_grooved_and_bored() {
     let mut right = vec!["groove A (0, 12.35)–(774.7, 12.35) 12 × 9.525".to_owned()];
     right.extend(plates(["61.7875", "93.7875", "528.5125", "560.5125"]));
     right.extend(columns);
+    right.extend(dowels());
     assert_eq!(
         operations(&project, &library, "B30", "case/side.right"),
         right
     );
 
+    // The bottom's ends take the dowels' other halves, at the same places
+    // across its width.
+    let mut bottom = vec!["groove A (0, 12.35)–(726, 12.35) 12 × 9.525".to_owned()];
+    for edge in ["X0", "X1"] {
+        for v in ["544.8", "448.8", "352.8", "256.8", "160.8", "64.8"] {
+            bottom.push(format!("edge hole {edge} at {v} ⌀8 × 25"));
+        }
+    }
+    assert_eq!(operations(&project, &library, "B30", "case/bottom"), bottom);
+    // The stretchers, 4" wide, are too narrow for two dowels 96 apart:
+    // they take two, 32 from their edges, from the front.
     assert_eq!(
-        operations(&project, &library, "B30", "case/bottom"),
-        ["groove A (0, 12.35)–(726, 12.35) 12 × 9.525"]
+        operations(&project, &library, "B30", "case/stretcher.front"),
+        [
+            "edge hole X0 at 69.6 ⌀8 × 25",
+            "edge hole X0 at 32 ⌀8 × 25",
+            "edge hole X1 at 69.6 ⌀8 × 25",
+            "edge hole X1 at 32 ⌀8 × 25",
+        ]
     );
-    for key in ["case/stretcher.front", "case/back", "front/403/shelf.1"] {
+    for key in ["case/back", "front/403/shelf.1"] {
         assert_eq!(
             operations(&project, &library, "B30", key),
             Vec::<String>::new()
         );
     }
+}
+
+/// The dowel holes in each side of the B30, half the case's thickness
+/// from their ends.
+///
+/// The bottom is 609.6 deep: less 32 at each end, six dowels 96 apart fit,
+/// 480 in all, 64.8 from each edge. The stretchers are 101.6 wide, so two
+/// dowels, 32 from their edges: the front one starts 101.6 from the front,
+/// the back one is in front of the back, 6.35 + 12 in.
+fn dowels() -> Vec<String> {
+    let mut holes: Vec<String> = ["544.8", "448.8", "352.8", "256.8", "160.8", "64.8"]
+        .map(|y| format!("hole A (9, {y}) ⌀8 × 12"))
+        .into();
+    for y in ["577.6", "540", "87.95", "50.35"] {
+        holes.push(format!("hole A (765.7, {y}) ⌀8 × 12"));
+    }
+    holes
 }
 
 #[test]
@@ -256,14 +306,26 @@ fn face_frame_doors_take_their_cups_in_the_hinge_stile() {
             Vec::<String>::new()
         );
     }
+    // The case is 285.75 deep behind the frame: three dowels 96 apart
+    // fit, 46.875 from each edge, in the bottom, raised to the frame's
+    // bottom rail, and in the top.
+    let mut side = vec!["groove A (0, 12.35)–(762, 12.35) 12 × 9.525".to_owned()];
+    for x in ["29.1", "753"] {
+        for y in ["238.875", "142.875", "46.875"] {
+            side.push(format!("hole A ({x}, {y}) ⌀8 × 12"));
+        }
+    }
     assert_eq!(
         operations(&project, &library, "W30", "case/side.left"),
-        ["groove A (0, 12.35)–(762, 12.35) 12 × 9.525"]
+        side
     );
-    assert_eq!(
-        operations(&project, &library, "W30", "case/top"),
-        ["groove A (0, 12.35)–(726, 12.35) 12 × 9.525"]
-    );
+    let mut top = vec!["groove A (0, 12.35)–(726, 12.35) 12 × 9.525".to_owned()];
+    for edge in ["X0", "X1"] {
+        for v in ["238.875", "142.875", "46.875"] {
+            top.push(format!("edge hole {edge} at {v} ⌀8 × 25"));
+        }
+    }
+    assert_eq!(operations(&project, &library, "W30", "case/top"), top);
 }
 
 /// The sample's frameless standard.
@@ -315,6 +377,7 @@ fn missing_machining_rules_are_noted_and_the_parts_kept() {
     let before = evaluate(&project, &library).parts.len();
     set_rule(&mut library, "hinges", "", serde_json::Value::Null);
     set_rule(&mut library, "systemHoles", "", serde_json::Value::Null);
+    set_rule(&mut library, "joinery", "", serde_json::Value::Null);
     let back = library
         .standards
         .iter_mut()
@@ -334,6 +397,7 @@ fn missing_machining_rules_are_noted_and_the_parts_kept() {
             "doors are not bored for hinges: the standard has no `hinges` rules",
             "the sides are not bored for shelf pins: the standard has no `systemHoles` \
              rules",
+            "the case is not bored for joinery: the standard has no `joinery` rules",
         ]
     );
     assert_eq!(
