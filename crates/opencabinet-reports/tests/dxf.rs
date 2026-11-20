@@ -123,13 +123,13 @@ fn a_side_is_drawn_with_its_groove_and_holes() {
             (0, 18_350)
         ]]
     );
-    // 4 hinge plate holes and two columns of 16 shelf pin holes.
+    // The one hinge plate hole the front column does not bore, and two
+    // columns of 16 shelf pin holes.
     let holes = on_layer(&side, "HOLE_A_D5_Z12");
-    assert_eq!(holes.len(), 4 + 2 * 16);
-    // 61.7875, to the nearest micrometer.
-    assert_eq!(holes[0], [(61_788, 572_600), (5000, 0)]);
-    assert_eq!(holes[4], [(82_000, 572_600), (5000, 0)]);
-    assert_eq!(holes[20], [(82_000, 55_350), (5000, 0)]);
+    assert_eq!(holes.len(), 1 + 2 * 16);
+    assert_eq!(holes[0], [(50_000, 572_600), (5000, 0)]);
+    assert_eq!(holes[1], [(82_000, 572_600), (5000, 0)]);
+    assert_eq!(holes[17], [(82_000, 55_350), (5000, 0)]);
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn the_bottom_is_drawn_with_the_holes_in_its_ends() {
 #[test]
 fn holes_shift_by_the_bands_on_the_left_and_bottom_edges() {
     // Door 1 is banded 0.5 mm on all four edges: cut 618.125 × 376.825,
-    // and its cups, 76.2 and 542.925 up and 21.5 in on the banded door,
+    // and its cups, 64.4125 and 544.4125 up and 21.5 in on the banded door,
     // are 0.5 less on the cut one.
     let (project, library) = kitchen();
     let files = parts_dxf(&project, &library).unwrap();
@@ -177,8 +177,8 @@ fn holes_shift_by_the_bands_on_the_left_and_bottom_edges() {
     assert_eq!(
         on_layer(&door, "HOLE_A_D35_Z13"),
         [
-            vec![(75_700, 21_000), (35_000, 0)],
-            vec![(542_425, 21_000), (35_000, 0)],
+            vec![(63_913, 21_000), (35_000, 0)],
+            vec![(543_913, 21_000), (35_000, 0)],
         ]
     );
 }
