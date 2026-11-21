@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Throwaway spike for RFC-0004 §11: several people marking up at once
+# through Automerge, a host that relays, host handover and the log.
+[package]
+name = "session-spike"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+automerge = "0.12.0"
+
+[profile.release]
+lto = true
+codegen-units = 1

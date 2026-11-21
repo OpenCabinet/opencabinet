@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Throwaway spike for RFC-0004 §11: is hayro fast enough for drawings,
+# and do markups saved with lopdf as an incremental update show up?
+[package]
+name = "pdf-render-spike"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+hayro = "0.9.0"
+lopdf = "0.47.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
