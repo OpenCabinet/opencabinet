@@ -19,7 +19,9 @@ publish = false
 opencabinet-eval = { path = "crates/opencabinet-eval" }
 opencabinet-format = { path = "crates/opencabinet-format" }
 opencabinet-model = { path = "crates/opencabinet-model" }
+opencabinet-pdf = { path = "crates/opencabinet-pdf" }
 opencabinet-reports = { path = "crates/opencabinet-reports" }
+opencabinet-review = { path = "crates/opencabinet-review" }
 opencabinet-view3d = { path = "crates/opencabinet-view3d" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

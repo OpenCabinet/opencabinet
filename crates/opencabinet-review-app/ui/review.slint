@@ -1,0 +1,271 @@
+// SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+import { Button, ComboBox, LineEdit, Palette, StandardTableView, TextEdit } from "std-widgets.slint";
+
+// A markup's outline over the page, in the view's pixels.
+export struct Shape {
+    commands: string,
+    color: color,
+    width: length,
+    selected: bool,
+}
+
+// Text over the page: a text box's lines or a length.
+export struct Label {
+    x: length,
+    y: length,
+    text: string,
+    color: color,
+    size: length,
+}
+
+export component ReviewWindow inherits Window {
+    in property <string> window-title: "OpenCabinet Review";
+    in property <bool> has-document;
+    in property <image> page-image;
+    in property <[Shape]> shapes;
+    in property <[Label]> labels;
+    in property <[string]> tools;
+    in property <int> tool;
+    in property <[color]> colors;
+    in property <[string]> color-names;
+    in property <int> chosen-color;
+    in property <string> page-label;
+    in property <string> zoom-label;
+    in property <string> scale-label;
+    in property <string> status;
+    in property <[[StandardListViewItem]]> rows;
+    in property <int> selected-row: -1;
+    in property <bool> has-selection;
+    in-out property <string> selected-text;
+    in property <bool> calibrating;
+    in-out property <string> author;
+    in property <int> units;
+
+    callback open();
+    callback save();
+    callback save-as();
+    callback export-list();
+    callback previous-page();
+    callback next-page();
+    callback zoom-in();
+    callback zoom-out();
+    callback fit();
+    callback choose-tool(int);
+    callback choose-color(int);
+    callback author-edited(string);
+    callback choose-units(int);
+    callback pressed(length, length, int);
+    callback dragged(length, length);
+    callback released(length, length);
+    callback wheel(length, length, bool, length, length);
+    callback resized(length, length);
+    callback row-selected(int);
+    callback text-edited(string);
+    callback delete-selected();
+    callback calibrate(string);
+    callback cancel();
+
+    title: root.window-title;
+    preferred-width: 1280px;
+    preferred-height: 760px;
+    min-width: 900px;
+    min-height: 540px;
+    background: Palette.background;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Delete || event.text == Key.Backspace) {
+                root.delete-selected();
+                return accept;
+            }
+            if (event.text == Key.Escape) {
+                root.cancel();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 8px;
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Button { text: "Open"; clicked => { root.open(); } }
+                Button { text: "Save"; enabled: root.has-document; clicked => { root.save(); } }
+                Button { text: "Save as"; enabled: root.has-document; clicked => { root.save-as(); } }
+                Button { text: "Export list"; enabled: root.has-document; clicked => { root.export-list(); } }
+                Rectangle { width: 12px; }
+                Button { text: "◀"; accessible-label: "Previous page"; enabled: root.has-document; clicked => { root.previous-page(); } }
+                Text { text: root.page-label; vertical-alignment: center; min-width: 96px; horizontal-alignment: center; }
+                Button { text: "▶"; accessible-label: "Next page"; enabled: root.has-document; clicked => { root.next-page(); } }
+                Rectangle { width: 12px; }
+                Button { text: "−"; accessible-label: "Zoom out"; enabled: root.has-document; clicked => { root.zoom-out(); } }
+                Text { text: root.zoom-label; vertical-alignment: center; min-width: 56px; horizontal-alignment: center; }
+                Button { text: "+"; accessible-label: "Zoom in"; enabled: root.has-document; clicked => { root.zoom-in(); } }
+                Button { text: "Fit"; enabled: root.has-document; clicked => { root.fit(); } }
+                Rectangle { horizontal-stretch: 1; }
+                ComboBox {
+                    accessible-label: "Units";
+                    model: ["Imperial", "Metric"];
+                    current-index: root.units;
+                    selected => { root.choose-units(self.current-index); }
+                }
+                Text { text: "Name"; vertical-alignment: center; }
+                LineEdit {
+                    accessible-label: "Your name";
+                    width: 140px;
+                    text <=> root.author;
+                    edited(text) => { root.author-edited(text); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    width: 116px;
+                    spacing: 4px;
+                    for name[i] in root.tools: Button {
+                        text: name;
+                        checkable: true;
+                        checked: i == root.tool;
+                        enabled: root.has-document;
+                        clicked => { root.choose-tool(i); }
+                    }
+                    Rectangle { height: 8px; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        for swatch[i] in root.colors: Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 12px;
+                            background: swatch;
+                            border-width: i == root.chosen-color ? 3px : 1px;
+                            border-color: i == root.chosen-color ? Palette.accent-background : Palette.border;
+                            accessible-role: button;
+                            accessible-label: root.color-names[i];
+                            accessible-action-default => { root.choose-color(i); }
+                            TouchArea { clicked => { root.choose-color(i); } }
+                        }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                }
+
+                body := Rectangle {
+                    horizontal-stretch: 1;
+                    clip: true;
+                    background: #808080;
+                    init => { root.resized(self.width, self.height); }
+                    changed width => { root.resized(self.width, self.height); }
+                    changed height => { root.resized(self.width, self.height); }
+
+                    if root.has-document: Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.page-image;
+                        image-fit: fill;
+                        accessible-role: image;
+                        accessible-label: root.page-label;
+                    }
+                    for shape in root.shapes: Path {
+                        width: parent.width;
+                        height: parent.height;
+                        viewbox-width: parent.width / 1px;
+                        viewbox-height: parent.height / 1px;
+                        commands: shape.commands;
+                        stroke: shape.selected ? Palette.accent-background : shape.color;
+                        stroke-width: shape.selected ? shape.width + 2px : shape.width;
+                    }
+                    for label in root.labels: Text {
+                        x: label.x;
+                        y: label.y;
+                        text: label.text;
+                        color: label.color;
+                        font-size: label.size;
+                    }
+                    TouchArea {
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down) {
+                                keys.focus();
+                                root.pressed(self.mouse-x, self.mouse-y,
+                                    event.button == PointerEventButton.left ? 0
+                                        : event.button == PointerEventButton.right ? 1 : 2);
+                            } else if (event.kind == PointerEventKind.up) {
+                                root.released(self.mouse-x, self.mouse-y);
+                            }
+                        }
+                        moved => { root.dragged(self.mouse-x, self.mouse-y); }
+                        scroll-event(event) => {
+                            root.wheel(event.delta-x, event.delta-y, event.modifiers.control,
+                                self.mouse-x, self.mouse-y);
+                            accept
+                        }
+                    }
+                    if !root.has-document: Text {
+                        text: "Open a PDF drawing to mark it up.";
+                        color: white;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+
+                VerticalLayout {
+                    width: 320px;
+                    spacing: 6px;
+                    Text { text: "Markups"; font-weight: 600; }
+                    StandardTableView {
+                        vertical-stretch: 1;
+                        columns: [
+                            { title: "Page", min-width: 40px, width: 44px },
+                            { title: "Type", width: 72px },
+                            { title: "Author", width: 72px },
+                            { title: "Text or length", width: 120px },
+                        ];
+                        rows: root.rows;
+                        current-row: root.selected-row;
+                        current-row-changed(row) => { root.row-selected(row); }
+                    }
+                    if root.has-selection: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Text"; }
+                        TextEdit {
+                            accessible-label: "Markup text";
+                            height: 72px;
+                            text <=> root.selected-text;
+                            edited(text) => { root.text-edited(text); }
+                        }
+                        Button { text: "Delete markup"; clicked => { root.delete-selected(); } }
+                    }
+                    if root.calibrating: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Real length of the line"; }
+                        length := LineEdit {
+                            accessible-label: "Real length of the line";
+                            placeholder-text: root.units == 0 ? "12'" : "3600 mm";
+                            accepted(text) => { root.calibrate(text); }
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Button { text: "Set scale"; clicked => { root.calibrate(length.text); } }
+                            Button { text: "Cancel"; clicked => { root.cancel(); } }
+                        }
+                    }
+                    Text { text: root.scale-label; color: Palette.foreground.transparentize(30%); }
+                }
+            }
+
+            Text {
+                text: root.status;
+                color: Palette.foreground.transparentize(25%);
+                font-size: 12px;
+            }
+        }
+    }
+}

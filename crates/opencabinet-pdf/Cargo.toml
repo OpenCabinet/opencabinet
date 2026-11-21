@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "opencabinet-pdf"
+description = "OpenCabinet's PDF reading: pages drawn with hayro, annotations read and saved with lopdf as incremental updates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hayro = "0.9.0"
+lopdf = { version = "0.47.0", default-features = false }
+
+[lints]
+workspace = true

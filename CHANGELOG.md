@@ -13,6 +13,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **OpenCabinet Review, first pieces** (RFC-0004): a separate program,
+  `opencabinet-review`, that opens PDF drawings and marks them up. Pages
+  are drawn with hayro, fit to the window, zoomed with Ctrl and the wheel
+  and moved by dragging. Clouds, rectangles, ellipses, arrows, lines, pen
+  strokes, text boxes and lengths are drawn with the mouse, picked, moved,
+  recolored, given a comment and deleted, from the page or from the markup
+  list. A page is calibrated by drawing along a known dimension, and
+  lengths then read to scale in imperial or metric units. Saving appends
+  one incremental update to the PDF, so the original bytes stay as they
+  were, and every markup is a standard annotation other PDF viewers show;
+  markups other programs made are read back as editable. The markup list
+  exports to CSV. Not yet: an installer, stamps, areas and counts, undo,
+  and review sessions.
 - **Joinery:** construction standards can join the case with dowels,
   confirmat screws or both (`joinery` rules): the sides to the bottom, the
   top and the stretchers. Dowels stand in a row on the 32 mm grid,
