@@ -8,8 +8,8 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 - **Status:** draft
 - **Author(s):** Andrés (@A-newGP)
 - **Created:** 2026-11-21
-- **Comment period ends:** 14 days after the pull request opens
-- **Discussion:** the pull request that adds this file
+- **Comment period ends:** 2026-12-05
+- **Discussion:** <https://github.com/OpenCabinet/opencabinet/pull/59>
 
 ## Summary
 
