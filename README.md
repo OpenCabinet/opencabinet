@@ -47,10 +47,11 @@ and see the [changelog](CHANGELOG.md) for what it does and does not do yet.
 
 **OpenCabinet Review**, a separate program for marking up PDF drawings
 ([RFC-0004](https://github.com/OpenCabinet/opencabinet/pull/59)), is in
-early development: it opens drawings, marks them up with clouds, arrows,
-text and lengths to scale, and saves the markups into the PDF as standard
-annotations. It has no release yet; `cargo run -p opencabinet-review-app`
-starts it.
+early development: it opens drawings, marks them up with clouds, callouts,
+stamps and a dozen other tools, measures lengths, areas and counts to scale,
+and saves the markups into the PDF as standard annotations, keeping those
+other programs made. It has no release yet; test installers come from the
+**Review installer** workflow (see [`packaging/windows`](packaging/windows/)).
 
 See the [roadmap](ROADMAP.md) for what comes next. Decisions that are hard
 to reverse are recorded as [architecture decision records](docs/adr/).

@@ -5,61 +5,43 @@
 //! and each page's scale.
 //!
 //! A [`Review`] keeps the PDF's bytes as they were opened. The markups the
-//! PDF already had become editable [`Markup`]s, and the page is drawn
-//! without them, from a copy that leaves them out, so a markup moves
-//! without leaving its old picture behind. Saving appends one incremental
-//! update to the original bytes with every markup as a standard annotation
-//! (see [`opencabinet_pdf::annotations`]).
+//! PDF already had become editable [`Markup`]s, whoever made them, and the
+//! page is drawn from a copy without them, so a markup moves without
+//! leaving its old picture behind. Annotations Review cannot draw, such as
+//! another program's stamps, stay on the page as they were.
+//!
+//! Saving appends one incremental update to the original bytes (see
+//! [`opencabinet_pdf::annotations`]): a markup that was not touched is
+//! left exactly as it was, one only moved keeps its own look, and the
+//! others are written as standard annotations, keeping every key Review
+//! does not manage.
 
 mod markup;
+mod scale;
+pub mod stamps;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use opencabinet_model::{Id, Length, Units};
-use opencabinet_pdf::annotations::{self, Markups};
+use opencabinet_pdf::annotations::{self, Change, Markups, ObjectRef};
 use opencabinet_pdf::{Document, Error, Point};
 
-pub use markup::{Color, FONT_SIZE, Kind, Markup, Segment};
+pub use markup::{
+    COUNT_RADIUS, Caption, Color, FILL_OPACITY, FONT_SIZE, Gesture, Kind, Markup, NOTE_SIZE,
+    Segment, Status, text_width,
+};
+pub use scale::{Scale, path_length, polygon_area, shown, shown_area};
 
-/// A page's scale: how long a real length is on the sheet.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Scale {
-    /// Points on the sheet.
-    pub points: f64,
-    /// The real length they stand for.
-    pub real: Length,
-}
+/// How many steps can be undone.
+const HISTORY: usize = 200;
 
-impl Scale {
-    /// The scale that makes the line from `a` to `b` measure `real`;
-    /// `None` when the points are the same or the length is not positive.
-    #[must_use]
-    pub fn from_line(a: Point, b: Point, real: Length) -> Option<Self> {
-        let points = a.distance(b);
-        (points > f64::EPSILON && real > Length::ZERO).then_some(Self { points, real })
-    }
-
-    /// The real length of the line from `a` to `b`.
-    #[must_use]
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "measured lengths are far inside both ranges"
-    )]
-    pub fn measure(&self, a: Point, b: Point) -> Length {
-        Length::from_nm((a.distance(b) / self.points * self.real.nm() as f64).round() as i64)
-    }
-}
-
-/// How a measured length is shown: to the nearest 1/16" or 0.1 mm.
-#[must_use]
-pub fn shown(length: Length, units: Units) -> String {
-    let precision = match units {
-        Units::Imperial => Length::from_inch_fraction(1, 16).unwrap_or(Length::from_mm(1)),
-        Units::Metric => Length::from_nm(100_000),
-    };
-    length.show(units, precision).text
+/// What can be undone: the markups, the scales, and what was removed.
+#[derive(Clone, Debug, PartialEq)]
+struct State {
+    markups: Vec<Markup>,
+    scales: BTreeMap<usize, Scale>,
+    removed: Vec<ObjectRef>,
 }
 
 /// A PDF under review.
@@ -67,9 +49,17 @@ pub fn shown(length: Length, units: Units) -> String {
 pub struct Review {
     original: Document,
     shown: Document,
-    markups: Vec<Markup>,
-    scales: BTreeMap<usize, Scale>,
-    modified: bool,
+    state: State,
+    /// The markups read from the PDF, as read, by id.
+    read: BTreeMap<String, Markup>,
+    /// The page scales as read.
+    read_scales: BTreeMap<usize, Scale>,
+    undo: Vec<State>,
+    redo: Vec<State>,
+    /// The markup whose text is being typed, so typing is one step.
+    typing: Option<String>,
+    /// The state when last opened or saved.
+    saved: State,
 }
 
 impl Review {
@@ -80,18 +70,20 @@ impl Review {
     pub fn open(bytes: Vec<u8>) -> Result<Self, Error> {
         let original = Document::open(bytes)?;
         let saved = annotations::read(original.bytes())?;
-        let markups = saved
+        let mut seen = std::collections::BTreeSet::new();
+        let markups: Vec<Markup> = saved
             .annotations
             .iter()
             .filter_map(Markup::from_annotation)
             .map(|mut m| {
-                if m.id.is_empty() {
+                // Ids must be unique; other programs' names may not be.
+                if m.id.is_empty() || !seen.insert(m.id.clone()) {
                     m.id = Id::new().to_string();
                 }
                 m
             })
             .collect();
-        let scales = saved
+        let scales: BTreeMap<usize, Scale> = saved
             .pages
             .iter()
             .filter_map(|(&page, own)| {
@@ -100,18 +92,37 @@ impl Review {
                 (points > 0.0 && real > Length::ZERO).then_some((page, Scale { points, real }))
             })
             .collect();
-        // The page as drawn: the PDF without the markups Review edits.
-        let shown = Document::open(annotations::save(original.bytes(), &Markups::default())?)?;
+        // The page as drawn: the PDF without the markups Review shows.
+        let hidden = Markups {
+            annotations: Vec::new(),
+            pages: saved.pages.clone(),
+            removed: markups.iter().filter_map(|m| m.origin).collect(),
+        };
+        let shown = Document::open(annotations::save(original.bytes(), &hidden)?)?;
+        let read = markups
+            .iter()
+            .filter(|m| m.origin.is_some())
+            .map(|m| (m.id.clone(), m.clone()))
+            .collect();
+        let state = State {
+            markups,
+            scales: scales.clone(),
+            removed: Vec::new(),
+        };
         Ok(Self {
             original,
             shown,
-            markups,
-            scales,
-            modified: false,
+            saved: state.clone(),
+            state,
+            read,
+            read_scales: scales,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            typing: None,
         })
     }
 
-    /// The PDF to draw pages from, without the editable markups.
+    /// The PDF to draw pages from, without the markups Review shows.
     #[must_use]
     pub fn document(&self) -> &Document {
         &self.shown
@@ -120,55 +131,125 @@ impl Review {
     /// The markups, in the order they were made.
     #[must_use]
     pub fn markups(&self) -> &[Markup] {
-        &self.markups
+        &self.state.markups
     }
 
     /// The markup with `id`.
     #[must_use]
     pub fn markup(&self, id: &str) -> Option<&Markup> {
-        self.markups.iter().find(|m| m.id == id)
+        self.state.markups.iter().find(|m| m.id == id)
     }
 
     /// Whether there are changes not saved.
     #[must_use]
     pub fn modified(&self) -> bool {
-        self.modified
+        self.state != self.saved
+    }
+
+    /// Remembers the state before a change, so it can be undone.
+    pub fn checkpoint(&mut self) {
+        self.typing = None;
+        self.remember();
+    }
+
+    fn remember(&mut self) {
+        if self.undo.last() != Some(&self.state) {
+            self.undo.push(self.state.clone());
+            if self.undo.len() > HISTORY {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+    }
+
+    /// Whether there is something to undo.
+    #[must_use]
+    pub fn can_undo(&self) -> bool {
+        self.undo.iter().any(|s| *s != self.state)
+    }
+
+    /// Whether there is something to redo.
+    #[must_use]
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// Goes back one step.
+    pub fn undo(&mut self) {
+        self.typing = None;
+        while let Some(state) = self.undo.pop() {
+            if state != self.state {
+                self.redo.push(std::mem::replace(&mut self.state, state));
+                return;
+            }
+        }
+    }
+
+    /// Goes forward again after undoing.
+    pub fn redo(&mut self) {
+        self.typing = None;
+        if let Some(state) = self.redo.pop() {
+            self.undo.push(std::mem::replace(&mut self.state, state));
+        }
     }
 
     /// Adds a markup made by `author`, and returns its id.
     pub fn add(&mut self, mut markup: Markup, author: &str) -> String {
+        self.checkpoint();
         markup.id = Id::new().to_string();
+        markup.origin = None;
         author.clone_into(&mut markup.author);
         markup.modified = now();
         let id = markup.id.clone();
-        self.markups.push(markup);
-        self.modified = true;
+        self.state.markups.push(markup);
         id
     }
 
     /// Removes the markup with `id`.
     pub fn remove(&mut self, id: &str) {
-        let before = self.markups.len();
-        self.markups.retain(|m| m.id != id);
-        self.modified |= self.markups.len() != before;
+        let Some(at) = self.state.markups.iter().position(|m| m.id == id) else {
+            return;
+        };
+        self.checkpoint();
+        let markup = self.state.markups.remove(at);
+        if let Some(origin) = markup.origin {
+            self.state.removed.push(origin);
+        }
     }
 
-    /// Changes the markup with `id` through `change`.
+    /// Changes the markup with `id` through `change`, as one step.
     pub fn change(&mut self, id: &str, change: impl FnOnce(&mut Markup)) {
-        if let Some(markup) = self.markups.iter_mut().find(|m| m.id == id) {
+        self.checkpoint();
+        self.change_quietly(id, change);
+    }
+
+    /// Changes the markup with `id` without starting a new step: for a
+    /// drag, whose step starts with a [`checkpoint`](Self::checkpoint).
+    pub fn change_quietly(&mut self, id: &str, change: impl FnOnce(&mut Markup)) {
+        if let Some(markup) = self.state.markups.iter_mut().find(|m| m.id == id) {
             let before = markup.clone();
             change(markup);
             if *markup != before {
                 markup.modified = now();
-                self.modified = true;
             }
         }
+    }
+
+    /// Sets the text of the markup with `id`; typing into one markup is
+    /// one step.
+    pub fn set_text(&mut self, id: &str, text: &str) {
+        if self.typing.as_deref() != Some(id) {
+            self.checkpoint();
+            self.typing = Some(id.to_owned());
+        }
+        self.change_quietly(id, |m| text.clone_into(&mut m.text));
     }
 
     /// The topmost markup on `page` at `point`, within `tolerance` points.
     #[must_use]
     pub fn hit(&self, page: usize, point: Point, tolerance: f64) -> Option<&Markup> {
-        self.markups
+        self.state
+            .markups
             .iter()
             .rev()
             .find(|m| m.page == page && m.hit(point, tolerance))
@@ -177,50 +258,81 @@ impl Review {
     /// The scale of `page`, if it was calibrated.
     #[must_use]
     pub fn scale(&self, page: usize) -> Option<Scale> {
-        self.scales.get(&page).copied()
+        self.state.scales.get(&page).copied()
     }
 
     /// Calibrates `page`.
     pub fn set_scale(&mut self, page: usize, scale: Scale) {
-        if self.scales.insert(page, scale) != Some(scale) {
-            self.modified = true;
+        if self.state.scales.get(&page) != Some(&scale) {
+            self.checkpoint();
+            self.state.scales.insert(page, scale);
         }
     }
 
-    /// What a length markup measures, in `units`; `None` for other kinds
-    /// or a page without a scale.
+    /// The scale a markup measures with: its own, or its page's.
+    #[must_use]
+    pub fn scale_of(&self, markup: &Markup) -> Option<Scale> {
+        markup.scale.or_else(|| self.scale(markup.page))
+    }
+
+    /// What a measuring markup measures, in `units`; `None` for other
+    /// kinds.
     #[must_use]
     pub fn measured(&self, markup: &Markup, units: Units) -> Option<String> {
-        let [a, b] = markup.points[..] else {
-            return None;
-        };
-        if markup.kind != Kind::Length {
+        if !markup.kind.measures() {
             return None;
         }
-        Some(match self.scale(markup.page) {
-            Some(scale) => shown(scale.measure(a, b), units),
-            None => "Not to scale".to_owned(),
+        if markup.kind == Kind::Count {
+            return Some(markup.points.len().to_string());
+        }
+        let Some(scale) = self.scale_of(markup) else {
+            return Some("Not to scale".to_owned());
+        };
+        Some(match markup.kind {
+            Kind::Area => shown_area(scale.area_mm2(polygon_area(&markup.points)), units),
+            _ => shown(scale.length(path_length(&markup.points)), units),
         })
     }
 
-    /// The PDF as opened, with an incremental update holding every markup
-    /// and scale. Marks the review saved.
+    /// The PDF as opened, with an incremental update holding what changed.
+    /// Marks the review saved.
     ///
     /// # Errors
     /// When the PDF cannot be written.
     pub fn save(&mut self, units: Units) -> Result<Vec<u8>, Error> {
-        let bytes = self.saved_bytes(units)?;
-        self.modified = false;
+        let bytes = annotations::save(self.original.bytes(), &self.to_save(units))?;
+        self.saved = self.state.clone();
         Ok(bytes)
     }
 
-    fn saved_bytes(&self, units: Units) -> Result<Vec<u8>, Error> {
+    fn to_save(&self, units: Units) -> Markups {
         let annotations = self
+            .state
             .markups
             .iter()
-            .map(|m| m.to_annotation(self.measured(m, units).as_deref()))
+            .map(|m| {
+                let label = self.measured(m, units);
+                let measure = match (m.kind, &label, self.scale_of(m)) {
+                    (Kind::Count, ..) | (_, None, _) | (_, _, None) => None,
+                    (_, Some(label), Some(scale)) => {
+                        Some((label.as_str(), scale.to_measure(units)))
+                    }
+                };
+                let mut annotation = m.to_annotation(measure);
+                if let (Kind::Count, Some(label)) = (m.kind, &label) {
+                    annotation.own.insert("Value".into(), label.clone());
+                    annotation.contents = if m.text.is_empty() {
+                        label.clone()
+                    } else {
+                        format!("{label}: {}", m.text)
+                    };
+                }
+                annotation.change = self.change_of(m);
+                annotation
+            })
             .collect();
         let pages = self
+            .state
             .scales
             .iter()
             .map(|(&page, scale)| {
@@ -233,17 +345,63 @@ impl Review {
                 )
             })
             .collect();
-        annotations::save(self.original.bytes(), &Markups { annotations, pages })
+        Markups {
+            annotations,
+            pages,
+            removed: self.state.removed.clone(),
+        }
+    }
+
+    /// What happened to a markup since it was read.
+    fn change_of(&self, markup: &Markup) -> Change {
+        let Some(read) = self
+            .read
+            .get(&markup.id)
+            .filter(|_| markup.origin.is_some())
+        else {
+            return Change::New;
+        };
+        // A measurement whose page scale changed shows another value.
+        let rescaled = markup.kind.measures()
+            && markup.scale.is_none()
+            && self.read_scales.get(&markup.page) != self.state.scales.get(&markup.page);
+        if rescaled {
+            return Change::Rewritten;
+        }
+        if markup == read {
+            return Change::Unchanged;
+        }
+        let (Some(a), Some(b)) = (read.points.first(), markup.points.first()) else {
+            return Change::Rewritten;
+        };
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let mut moved = read.clone();
+        moved.shift(dx, dy);
+        moved.modified.clone_from(&markup.modified);
+        let close = moved.points.len() == markup.points.len()
+            && moved
+                .points
+                .iter()
+                .zip(&markup.points)
+                .all(|(p, q)| p.distance(*q) < 1e-6);
+        moved.points.clone_from(&markup.points);
+        if close && moved == *markup {
+            Change::Moved { dx, dy }
+        } else {
+            Change::Rewritten
+        }
     }
 
     /// The markup list for spreadsheets: one row per markup.
     #[must_use]
     pub fn csv(&self, units: Units) -> String {
-        let mut out = String::from("Page,Type,Author,Modified,Text,Measurement\r\n");
-        for markup in &self.markups {
+        let mut out = String::from("Page,Type,Subject,Status,Author,Modified,Text,Measurement\r\n");
+        for markup in &self.state.markups {
             let fields = [
                 (markup.page + 1).to_string(),
                 markup.kind.label().to_owned(),
+                markup.subject().to_owned(),
+                markup.status.label().to_owned(),
                 markup.author.clone(),
                 pdf_date_text(&markup.modified),
                 markup.text.clone(),

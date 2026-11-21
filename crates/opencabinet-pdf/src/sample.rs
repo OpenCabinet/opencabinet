@@ -6,6 +6,8 @@
 
 use std::fmt::Write as _;
 
+use lopdf::{Object, dictionary};
+
 /// A PDF of `pages` sheets of `width × height` points, each with a border,
 /// a grid of `lines` lines across and as many down, and its sheet number
 /// in the corner.
@@ -72,4 +74,92 @@ pub fn sheets(pages: usize, width: f64, height: f64, lines: usize) -> Vec<u8> {
     );
     pdf.extend_from_slice(table.as_bytes());
     pdf
+}
+
+#[expect(clippy::cast_possible_truncation, reason = "PDF reals")]
+fn numbers(values: &[f64]) -> Object {
+    Object::Array(values.iter().map(|&v| Object::Real(v as f32)).collect())
+}
+
+/// A sheet with markups as another program could have made them: a cloud
+/// with keys of its own and its own appearance, a pop-up note, a reply to
+/// the cloud, a line measured to 1/4" = 1'-0" and a link.
+///
+/// # Panics
+/// Never: it writes only what it builds.
+#[must_use]
+pub fn foreign_markups() -> Vec<u8> {
+    let mut document = lopdf::Document::load_mem(&sheets(1, 2592.0, 1728.0, 4)).unwrap();
+    let page = *document.get_pages().get(&1).unwrap();
+    let look = document.add_object(lopdf::Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => numbers(&[0.0, 0.0, 10.0, 10.0]),
+        },
+        b"0 0 1 rg 0 0 10 10 re f".to_vec(),
+    ));
+    let cloud = document.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Polygon",
+        "Rect" => numbers(&[90.0, 90.0, 310.0, 210.0]),
+        "Vertices" => numbers(&[100.0, 100.0, 300.0, 100.0, 300.0, 200.0, 100.0, 200.0]),
+        "C" => numbers(&[0.0, 0.0, 1.0]),
+        "BE" => dictionary! { "S" => "C", "I" => 2 },
+        "Contents" => Object::string_literal("Check"),
+        "T" => Object::string_literal("Someone"),
+        "Subj" => Object::string_literal("Cloud+"),
+        "OtherProgram" => dictionary! { "Column" => Object::string_literal("Phase 2") },
+        "AP" => dictionary! { "N" => look },
+    });
+    let popup = document.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Popup",
+        "Parent" => cloud,
+        "Rect" => numbers(&[320.0, 100.0, 500.0, 200.0]),
+    });
+    let reply = document.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Text",
+        "IRT" => cloud,
+        "Rect" => numbers(&[100.0, 100.0, 120.0, 120.0]),
+        "Contents" => Object::string_literal("Done"),
+    });
+    let measured = document.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Line",
+        "Rect" => numbers(&[0.0, 390.0, 220.0, 410.0]),
+        "L" => numbers(&[0.0, 400.0, 216.0, 400.0]),
+        "IT" => "LineDimension",
+        "Measure" => dictionary! {
+            "Type" => "Measure",
+            "Subtype" => "RL",
+            "R" => Object::string_literal("1 in = 4 ft"),
+            "X" => vec![Object::Dictionary(dictionary! {
+                "Type" => "NumberFormat",
+                "U" => Object::string_literal("ft"),
+                "C" => Object::Real(1.0 / 18.0),
+            })],
+        },
+    });
+    let link = document.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Link",
+        "Rect" => numbers(&[0.0, 0.0, 10.0, 10.0]),
+    });
+    let page = document
+        .get_object_mut(page)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap();
+    page.set(
+        "Annots",
+        [cloud, popup, reply, measured, link]
+            .into_iter()
+            .map(Object::Reference)
+            .collect::<Vec<_>>(),
+    );
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    bytes
 }

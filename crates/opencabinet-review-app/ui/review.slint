@@ -1,17 +1,20 @@
 // SPDX-FileCopyrightText: 2026 OpenCabinet contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { Button, ComboBox, LineEdit, Palette, StandardTableView, TextEdit } from "std-widgets.slint";
+import {
+    Button, CheckBox, ComboBox, LineEdit, Palette, StandardTableView, TextEdit,
+} from "std-widgets.slint";
 
 // A markup's outline over the page, in the view's pixels.
 export struct Shape {
     commands: string,
-    color: color,
+    stroke: color,
+    fill: color,
     width: length,
     selected: bool,
 }
 
-// Text over the page: a text box's lines or a length.
+// Text over the page: a text box's lines, a stamp's words, a measurement.
 export struct Label {
     x: length,
     y: length,
@@ -20,17 +23,34 @@ export struct Label {
     size: length,
 }
 
+// A tool button that stays pressed while its tool is in use.
+component ToolButton inherits Button {
+    in property <int> index;
+    in property <int> current;
+    checkable: true;
+    checked: self.index == self.current;
+}
+
 export component ReviewWindow inherits Window {
     in property <string> window-title: "OpenCabinet Review";
     in property <bool> has-document;
     in property <image> page-image;
     in property <[Shape]> shapes;
     in property <[Label]> labels;
-    in property <[string]> tools;
+    // The tools, in two columns: the first holds `tools-split` of them.
+    in property <[string]> tools-a;
+    in property <[string]> tools-b;
+    in property <int> tools-split: 10;
     in property <int> tool;
     in property <[color]> colors;
     in property <[string]> color-names;
     in property <int> chosen-color;
+    in property <[string]> widths;
+    in property <int> width-index: 1;
+    in property <bool> fill-shapes;
+    in property <[string]> stamps;
+    in property <int> stamp;
+    in property <bool> stamping;
     in property <string> page-label;
     in property <string> zoom-label;
     in property <string> scale-label;
@@ -39,7 +59,13 @@ export component ReviewWindow inherits Window {
     in property <int> selected-row: -1;
     in property <bool> has-selection;
     in-out property <string> selected-text;
+    in-out property <string> selected-subject;
+    in property <int> selected-status;
+    in property <[string]> statuses;
     in property <bool> calibrating;
+    in property <bool> building;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
     in-out property <string> author;
     in property <int> units;
 
@@ -47,37 +73,59 @@ export component ReviewWindow inherits Window {
     callback save();
     callback save-as();
     callback export-list();
+    callback undo();
+    callback redo();
     callback previous-page();
     callback next-page();
     callback zoom-in();
     callback zoom-out();
     callback fit();
+    callback fit-width();
     callback choose-tool(int);
     callback choose-color(int);
+    callback choose-width(int);
+    callback set-fill(bool);
+    callback choose-stamp(int);
     callback author-edited(string);
     callback choose-units(int);
     callback pressed(length, length, int);
     callback dragged(length, length);
     callback released(length, length);
+    callback double-clicked();
     callback wheel(length, length, bool, length, length);
     callback resized(length, length);
     callback row-selected(int);
     callback text-edited(string);
+    callback subject-edited(string);
+    callback choose-status(int);
     callback delete-selected();
     callback calibrate(string);
+    callback finish();
     callback cancel();
 
     title: root.window-title;
     preferred-width: 1280px;
     preferred-height: 760px;
-    min-width: 900px;
-    min-height: 540px;
+    min-width: 960px;
+    min-height: 560px;
     background: Palette.background;
 
     keys := FocusScope {
         key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "z" || event.text == "Z")) {
+                if (event.modifiers.shift) { root.redo(); } else { root.undo(); }
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "y" || event.text == "Y")) {
+                root.redo();
+                return accept;
+            }
             if (event.text == Key.Delete || event.text == Key.Backspace) {
                 root.delete-selected();
+                return accept;
+            }
+            if (event.text == Key.Return) {
+                root.finish();
                 return accept;
             }
             if (event.text == Key.Escape) {
@@ -97,15 +145,19 @@ export component ReviewWindow inherits Window {
                 Button { text: "Save"; enabled: root.has-document; clicked => { root.save(); } }
                 Button { text: "Save as"; enabled: root.has-document; clicked => { root.save-as(); } }
                 Button { text: "Export list"; enabled: root.has-document; clicked => { root.export-list(); } }
-                Rectangle { width: 12px; }
+                Rectangle { width: 8px; }
+                Button { text: "Undo"; enabled: root.can-undo; clicked => { root.undo(); } }
+                Button { text: "Redo"; enabled: root.can-redo; clicked => { root.redo(); } }
+                Rectangle { width: 8px; }
                 Button { text: "◀"; accessible-label: "Previous page"; enabled: root.has-document; clicked => { root.previous-page(); } }
-                Text { text: root.page-label; vertical-alignment: center; min-width: 96px; horizontal-alignment: center; }
+                Text { text: root.page-label; vertical-alignment: center; min-width: 92px; horizontal-alignment: center; }
                 Button { text: "▶"; accessible-label: "Next page"; enabled: root.has-document; clicked => { root.next-page(); } }
-                Rectangle { width: 12px; }
+                Rectangle { width: 8px; }
                 Button { text: "−"; accessible-label: "Zoom out"; enabled: root.has-document; clicked => { root.zoom-out(); } }
-                Text { text: root.zoom-label; vertical-alignment: center; min-width: 56px; horizontal-alignment: center; }
+                Text { text: root.zoom-label; vertical-alignment: center; min-width: 52px; horizontal-alignment: center; }
                 Button { text: "+"; accessible-label: "Zoom in"; enabled: root.has-document; clicked => { root.zoom-in(); } }
                 Button { text: "Fit"; enabled: root.has-document; clicked => { root.fit(); } }
+                Button { text: "Width"; accessible-label: "Fit width"; enabled: root.has-document; clicked => { root.fit-width(); } }
                 Rectangle { horizontal-stretch: 1; }
                 ComboBox {
                     accessible-label: "Units";
@@ -116,7 +168,7 @@ export component ReviewWindow inherits Window {
                 Text { text: "Name"; vertical-alignment: center; }
                 LineEdit {
                     accessible-label: "Your name";
-                    width: 140px;
+                    width: 120px;
                     text <=> root.author;
                     edited(text) => { root.author-edited(text); }
                 }
@@ -127,22 +179,45 @@ export component ReviewWindow inherits Window {
                 vertical-stretch: 1;
 
                 VerticalLayout {
-                    width: 116px;
+                    width: 212px;
                     spacing: 4px;
-                    for name[i] in root.tools: Button {
-                        text: name;
-                        checkable: true;
-                        checked: i == root.tool;
-                        enabled: root.has-document;
-                        clicked => { root.choose-tool(i); }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        VerticalLayout {
+                            spacing: 2px;
+                            for name[i] in root.tools-a: ToolButton {
+                                text: name;
+                                index: i;
+                                current: root.tool;
+                                enabled: root.has-document;
+                                clicked => { root.choose-tool(i); }
+                            }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            for name[i] in root.tools-b: ToolButton {
+                                text: name;
+                                index: i + root.tools-split;
+                                current: root.tool;
+                                enabled: root.has-document;
+                                clicked => { root.choose-tool(i + root.tools-split); }
+                            }
+                            Rectangle { vertical-stretch: 1; }
+                        }
                     }
-                    Rectangle { height: 8px; }
+                    if root.building: Button {
+                        text: "Finish (Enter)";
+                        primary: true;
+                        clicked => { root.finish(); }
+                    }
+                    Text { text: "Color"; font-size: 12px; }
                     HorizontalLayout {
                         spacing: 4px;
                         for swatch[i] in root.colors: Rectangle {
-                            width: 24px;
-                            height: 24px;
-                            border-radius: 12px;
+                            width: 26px;
+                            height: 26px;
+                            border-radius: 13px;
                             background: swatch;
                             border-width: i == root.chosen-color ? 3px : 1px;
                             border-color: i == root.chosen-color ? Palette.accent-background : Palette.border;
@@ -152,7 +227,25 @@ export component ReviewWindow inherits Window {
                             TouchArea { clicked => { root.choose-color(i); } }
                         }
                     }
-                    Rectangle { vertical-stretch: 1; }
+                    Text { text: "Line"; font-size: 12px; }
+                    ComboBox {
+                        accessible-label: "Line width";
+                        model: root.widths;
+                        current-index: root.width-index;
+                        selected => { root.choose-width(self.current-index); }
+                    }
+                    CheckBox {
+                        text: "Fill shapes";
+                        checked: root.fill-shapes;
+                        toggled => { root.set-fill(self.checked); }
+                    }
+                    if root.stamping: Text { text: "Stamp"; font-size: 12px; }
+                    if root.stamping: ComboBox {
+                        accessible-label: "Stamp";
+                        model: root.stamps;
+                        current-index: root.stamp;
+                        selected => { root.choose-stamp(self.current-index); }
+                    }
                 }
 
                 body := Rectangle {
@@ -177,7 +270,8 @@ export component ReviewWindow inherits Window {
                         viewbox-width: parent.width / 1px;
                         viewbox-height: parent.height / 1px;
                         commands: shape.commands;
-                        stroke: shape.selected ? Palette.accent-background : shape.color;
+                        fill: shape.fill;
+                        stroke: shape.selected ? Palette.accent-background : shape.stroke;
                         stroke-width: shape.selected ? shape.width + 2px : shape.width;
                     }
                     for label in root.labels: Text {
@@ -199,6 +293,7 @@ export component ReviewWindow inherits Window {
                             }
                         }
                         moved => { root.dragged(self.mouse-x, self.mouse-y); }
+                        double-clicked => { root.double-clicked(); }
                         scroll-event(event) => {
                             root.wheel(event.delta-x, event.delta-y, event.modifiers.control,
                                 self.mouse-x, self.mouse-y);
@@ -217,16 +312,17 @@ export component ReviewWindow inherits Window {
                 }
 
                 VerticalLayout {
-                    width: 320px;
+                    width: 340px;
                     spacing: 6px;
                     Text { text: "Markups"; font-weight: 600; }
                     StandardTableView {
                         vertical-stretch: 1;
                         columns: [
-                            { title: "Page", min-width: 40px, width: 44px },
-                            { title: "Type", width: 72px },
-                            { title: "Author", width: 72px },
-                            { title: "Text or length", width: 120px },
+                            { title: "Page", min-width: 36px, width: 40px },
+                            { title: "Subject", width: 76px },
+                            { title: "Status", width: 64px },
+                            { title: "Author", width: 60px },
+                            { title: "Text or value", width: 100px },
                         ];
                         rows: root.rows;
                         current-row: root.selected-row;
@@ -234,7 +330,29 @@ export component ReviewWindow inherits Window {
                     }
                     if root.has-selection: VerticalLayout {
                         spacing: 4px;
-                        Text { text: "Text"; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Subject"; font-size: 12px; }
+                                LineEdit {
+                                    accessible-label: "Markup subject";
+                                    text <=> root.selected-subject;
+                                    edited(text) => { root.subject-edited(text); }
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Status"; font-size: 12px; }
+                                ComboBox {
+                                    accessible-label: "Markup status";
+                                    model: root.statuses;
+                                    current-index: root.selected-status;
+                                    selected => { root.choose-status(self.current-index); }
+                                }
+                            }
+                        }
+                        Text { text: "Text"; font-size: 12px; }
                         TextEdit {
                             accessible-label: "Markup text";
                             height: 72px;

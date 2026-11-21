@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use opencabinet_review_app::dialogs::{Dialogs, FileKind};
+use opencabinet_review_app::viewer::TOOLS;
 use slint::{ComponentHandle, Model};
 
 #[derive(Default)]
@@ -37,6 +38,12 @@ impl Dialogs for Answers {
         self.asked_to_discard.set(self.asked_to_discard.get() + 1);
         self.discard.get()
     }
+}
+
+/// The place of the tool called `label` in the window's tool list.
+fn tool(label: &str) -> i32 {
+    let index = TOOLS.iter().position(|t| t.label() == label).unwrap();
+    i32::try_from(index).unwrap()
 }
 
 #[test]
@@ -70,22 +77,51 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     assert_eq!((image.width, image.height), (800, 600));
 
     // A cloud, then a text box with its text.
-    window.invoke_choose_tool(1);
+    window.invoke_choose_tool(tool("Cloud"));
     window.invoke_pressed(200.0, 200.0, 0);
     window.invoke_dragged(300.0, 250.0);
     window.invoke_released(400.0, 300.0);
     assert_eq!(window.get_rows().row_count(), 1);
     assert_eq!(window.get_shapes().row_count(), 1);
     assert!(window.get_has_selection());
-    window.invoke_choose_tool(7);
+    window.invoke_choose_tool(tool("Text"));
     window.invoke_pressed(450.0, 200.0, 0);
     window.invoke_released(450.0, 200.0);
     window.invoke_text_edited("Filler 3\" here".into());
     assert_eq!(window.get_labels().row_count(), 1);
     let row = window.get_rows().row_data(1).unwrap();
     assert_eq!(row.row_data(1).unwrap().text, "Text");
-    assert_eq!(row.row_data(3).unwrap().text, "Filler 3\" here");
+    // Undone and redone.
+    assert!(window.get_can_undo());
+    window.invoke_undo();
+    assert_eq!(window.get_labels().row_count(), 0);
+    window.invoke_redo();
+    assert_eq!(window.get_labels().row_count(), 1);
+    assert_eq!(row.row_data(4).unwrap().text, "Filler 3\" here");
     assert!(window.get_window_title().starts_with("* "));
+
+    // An area, point by point, finished with Enter.
+    window.invoke_choose_tool(tool("Area"));
+    for (x, y) in [(500.0, 300.0), (600.0, 300.0), (600.0, 400.0)] {
+        window.invoke_pressed(x, y, 0);
+        window.invoke_released(x, y);
+    }
+    assert!(window.get_building());
+    window.invoke_finish();
+    assert!(!window.get_building());
+    assert_eq!(window.get_rows().row_count(), 3);
+    window.invoke_choose_status(2);
+    assert_eq!(
+        window
+            .get_rows()
+            .row_data(2)
+            .unwrap()
+            .row_data(2)
+            .unwrap()
+            .text,
+        "Rejected"
+    );
+    window.invoke_delete_selected();
 
     // Opening another drawing asks first; no keeps the markups.
     window.invoke_open();

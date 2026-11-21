@@ -23,7 +23,8 @@ use slint::{
 };
 
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
-use crate::viewer::{COLORS, TOOLS, Viewer};
+use crate::viewer::{COLORS, TOOLS, Tool, Viewer, WIDTHS};
+use opencabinet_review::{Kind, Status, stamps};
 
 /// The code Slint generates from `ui/review.slint`, which follows Slint's
 /// conventions rather than this workspace's lints.
@@ -76,7 +77,16 @@ pub fn create_with(
     });
 
     let tools: Vec<SharedString> = TOOLS.iter().map(|t| t.label().into()).collect();
-    window.set_tools(ModelRc::new(VecModel::from(tools)));
+    let split = tools.len().div_ceil(2);
+    window.set_tools_split(i32::try_from(split).unwrap_or(0));
+    window.set_tools_a(strings(&tools[..split]));
+    window.set_tools_b(strings(&tools[split..]));
+    let widths: Vec<SharedString> = WIDTHS.iter().map(|&(name, _)| name.into()).collect();
+    window.set_widths(strings(&widths));
+    let words: Vec<SharedString> = stamps::TEMPLATES.iter().map(|t| t.words.into()).collect();
+    window.set_stamps(strings(&words));
+    let statuses: Vec<SharedString> = Status::ALL.iter().map(|s| s.label().into()).collect();
+    window.set_statuses(strings(&statuses));
     let colors: Vec<Color> = COLORS.iter().map(|&(_, rgb)| color(rgb)).collect();
     window.set_colors(ModelRc::new(VecModel::from(colors)));
     let names: Vec<SharedString> = COLORS.iter().map(|&(name, _)| name.into()).collect();
@@ -113,6 +123,11 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     window.on_zoom_in(on(|app| app.change(|v| v.zoom_center(1.25))));
     window.on_zoom_out(on(|app| app.change(|v| v.zoom_center(0.8))));
     window.on_fit(on(|app| app.change(Viewer::fit)));
+    window.on_fit_width(on(|app| app.change(Viewer::fit_width)));
+    window.on_undo(on(|app| app.change(Viewer::undo)));
+    window.on_redo(on(|app| app.change(Viewer::redo)));
+    window.on_finish(on(|app| app.change(Viewer::finish)));
+    window.on_double_clicked(on(|app| app.change(Viewer::double_click)));
     window.on_cancel(on(|app| app.change(Viewer::cancel)));
     window.on_delete_selected(on(|app| app.change(Viewer::delete_selected)));
 
@@ -127,6 +142,31 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         if let Ok(i) = usize::try_from(i) {
             a.change(|v| v.choose_color(i));
         }
+    });
+    let a = Rc::clone(app);
+    window.on_choose_width(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.choose_width(i));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_set_fill(move |fill| a.change(|v| v.set_fill(fill)));
+    let a = Rc::clone(app);
+    window.on_choose_stamp(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.choose_stamp(i));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_choose_status(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.set_status(i));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_subject_edited(move |text| {
+        a.viewer.borrow_mut().set_subject(&text);
+        a.refresh_list();
     });
     let a = Rc::clone(app);
     window.on_author_edited(move |text| text.trim().clone_into(&mut a.viewer.borrow_mut().author));
@@ -293,9 +333,29 @@ impl App {
         window.set_chosen_color(i32::try_from(viewer.color()).unwrap_or(0));
         window.set_units(i32::from(viewer.units == Units::Metric));
         window.set_calibrating(viewer.calibrating());
+        window.set_building(viewer.building());
+        let (undo, redo) = viewer.history();
+        window.set_can_undo(undo);
+        window.set_can_redo(redo);
+        window.set_width_index(i32::try_from(viewer.width()).unwrap_or(1));
+        window.set_fill_shapes(viewer.fill());
+        window.set_stamp(i32::try_from(viewer.stamp()).unwrap_or(0));
+        window.set_stamping(viewer.tool() == Tool::Draw(Kind::Stamp));
         let selected = viewer.selected();
         window.set_has_selection(selected.is_some());
         window.set_selected_text(selected.map(|m| m.text.as_str()).unwrap_or_default().into());
+        window.set_selected_subject(
+            selected
+                .map(opencabinet_review::Markup::subject)
+                .unwrap_or_default()
+                .into(),
+        );
+        window.set_selected_status(
+            selected
+                .and_then(|m| Status::ALL.iter().position(|&s| s == m.status))
+                .and_then(|i| i32::try_from(i).ok())
+                .unwrap_or(0),
+        );
         drop(viewer);
         self.refresh_list();
         self.refresh_page(&window);
@@ -367,7 +427,12 @@ impl App {
             .into_iter()
             .map(|s| Shape {
                 commands: s.commands.into(),
-                color: color(s.color),
+                stroke: s.stroke.map_or(Color::from_argb_u8(0, 0, 0, 0), color),
+                fill: s
+                    .fill
+                    .map_or(Color::from_argb_u8(0, 0, 0, 0), |(rgb, alpha)| {
+                        color(rgb).with_alpha(alpha as f32)
+                    }),
                 width: s.width as f32,
                 selected: s.selected,
             })
@@ -396,4 +461,8 @@ impl App {
 fn color([r, g, b]: [f64; 3]) -> Color {
     let channel = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     Color::from_rgb_u8(channel(r), channel(g), channel(b))
+}
+
+fn strings(items: &[SharedString]) -> ModelRc<SharedString> {
+    ModelRc::new(VecModel::from(items.to_vec()))
 }

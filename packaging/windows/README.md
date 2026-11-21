@@ -26,6 +26,23 @@ as `0.1.0-beta.1+dev.42`, where `N` is the run number. Releases are built
 by the **Release** workflow when a version tag is pushed (see
 [`docs/releasing.md`](../../docs/releasing.md)).
 
+## OpenCabinet Review
+
+`opencabinet-review.iss` is the installer of OpenCabinet Review, a program
+of its own (RFC-0004). It installs apart from the designer, in
+`OpenCabinet Review`, and offers Review under **Open with** for PDF files
+without taking over the program that opens them now. The **Review
+installer** workflow builds, installs, starts and uninstalls it like the
+designer's, on pull requests that change Review and by hand:
+
+1. Open **Actions → Review installer → Run workflow** and choose the
+   branch.
+2. When the run finishes, download the `OpenCabinet-Review-…-windows-x64`
+   artifact from the run's page and unzip it.
+
+Review has no release yet; its test builds are numbered after its own
+version, such as `0.1.0-alpha.1+dev.42`.
+
 ## The SmartScreen warning
 
 The installer is not signed yet, so Windows shows "Windows protected your

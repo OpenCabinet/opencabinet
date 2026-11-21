@@ -14,18 +14,30 @@ follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **OpenCabinet Review, first pieces** (RFC-0004): a separate program,
-  `opencabinet-review`, that opens PDF drawings and marks them up. Pages
-  are drawn with hayro, fit to the window, zoomed with Ctrl and the wheel
-  and moved by dragging. Clouds, rectangles, ellipses, arrows, lines, pen
-  strokes, text boxes and lengths are drawn with the mouse, picked, moved,
-  recolored, given a comment and deleted, from the page or from the markup
-  list. A page is calibrated by drawing along a known dimension, and
-  lengths then read to scale in imperial or metric units. Saving appends
-  one incremental update to the PDF, so the original bytes stay as they
-  were, and every markup is a standard annotation other PDF viewers show;
-  markups other programs made are read back as editable. The markup list
-  exports to CSV. Not yet: an installer, stamps, areas and counts, undo,
-  and review sessions.
+  `opencabinet-review`, with an installer of its own, that opens PDF
+  drawings and marks them up.
+  - **Viewing:** pages drawn with hayro, fit to the window or its width,
+    zoomed with Ctrl and the wheel, moved by dragging.
+  - **Markups:** cloud, rectangle, ellipse, polygon, arrow, line,
+    polyline, pen, highlight, text box, callout, note and stamp. Each is
+    picked, moved, recolored, made thinner or thicker, filled, given a
+    subject, a status (open, accepted, rejected, completed) and a comment,
+    and deleted, from the page or the markup list. Stamps come in eight
+    wordings and colors, with who stamped and when, and their words can be
+    changed.
+  - **Measuring:** a page is calibrated by drawing along a known
+    dimension; lengths, lengths along a path, areas and counts then read
+    to scale in imperial or metric units.
+  - **Undo and redo** of every step, typing included.
+  - **Saving:** one incremental update after the original bytes. Every
+    markup is a standard annotation that other PDF viewers show, and
+    measurements carry a standard scale. Markups other programs made are
+    shown and edited; one left alone is kept exactly as it was, one moved
+    keeps its own look, and keys Review does not know are never dropped.
+  - **Markup list** to CSV with page, type, subject, status, author, date,
+    text and measurement.
+  - Not yet: review sessions, comparing revisions, text search, OCR and
+    sheet sets.
 - **Joinery:** construction standards can join the case with dowels,
   confirmat screws or both (`joinery` rules): the sides to the bottom, the
   top and the stretchers. Dowels stand in a row on the 32 mm grid,
