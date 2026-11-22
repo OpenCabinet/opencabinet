@@ -101,6 +101,28 @@ jobs:
           for expected in "Elevation — Kitchen - North" "Elevation — Kitchen - East" "Scale 1/2\" = 1'-0\"" "Page 2 of 2" "B30"; do
             grep -qF "$expected" <<< "$text" || { echo "missing: $expected"; exit 1; }
           done
+          # OpenCabinet Review's markups (RFC-0004): the sheets as written,
+          # one incremental update after them, and one annotation per kind
+          # of markup, as an independent reader sees them.
+          count=$(cargo run --locked -q -p opencabinet-review --example marked_pdf -- marked.pdf)
+          qpdf --check marked.pdf
+          test "$(grep -ac '%%EOF' marked.pdf)" -eq 2
+          # qpdf's JSON lists the objects as they are after the update; the
+          # first page's /Annots, an array or a reference to one, holds them.
+          qpdf --json=2 --json-key=pages --json-key=qpdf marked.pdf > marked.json
+          annotations=$(python3 - <<'PY'
+          import json
+          data = json.load(open("marked.json"))
+          objects = data["qpdf"][1]
+          def value(ref):
+              return objects["obj:" + ref]["value"]
+          annots = value(data["pages"][0]["object"]).get("/Annots", [])
+          if isinstance(annots, str):
+              annots = value(annots)
+          print(len(annots))
+          PY
+          )
+          test "$annotations" -eq "$count" || { echo "expected $count annotations, found $annotations"; exit 1; }
       # The parts as DXF, audited by ezdxf (ADR-0015).
       - name: Check the DXF files with ezdxf
         if: runner.os == 'Linux'

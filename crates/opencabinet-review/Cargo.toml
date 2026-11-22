@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "opencabinet-review"
+description = "OpenCabinet Review's markups: clouds, arrows, text and measurements on PDF drawings, saved as standard annotations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+opencabinet-model = { workspace = true }
+opencabinet-pdf = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,472 @@
+// SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+import {
+    Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, StandardTableView, TextEdit,
+} from "std-widgets.slint";
+
+// A markup's outline over the page, in the view's pixels.
+export struct Shape {
+    commands: string,
+    stroke: color,
+    fill: color,
+    width: length,
+    selected: bool,
+}
+
+// Text over the page: a text box's lines, a stamp's words, a measurement.
+export struct Label {
+    x: length,
+    y: length,
+    text: string,
+    color: color,
+    size: length,
+}
+
+// A tool button that stays pressed while its tool is in use.
+component ToolButton inherits Button {
+    in property <int> index;
+    in property <int> current;
+    checkable: true;
+    checked: self.index == self.current;
+}
+
+export component ReviewWindow inherits Window {
+    in property <string> window-title: "OpenCabinet Review";
+    in property <bool> has-document;
+    in property <image> page-image;
+    in property <[Shape]> shapes;
+    in property <[Label]> labels;
+    // The tools, in two columns: the first holds `tools-split` of them.
+    in property <[string]> tools-a;
+    in property <[string]> tools-b;
+    in property <int> tools-split: 10;
+    in property <int> tool;
+    in property <[color]> colors;
+    in property <[string]> color-names;
+    in property <int> chosen-color;
+    in property <[string]> widths;
+    in property <int> width-index: 1;
+    in property <bool> fill-shapes;
+    in property <[string]> stamps;
+    in property <int> stamp;
+    in property <bool> stamping;
+    in property <string> page-label;
+    in property <string> zoom-label;
+    in property <string> scale-label;
+    in property <string> status;
+    in property <[[StandardListViewItem]]> rows;
+    in property <int> selected-row: -1;
+    in property <bool> has-selection;
+    in-out property <string> selected-text;
+    in-out property <string> selected-subject;
+    in property <int> selected-status;
+    in property <[string]> statuses;
+    in property <bool> calibrating;
+    in property <bool> building;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    in property <[string]> scales;
+    in property <[image]> thumbnails;
+    in property <int> page-index;
+    in-out property <bool> show-pages: true;
+    // Which file the thumbnails belong to.
+    in-out property <int> document-number;
+    in-out property <string> author;
+    in property <int> units;
+
+    callback open();
+    callback save();
+    callback save-as();
+    callback export-list();
+    callback undo();
+    callback redo();
+    callback copy();
+    callback paste();
+    callback duplicate();
+    callback zoom-to-selected();
+    callback choose-scale(int, bool);
+    callback scale-every-page();
+    callback go-to-page(int);
+    callback previous-page();
+    callback next-page();
+    callback zoom-in();
+    callback zoom-out();
+    callback fit();
+    callback fit-width();
+    callback choose-tool(int);
+    callback choose-color(int);
+    callback choose-width(int);
+    callback set-fill(bool);
+    callback choose-stamp(int);
+    callback author-edited(string);
+    callback choose-units(int);
+    callback pressed(length, length, int);
+    callback dragged(length, length);
+    callback released(length, length);
+    callback double-clicked();
+    callback wheel(length, length, bool, length, length);
+    callback resized(length, length);
+    callback row-selected(int);
+    callback text-edited(string);
+    callback subject-edited(string);
+    callback choose-status(int);
+    callback delete-selected();
+    callback calibrate(string);
+    callback finish();
+    callback cancel();
+
+    title: root.window-title;
+    preferred-width: 1280px;
+    preferred-height: 760px;
+    min-width: 960px;
+    min-height: 560px;
+    background: Palette.background;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "z" || event.text == "Z")) {
+                if (event.modifiers.shift) { root.redo(); } else { root.undo(); }
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "y" || event.text == "Y")) {
+                root.redo();
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "c" || event.text == "C")) {
+                root.copy();
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "v" || event.text == "V")) {
+                root.paste();
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "d" || event.text == "D")) {
+                root.duplicate();
+                return accept;
+            }
+            if (event.text == Key.Delete || event.text == Key.Backspace) {
+                root.delete-selected();
+                return accept;
+            }
+            if (event.text == Key.Return) {
+                root.finish();
+                return accept;
+            }
+            if (event.text == Key.Escape) {
+                root.cancel();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 8px;
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Button { text: "Open"; clicked => { root.open(); } }
+                Button { text: "Save"; enabled: root.has-document; clicked => { root.save(); } }
+                Button { text: "Save as"; enabled: root.has-document; clicked => { root.save-as(); } }
+                Button { text: "Export list"; enabled: root.has-document; clicked => { root.export-list(); } }
+                Rectangle { width: 8px; }
+                Button { text: "Undo"; enabled: root.can-undo; clicked => { root.undo(); } }
+                Button { text: "Redo"; enabled: root.can-redo; clicked => { root.redo(); } }
+                Rectangle { width: 8px; }
+                Button { text: "◀"; accessible-label: "Previous page"; enabled: root.has-document; clicked => { root.previous-page(); } }
+                Text { text: root.page-label; vertical-alignment: center; min-width: 92px; horizontal-alignment: center; }
+                Button { text: "▶"; accessible-label: "Next page"; enabled: root.has-document; clicked => { root.next-page(); } }
+                Rectangle { width: 8px; }
+                Button { text: "−"; accessible-label: "Zoom out"; enabled: root.has-document; clicked => { root.zoom-out(); } }
+                Text { text: root.zoom-label; vertical-alignment: center; min-width: 52px; horizontal-alignment: center; }
+                Button { text: "+"; accessible-label: "Zoom in"; enabled: root.has-document; clicked => { root.zoom-in(); } }
+                Button { text: "Fit"; enabled: root.has-document; clicked => { root.fit(); } }
+                Button { text: "Width"; accessible-label: "Fit width"; enabled: root.has-document; clicked => { root.fit-width(); } }
+                Button {
+                    text: "Pages";
+                    checkable: true;
+                    checked: root.show-pages;
+                    enabled: root.has-document;
+                    clicked => { root.show-pages = !root.show-pages; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                ComboBox {
+                    accessible-label: "Units";
+                    model: ["Imperial", "Metric"];
+                    current-index: root.units;
+                    selected => { root.choose-units(self.current-index); }
+                }
+                Text { text: "Name"; vertical-alignment: center; }
+                LineEdit {
+                    accessible-label: "Your name";
+                    width: 120px;
+                    text <=> root.author;
+                    edited(text) => { root.author-edited(text); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    width: 212px;
+                    spacing: 4px;
+                    HorizontalLayout {
+                        spacing: 4px;
+                        VerticalLayout {
+                            spacing: 2px;
+                            for name[i] in root.tools-a: ToolButton {
+                                text: name;
+                                index: i;
+                                current: root.tool;
+                                enabled: root.has-document;
+                                clicked => { root.choose-tool(i); }
+                            }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            for name[i] in root.tools-b: ToolButton {
+                                text: name;
+                                index: i + root.tools-split;
+                                current: root.tool;
+                                enabled: root.has-document;
+                                clicked => { root.choose-tool(i + root.tools-split); }
+                            }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                    }
+                    if root.building: Button {
+                        text: "Finish (Enter)";
+                        primary: true;
+                        clicked => { root.finish(); }
+                    }
+                    Text { text: "Color"; font-size: 12px; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        for swatch[i] in root.colors: Rectangle {
+                            width: 26px;
+                            height: 26px;
+                            border-radius: 13px;
+                            background: swatch;
+                            border-width: i == root.chosen-color ? 3px : 1px;
+                            border-color: i == root.chosen-color ? Palette.accent-background : Palette.border;
+                            accessible-role: button;
+                            accessible-label: root.color-names[i];
+                            accessible-action-default => { root.choose-color(i); }
+                            TouchArea { clicked => { root.choose-color(i); } }
+                        }
+                    }
+                    Text { text: "Line"; font-size: 12px; }
+                    ComboBox {
+                        accessible-label: "Line width";
+                        model: root.widths;
+                        current-index: root.width-index;
+                        selected => { root.choose-width(self.current-index); }
+                    }
+                    CheckBox {
+                        text: "Fill shapes";
+                        checked: root.fill-shapes;
+                        toggled => { root.set-fill(self.checked); }
+                    }
+                    if root.stamping: Text { text: "Stamp"; font-size: 12px; }
+                    if root.stamping: ComboBox {
+                        accessible-label: "Stamp";
+                        model: root.stamps;
+                        current-index: root.stamp;
+                        selected => { root.choose-stamp(self.current-index); }
+                    }
+                }
+
+                if root.has-document && root.show-pages: ScrollView {
+                    width: 136px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        padding: 4px;
+                        for thumbnail[i] in root.thumbnails: Rectangle {
+                            height: 104px;
+                            border-width: i == root.page-index ? 2px : 1px;
+                            border-color: i == root.page-index ? Palette.accent-background : Palette.border;
+                            accessible-role: button;
+                            accessible-label: "Page " + (i + 1);
+                            accessible-action-default => { root.go-to-page(i); }
+                            Image {
+                                x: 4px;
+                                y: 4px;
+                                width: parent.width - 8px;
+                                height: 80px;
+                                source: thumbnail;
+                                image-fit: contain;
+                            }
+                            Text {
+                                y: 86px;
+                                width: parent.width;
+                                horizontal-alignment: center;
+                                text: i + 1;
+                                font-size: 11px;
+                            }
+                            TouchArea { clicked => { root.go-to-page(i); } }
+                        }
+                    }
+                }
+
+                body := Rectangle {
+                    horizontal-stretch: 1;
+                    clip: true;
+                    background: #808080;
+                    init => { root.resized(self.width, self.height); }
+                    changed width => { root.resized(self.width, self.height); }
+                    changed height => { root.resized(self.width, self.height); }
+
+                    if root.has-document: Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.page-image;
+                        image-fit: fill;
+                        accessible-role: image;
+                        accessible-label: root.page-label;
+                    }
+                    for shape in root.shapes: Path {
+                        width: parent.width;
+                        height: parent.height;
+                        viewbox-width: parent.width / 1px;
+                        viewbox-height: parent.height / 1px;
+                        commands: shape.commands;
+                        fill: shape.fill;
+                        stroke: shape.selected ? Palette.accent-background : shape.stroke;
+                        stroke-width: shape.selected ? shape.width + 2px : shape.width;
+                    }
+                    for label in root.labels: Text {
+                        x: label.x;
+                        y: label.y;
+                        text: label.text;
+                        color: label.color;
+                        font-size: label.size;
+                    }
+                    TouchArea {
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down) {
+                                keys.focus();
+                                root.pressed(self.mouse-x, self.mouse-y,
+                                    event.button == PointerEventButton.left ? 0
+                                        : event.button == PointerEventButton.right ? 1 : 2);
+                            } else if (event.kind == PointerEventKind.up) {
+                                root.released(self.mouse-x, self.mouse-y);
+                            }
+                        }
+                        moved => { root.dragged(self.mouse-x, self.mouse-y); }
+                        double-clicked => { root.double-clicked(); }
+                        scroll-event(event) => {
+                            root.wheel(event.delta-x, event.delta-y, event.modifiers.control,
+                                self.mouse-x, self.mouse-y);
+                            accept
+                        }
+                    }
+                    if !root.has-document: Text {
+                        text: "Open a PDF drawing to mark it up.";
+                        color: white;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+
+                VerticalLayout {
+                    width: 340px;
+                    spacing: 6px;
+                    Text { text: "Markups"; font-weight: 600; }
+                    StandardTableView {
+                        vertical-stretch: 1;
+                        columns: [
+                            { title: "Page", min-width: 36px, width: 40px },
+                            { title: "Subject", width: 76px },
+                            { title: "Status", width: 64px },
+                            { title: "Author", width: 60px },
+                            { title: "Text or value", width: 100px },
+                        ];
+                        rows: root.rows;
+                        current-row: root.selected-row;
+                        current-row-changed(row) => { root.row-selected(row); }
+                    }
+                    if root.has-selection: VerticalLayout {
+                        spacing: 4px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Subject"; font-size: 12px; }
+                                LineEdit {
+                                    accessible-label: "Markup subject";
+                                    text <=> root.selected-subject;
+                                    edited(text) => { root.subject-edited(text); }
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Status"; font-size: 12px; }
+                                ComboBox {
+                                    accessible-label: "Markup status";
+                                    model: root.statuses;
+                                    current-index: root.selected-status;
+                                    selected => { root.choose-status(self.current-index); }
+                                }
+                            }
+                        }
+                        Text { text: "Text"; font-size: 12px; }
+                        TextEdit {
+                            accessible-label: "Markup text";
+                            height: 72px;
+                            text <=> root.selected-text;
+                            edited(text) => { root.text-edited(text); }
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Button { text: "Zoom to"; clicked => { root.zoom-to-selected(); } }
+                            Button { text: "Duplicate"; clicked => { root.duplicate(); } }
+                            Button { text: "Delete"; clicked => { root.delete-selected(); } }
+                        }
+                    }
+                    if root.calibrating: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Real length of the line"; }
+                        length := LineEdit {
+                            accessible-label: "Real length of the line";
+                            placeholder-text: root.units == 0 ? "12'" : "3600 mm";
+                            accepted(text) => { root.calibrate(text); }
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Button { text: "Set scale"; clicked => { root.calibrate(length.text); } }
+                            Button { text: "Cancel"; clicked => { root.cancel(); } }
+                        }
+                    }
+                    if root.has-document: HorizontalLayout {
+                        spacing: 4px;
+                        scale-choice := ComboBox {
+                            accessible-label: "Scale";
+                            horizontal-stretch: 1;
+                            model: root.scales;
+                            selected => { root.choose-scale(self.current-index, every.checked); }
+                        }
+                        every := CheckBox { text: "All pages"; }
+                    }
+                    if root.has-document: Button {
+                        text: "Use this page's scale on every page";
+                        clicked => { root.scale-every-page(); }
+                    }
+                    Text { text: root.scale-label; color: Palette.foreground.transparentize(30%); }
+                }
+            }
+
+            Text {
+                text: root.status;
+                color: Palette.foreground.transparentize(25%);
+                font-size: 12px;
+            }
+        }
+    }
+}

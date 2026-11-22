@@ -13,6 +13,38 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **OpenCabinet Review, first pieces** (RFC-0004): a separate program,
+  `opencabinet-review`, with an installer of its own, that opens PDF
+  drawings and marks them up.
+  - **Viewing:** pages drawn with hayro, fit to the window or its width,
+    zoomed with Ctrl and the wheel, moved by dragging; a column of page
+    thumbnails to go to any page. Markups other programs made are drawn
+    from their own appearance, exactly as that program drew them, until
+    they are changed.
+  - **Markups:** cloud, rectangle, ellipse, polygon, arrow, line,
+    polyline, pen, highlight, text box, callout, note and stamp. Each is
+    picked, moved, recolored, made thinner or thicker, filled, given a
+    subject, a status (open, accepted, rejected, completed) and a comment,
+    and deleted, from the page or the markup list. Stamps come in eight
+    wordings and colors, with who stamped and when, and their words can be
+    changed.
+  - **Measuring:** a page is calibrated by drawing along a known
+    dimension or by choosing a common scale (architects', engineers' or
+    metric), for one page or all; lengths, lengths along a path, areas
+    and counts then read to scale, in feet and inches (`12'-6 1/2"`) or
+    millimeters. Other programs' measurements keep their own scale.
+  - **Copy, paste and duplicate** markups, on the same page or another,
+    and zoom to the one selected.
+  - **Undo and redo** of every step, typing included.
+  - **Saving:** one incremental update after the original bytes. Every
+    markup is a standard annotation that other PDF viewers show, and
+    measurements carry a standard scale. Markups other programs made are
+    shown and edited; one left alone is kept exactly as it was, one moved
+    keeps its own look, and keys Review does not know are never dropped.
+  - **Markup list** to CSV with page, type, subject, status, author, date,
+    text and measurement.
+  - Not yet: review sessions, comparing revisions, text search, OCR and
+    sheet sets.
 - **Joinery:** construction standards can join the case with dowels,
   confirmat screws or both (`joinery` rules): the sides to the bottom, the
   top and the stretchers. Dowels stand in a row on the 32 mm grid,
