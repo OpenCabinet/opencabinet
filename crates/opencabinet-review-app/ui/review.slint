@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // OpenCabinet Review's window: menus on top; on the left, a rail that opens
-// one panel at a time (pages, markups, find, measure, session); on the
-// right, the tools; at the bottom, a status bar with the page, the zoom and
-// the scale. The drawing takes everything else.
+// one panel at a time (pages, find, measure, session); under the drawing,
+// the markup list; on the right, the tools and My tools; at the bottom, a
+// status bar with the page, the zoom and the scale. The drawing takes
+// everything else.
 
 import {
     Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, StandardListView,
@@ -34,6 +35,12 @@ export struct ToolInfo {
     name: string,
     icon: string,
     filled: bool,
+}
+
+// A saved tool in My tools: its name and color.
+export struct SavedInfo {
+    name: string,
+    color: color,
 }
 
 // The rails' colors, the same in light and dark themes.
@@ -163,9 +170,13 @@ export component ReviewWindow inherits Window {
     in-out property <int> document-number;
     in-out property <string> author;
     in property <int> units;
-    // The left panel open: -1 none, 0 pages, 1 markups, 2 find, 3 measure,
-    // 4 session.
+    // The left panel open: -1 none, 0 pages, 2 find, 3 measure, 4 session.
     in-out property <int> panel: 0;
+    // Whether the markup list is open under the drawing.
+    in-out property <bool> list-open: true;
+    in property <[StandardListViewItem]> chat;
+    in property <[SavedInfo]> saved-tools;
+    in property <int> saved-in-use: -1;
     in property <bool> in-session;
     in property <bool> hosting;
     in property <string> session-state: "Not in a session";
@@ -224,6 +235,11 @@ export component ReviewWindow inherits Window {
     callback join-session(string);
     callback leave-session();
     callback quit();
+    callback say(string);
+    callback save-tool();
+    callback use-saved(int);
+    callback remove-saved(int);
+    callback sort-list(int, bool);
 
     title: root.window-title;
     preferred-width: 1366px;
@@ -260,6 +276,8 @@ export component ReviewWindow inherits Window {
             MenuItem { title: "Paste"; shortcut: @keys(Control + V); enabled: root.has-document; activated => { root.paste(); } }
             MenuItem { title: "Duplicate"; shortcut: @keys(Control + D); enabled: root.has-selection; activated => { root.duplicate(); } }
             MenuItem { title: "Delete"; enabled: root.has-selection; activated => { root.delete-selected(); } }
+            MenuSeparator { }
+            MenuItem { title: "Save style in My tools"; enabled: root.has-selection; activated => { root.save-tool(); } }
         }
         Menu {
             title: "View";
@@ -273,7 +291,7 @@ export component ReviewWindow inherits Window {
             MenuItem { title: "Previous page"; enabled: root.has-document; activated => { root.previous-page(); } }
             MenuSeparator { }
             MenuItem { title: "Pages"; activated => { root.toggle(0); } }
-            MenuItem { title: "Markups"; activated => { root.toggle(1); } }
+            MenuItem { title: "Markup list"; activated => { root.list-open = !root.list-open; } }
             MenuItem { title: "Find"; shortcut: @keys(Control + F); activated => { root.panel = 2; } }
             MenuItem { title: "Measure"; activated => { root.toggle(3); } }
             MenuItem { title: "Session"; activated => { root.toggle(4); } }
@@ -335,8 +353,8 @@ export component ReviewWindow inherits Window {
                         RailButton {
                             name: "Markups";
                             icon: "M 4 5 L 6 5 M 9 5 L 20 5 M 4 10 L 6 10 M 9 10 L 20 10 M 4 15 L 6 15 M 9 15 L 20 15 M 4 20 L 6 20 M 9 20 L 16 20";
-                            active: root.panel == 1;
-                            clicked => { root.toggle(1); }
+                            active: root.list-open;
+                            clicked => { root.list-open = !root.list-open; }
                         }
                         RailButton {
                             name: "Find";
@@ -400,85 +418,6 @@ export component ReviewWindow inherits Window {
                                     }
                                     TouchArea { clicked => { root.go-to-page(i); } }
                                 }
-                            }
-                        }
-                    }
-
-                    if root.panel == 1: VerticalLayout {
-                        padding: 8px;
-                        spacing: 6px;
-                        HorizontalLayout {
-                            spacing: 6px;
-                            PanelTitle { text: "Markups"; vertical-alignment: center; }
-                            Text {
-                                text: root.list-label;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                color: Palette.foreground.transparentize(30%);
-                            }
-                        }
-                        HorizontalLayout {
-                            spacing: 4px;
-                            status-filter := ComboBox {
-                                accessible-label: "Show markups with status";
-                                model: ["All", "Open", "Accepted", "Rejected", "Completed"];
-                                selected => { root.set-filter(self.current-index, words.text); }
-                            }
-                            words := LineEdit {
-                                accessible-label: "Show markups with words";
-                                placeholder-text: "Filter";
-                                edited(text) => { root.set-filter(status-filter.current-index, text); }
-                            }
-                        }
-                        StandardTableView {
-                            vertical-stretch: 1;
-                            columns: [
-                                { title: "Page", min-width: 32px, width: 36px },
-                                { title: "Subject", width: 70px },
-                                { title: "Status", width: 58px },
-                                { title: "Author", width: 54px },
-                                { title: "Text or value", width: 90px },
-                            ];
-                            rows: root.rows;
-                            current-row: root.selected-row;
-                            current-row-changed(row) => { root.row-selected(row); }
-                        }
-                        if root.has-selection: VerticalLayout {
-                            spacing: 4px;
-                            HorizontalLayout {
-                                spacing: 6px;
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "Subject"; font-size: 11px; }
-                                    LineEdit {
-                                        accessible-label: "Markup subject";
-                                        text <=> root.selected-subject;
-                                        edited(text) => { root.subject-edited(text); }
-                                    }
-                                }
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "Status"; font-size: 11px; }
-                                    ComboBox {
-                                        accessible-label: "Markup status";
-                                        model: root.statuses;
-                                        current-index: root.selected-status;
-                                        selected => { root.choose-status(self.current-index); }
-                                    }
-                                }
-                            }
-                            Text { text: "Text"; font-size: 11px; }
-                            TextEdit {
-                                accessible-label: "Markup text";
-                                height: 64px;
-                                text <=> root.selected-text;
-                                edited(text) => { root.text-edited(text); }
-                            }
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Button { text: "Zoom to"; clicked => { root.zoom-to-selected(); } }
-                                Button { text: "Duplicate"; clicked => { root.duplicate(); } }
-                                Button { text: "Delete"; clicked => { root.delete-selected(); } }
                             }
                         }
                     }
@@ -613,7 +552,7 @@ export component ReviewWindow inherits Window {
                         }
                         Text { text: "People"; font-size: 11px; }
                         StandardListView {
-                            height: 80px;
+                            height: 64px;
                             model: root.people;
                         }
                         Text { text: "Activity"; font-size: 11px; }
@@ -621,12 +560,38 @@ export component ReviewWindow inherits Window {
                             vertical-stretch: 1;
                             model: root.activity;
                         }
+                        if root.in-session: Text { text: "Chat"; font-size: 11px; }
+                        if root.in-session: StandardListView {
+                            vertical-stretch: 1;
+                            model: root.chat;
+                        }
+                        if root.in-session: HorizontalLayout {
+                            spacing: 4px;
+                            message := LineEdit {
+                                accessible-label: "Chat message";
+                                placeholder-text: "Write to everyone";
+                                accepted(text) => {
+                                    root.say(text);
+                                    self.text = "";
+                                }
+                            }
+                            Button {
+                                text: "Send";
+                                clicked => {
+                                    root.say(message.text);
+                                    message.text = "";
+                                }
+                            }
+                        }
                     }
                 }
 
-                // The drawing.
+                // The drawing, and the markup list under it.
+                VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 0px;
                 body := Rectangle {
-                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
                     clip: true;
                     background: #6e6e6e;
                     init => { root.resized(self.width, self.height); }
@@ -709,15 +674,114 @@ export component ReviewWindow inherits Window {
                     }
                 }
 
-                // The tools.
+                if root.list-open: Rectangle {
+                    height: 230px;
+                    background: Palette.background;
+                    border-width: 1px;
+                    border-color: Palette.border;
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 4px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            PanelTitle { text: "Markup list"; vertical-alignment: center; }
+                            Text {
+                                text: root.list-label;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                color: Palette.foreground.transparentize(30%);
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            status-filter := ComboBox {
+                                width: 120px;
+                                accessible-label: "Show markups with status";
+                                model: ["All", "Open", "Accepted", "Rejected", "Completed"];
+                                selected => { root.set-filter(self.current-index, words.text); }
+                            }
+                            words := LineEdit {
+                                width: 200px;
+                                accessible-label: "Show markups with words";
+                                placeholder-text: "Filter";
+                                edited(text) => { root.set-filter(status-filter.current-index, text); }
+                            }
+                            Button { text: "Export…"; enabled: root.has-document; clicked => { root.export-list(); } }
+                            BarButton { text: "✕"; label: "Close the markup list"; clicked => { root.list-open = false; } }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            StandardTableView {
+                                horizontal-stretch: 1;
+                                columns: [
+                                    { title: "Subject", width: 130px },
+                                    { title: "Page", width: 50px },
+                                    { title: "Comments", width: 300px, horizontal-stretch: 1 },
+                                    { title: "Author", width: 100px },
+                                    { title: "Date", width: 120px },
+                                    { title: "Status", width: 90px },
+                                    { title: "Color", width: 70px },
+                                ];
+                                rows: root.rows;
+                                current-row: root.selected-row;
+                                current-row-changed(row) => { root.row-selected(row); }
+                                sort-ascending(column) => { root.sort-list(column, false); }
+                                sort-descending(column) => { root.sort-list(column, true); }
+                            }
+                            if root.has-selection: VerticalLayout {
+                                width: 280px;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: "Subject"; font-size: 11px; }
+                                        LineEdit {
+                                            accessible-label: "Markup subject";
+                                            text <=> root.selected-subject;
+                                            edited(text) => { root.subject-edited(text); }
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: "Status"; font-size: 11px; }
+                                        ComboBox {
+                                            accessible-label: "Markup status";
+                                            model: root.statuses;
+                                            current-index: root.selected-status;
+                                            selected => { root.choose-status(self.current-index); }
+                                        }
+                                    }
+                                }
+                                TextEdit {
+                                    accessible-label: "Markup text";
+                                    vertical-stretch: 1;
+                                    text <=> root.selected-text;
+                                    edited(text) => { root.text-edited(text); }
+                                }
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    BarButton { text: "Zoom to"; clicked => { root.zoom-to-selected(); } }
+                                    BarButton { text: "Duplicate"; clicked => { root.duplicate(); } }
+                                    BarButton { text: "Delete"; clicked => { root.delete-selected(); } }
+                                    BarButton { text: "Save tool"; label: "Save style in My tools"; clicked => { root.save-tool(); } }
+                                }
+                            }
+                        }
+                    }
+                }
+                }
+
+                // The tools. Two columns of 52 px, the gaps and the scroll
+                // bar: the rail is as wide as that needs.
                 Rectangle {
-                    width: 120px;
+                    width: 140px;
                     background: Rail.background;
-                    ScrollView {
+                    tools-scroll := ScrollView {
                         VerticalLayout {
+                            width: tools-scroll.visible-width;
                             padding: 4px;
                             spacing: 4px;
                             HorizontalLayout {
+                                alignment: center;
                                 spacing: 4px;
                                 VerticalLayout {
                                     spacing: 2px;
@@ -806,6 +870,56 @@ export component ReviewWindow inherits Window {
                                 model: root.stamps;
                                 current-index: root.stamp;
                                 selected => { root.choose-stamp(self.current-index); }
+                            }
+                            Rectangle { height: 1px; background: Palette.border; }
+                            Text { text: "My tools"; font-size: 10px; horizontal-alignment: center; }
+                            for saved[i] in root.saved-tools: Rectangle {
+                                height: 26px;
+                                border-radius: 4px;
+                                background: i == root.saved-in-use ? Rail.active.transparentize(70%)
+                                    : use-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                                accessible-role: button;
+                                accessible-label: "Draw with " + saved.name;
+                                accessible-action-default => { root.use-saved(i); }
+                                use-touch := TouchArea {
+                                    enabled: root.has-document;
+                                    clicked => { root.use-saved(i); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    spacing: 4px;
+                                    Rectangle {
+                                        width: 12px;
+                                        height: 12px;
+                                        y: 7px;
+                                        border-radius: 6px;
+                                        background: saved.color;
+                                    }
+                                    Text {
+                                        text: saved.name;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                    BarButton {
+                                        text: "✕";
+                                        label: "Take " + saved.name + " out of My tools";
+                                        clicked => { root.remove-saved(i); }
+                                    }
+                                }
+                            }
+                            if root.saved-tools.length == 0: Text {
+                                text: "Select a markup and save its style here.";
+                                wrap: word-wrap;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                color: Palette.foreground.transparentize(30%);
+                            }
+                            Button {
+                                text: "Save selected";
+                                enabled: root.has-selection;
+                                clicked => { root.save-tool(); }
                             }
                         }
                     }

@@ -108,3 +108,46 @@ fn a_wrong_secret_or_host_is_refused() {
     let _: Invite = host.invite.to_string().parse().unwrap();
     host.link.stop();
 }
+
+#[test]
+fn a_large_drawing_reaches_who_joins() {
+    // Over a real network the host cannot send a large PDF in one go; it
+    // must wait for the guest to take it in rather than give up.
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let pdf: Vec<u8> = (0..48 * 1024 * 1024)
+        .map(|i: u32| i.to_le_bytes()[0] ^ (i >> 9).to_le_bytes()[0])
+        .collect();
+    let pdf = Arc::new(pdf);
+    let host = Host::start_on(
+        Shared::start("Andrés"),
+        Arc::clone(&pdf),
+        loopback,
+        loopback,
+    )
+    .unwrap();
+    let guest = Guest::join(&host.invite.to_string(), "María").unwrap();
+    assert_eq!(guest.pdf.len(), pdf.len());
+    // Not assert_eq: a failure would print 48 MB.
+    assert!(
+        guest.pdf.iter().eq(pdf.iter()),
+        "the drawing arrived changed"
+    );
+    host.link.stop();
+}
+
+#[test]
+fn other_programs_markups_come_back_unchanged() {
+    // Markups read from a PDF must come back from the session exactly as
+    // they went, or Review would draw them itself instead of their own
+    // appearance.
+    let mut review = opencabinet_review::Review::open(sample::foreign_markups()).unwrap();
+    let mut shared = Shared::start("Andrés");
+    let markups = review.markups().to_vec();
+    assert!(markups.iter().any(|m| m.origin.is_some()));
+    shared.publish(&markups, &review.scales().clone());
+    for (sent, back) in markups.iter().zip(shared.markups()) {
+        assert_eq!(sent, &back);
+    }
+    review.take_shared(shared.markups(), shared.scales());
+    assert!(review.markups().iter().all(|m| !review.draws(m)));
+}

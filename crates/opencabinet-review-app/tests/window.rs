@@ -9,6 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use opencabinet_review_app::ReviewWindow;
 use opencabinet_review_app::dialogs::{Dialogs, FileKind};
 use opencabinet_review_app::viewer::TOOLS;
 use slint::{ComponentHandle, Model};
@@ -93,14 +94,14 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     window.invoke_text_edited("Filler 3\" here".into());
     assert_eq!(window.get_labels().row_count(), 1);
     let row = window.get_rows().row_data(1).unwrap();
-    assert_eq!(row.row_data(1).unwrap().text, "Text");
+    assert_eq!(row.row_data(0).unwrap().text, "Text");
     // Undone and redone.
     assert!(window.get_can_undo());
     window.invoke_undo();
     assert_eq!(window.get_labels().row_count(), 0);
     window.invoke_redo();
     assert_eq!(window.get_labels().row_count(), 1);
-    assert_eq!(row.row_data(4).unwrap().text, "Filler 3\" here");
+    assert_eq!(row.row_data(2).unwrap().text, "Filler 3\" here");
     assert!(window.get_window_title().starts_with("* "));
 
     // An area, point by point, finished with Enter.
@@ -119,7 +120,7 @@ fn a_drawing_is_opened_marked_up_and_saved() {
             .get_rows()
             .row_data(2)
             .unwrap()
-            .row_data(2)
+            .row_data(5)
             .unwrap()
             .text,
         "Rejected"
@@ -146,6 +147,24 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     assert_eq!(window.get_rows().row_count(), 1);
     assert_eq!(window.get_list_label(), "1 of 2 markups");
     window.invoke_set_filter(0, "".into());
+
+    // The list sorts by a column's header; a markup's style is saved in
+    // My tools and drawn with again.
+    window.invoke_sort_list(0, true);
+    let first = |w: &ReviewWindow| w.get_rows().row_data(0).unwrap().row_data(0).unwrap().text;
+    assert_eq!(first(&window), "Text");
+    window.invoke_sort_list(0, false);
+    assert_eq!(first(&window), "Cloud");
+    window.invoke_row_selected(0);
+    window.invoke_save_tool();
+    assert_eq!(window.get_saved_tools().row_count(), 1);
+    assert_eq!(window.get_saved_tools().row_data(0).unwrap().name, "Cloud");
+    window.invoke_use_saved(0);
+    assert_eq!(window.get_saved_in_use(), 0);
+    assert_eq!(window.get_tool(), tool("Cloud"));
+    window.invoke_remove_saved(0);
+    assert_eq!(window.get_saved_tools().row_count(), 0);
+    window.invoke_escape();
 
     // A common scale for every page.
     let quarter = (0..window.get_scales().row_count())

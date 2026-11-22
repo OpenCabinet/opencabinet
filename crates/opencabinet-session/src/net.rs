@@ -43,6 +43,8 @@ const NAME: &str = "opencabinet-review";
 const MAX_FRAME: u32 = 512 * 1024 * 1024;
 /// How long a read waits before the loop looks for something to send.
 const TICK: Duration = Duration::from_millis(40);
+/// How long joining may take before either side gives up.
+const GREETING: Duration = Duration::from_secs(30);
 
 const HELLO: u8 = 1;
 const WELCOME: u8 = 2;
@@ -247,7 +249,15 @@ fn admit(
     secret: [u8; 16],
     link: &Link,
 ) -> Result<(), String> {
+    // On Windows a connection accepted from a listener that does not
+    // block does not block either: sending the PDF across a network would
+    // stop at the first full buffer and drop who is joining.
+    stream.set_nonblocking(false).map_err(|e| e.to_string())?;
     stream.set_nodelay(true).ok();
+    // Who does not say hello in time is not waited for.
+    stream
+        .set_read_timeout(Some(GREETING))
+        .map_err(|e| e.to_string())?;
     let connection = ServerConnection::new(Arc::clone(config)).map_err(|e| e.to_string())?;
     let mut tls = StreamOwned::new(connection, stream);
     let mut frames = Frames::default();
@@ -297,8 +307,16 @@ impl Guest {
             }))
             .with_no_client_auth();
         let stream = TcpStream::connect_timeout(&invite.address, Duration::from_secs(5))
-            .map_err(|e| format!("Cannot reach the host at {}: {e}", invite.address))?;
+            .map_err(|e| {
+                format!(
+                    "Cannot reach the host at {}: {e}. Check that both computers are on the                      same network and that the host let OpenCabinet Review through the Windows                      firewall on private networks.",
+                    invite.address
+                )
+            })?;
         stream.set_nodelay(true).ok();
+        stream
+            .set_read_timeout(Some(GREETING))
+            .map_err(|e| e.to_string())?;
         let server = ServerName::try_from(NAME).map_err(|e| e.to_string())?;
         let connection =
             ClientConnection::new(Arc::new(config), server).map_err(|e| e.to_string())?;
@@ -308,7 +326,12 @@ impl Guest {
         write_frame(&mut tls, HELLO, &hello)
             .map_err(|e| format!("The host did not answer as expected: {e}"))?;
         let mut frames = Frames::default();
-        let (kind, welcome) = frames.read_blocking(&mut tls)?;
+        let (kind, welcome) = frames.read_blocking(&mut tls).map_err(|e| {
+            format!(
+                "The host at {} closed the connection while letting you in: {e}",
+                invite.address
+            )
+        })?;
         if kind != WELCOME || welcome.len() < 4 {
             return Err("The host did not let you in".into());
         }
@@ -436,14 +459,21 @@ impl Frames {
         }
     }
 
-    /// Waits for the next whole frame.
+    /// Waits for the next whole frame, as long as data keeps arriving.
     fn read_blocking(&mut self, stream: &mut impl Read) -> Result<(u8, Vec<u8>), String> {
+        let mut chunk = vec![0; 64 * 1024];
         loop {
             if let Some(frame) = self.next()? {
                 return Ok(frame);
             }
-            if !self.fill(stream)? {
-                return Err("the connection closed".into());
+            match stream.read(&mut chunk) {
+                Ok(0) => return Err("the connection closed".into()),
+                Ok(n) => self.buffer.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    return Err("the other side stopped answering".into());
+                }
+                Err(e) => return Err(e.to_string()),
             }
         }
     }
@@ -500,6 +530,9 @@ where
             }
         }
     }
+    // Say goodbye properly, so the other side knows this was on purpose.
+    tls.conn.send_close_notify();
+    let _ = tls.conn.complete_io(&mut tls.sock);
     Ok(())
 }
 

@@ -3932,6 +3932,7 @@ dependencies = [
  "opencabinet-review",
  "opencabinet-session",
  "rfd",
+ "serde_json",
  "slint",
  "slint-build",
 ]

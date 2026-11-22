@@ -8,12 +8,13 @@
 //! the markups are drawn over it by the window, so drawing or moving one
 //! never redraws the page.
 
+pub mod chest;
 pub mod dialogs;
 pub mod icons;
 pub mod viewer;
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use opencabinet_model::Units;
@@ -34,7 +35,7 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::{Label, ReviewWindow, Shape, ToolInfo};
+pub use ui::{Label, ReviewWindow, SavedInfo, Shape, ToolInfo};
 
 /// The most pages drawn as thumbnails.
 const MAX_THUMBNAILS: usize = 500;
@@ -72,7 +73,7 @@ pub const NAME_AND_VERSION: &str = concat!("OpenCabinet Review ", env!("CARGO_PK
 /// # Errors
 /// When the platform cannot create a window.
 pub fn create(path: Option<&Path>) -> Result<ReviewWindow, slint::PlatformError> {
-    create_with(Rc::new(SystemDialogs), path)
+    build(Rc::new(SystemDialogs), path, chest::default_path())
 }
 
 struct App {
@@ -97,6 +98,15 @@ struct App {
 pub fn create_with(
     dialogs: Rc<dyn Dialogs>,
     path: Option<&Path>,
+) -> Result<ReviewWindow, slint::PlatformError> {
+    build(dialogs, path, None)
+}
+
+/// The window, keeping My tools at `saved` when given.
+fn build(
+    dialogs: Rc<dyn Dialogs>,
+    path: Option<&Path>,
+    saved: Option<PathBuf>,
 ) -> Result<ReviewWindow, slint::PlatformError> {
     let window = ReviewWindow::new()?;
     let app = Rc::new(App {
@@ -143,6 +153,9 @@ pub fn create_with(
     let names: Vec<SharedString> = COLORS.iter().map(|&(name, _)| name.into()).collect();
     window.set_color_names(ModelRc::new(VecModel::from(names)));
     window.set_author(app.viewer.borrow().author.as_str().into());
+    if let Some(saved) = saved {
+        app.viewer.borrow_mut().keep_saved_tools_at(saved);
+    }
 
     connect(&window, &app);
     match path {
@@ -219,6 +232,42 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     });
     window.on_export_flattened(on(App::export_flattened));
+    window.on_save_tool(on(|app| {
+        let result = app.viewer.borrow_mut().save_selected_tool();
+        app.refresh();
+        if let Err(message) = result {
+            app.status(&message);
+        }
+    }));
+    let a = Rc::clone(app);
+    window.on_use_saved(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.use_saved_tool(i));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_remove_saved(move |i| {
+        let Ok(i) = usize::try_from(i) else {
+            return;
+        };
+        let result = a.viewer.borrow_mut().remove_saved_tool(i);
+        a.refresh();
+        if let Err(message) = result {
+            a.status(&message);
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_sort_list(move |column, down| {
+        if let Ok(column) = usize::try_from(column) {
+            a.change(|v| v.sort_by(Some((column, down))));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_say(move |text| {
+        if a.viewer.borrow_mut().say(&text) {
+            a.refresh_session();
+        }
+    });
     window.on_delete_selected(on(|app| app.change(Viewer::delete_selected)));
 
     let a = Rc::clone(app);
@@ -407,6 +456,7 @@ impl App {
         };
         window.set_people(items(viewer.people()));
         window.set_activity(items(viewer.activity()));
+        window.set_chat(items(viewer.chat()));
     }
 
     fn choose_and_open(&self) {
@@ -592,6 +642,21 @@ impl App {
         window.set_fill_shapes(viewer.fill());
         window.set_stamp(i32::try_from(viewer.stamp()).unwrap_or(0));
         window.set_stamping(viewer.tool() == Tool::Draw(Kind::Stamp));
+        let saved: Vec<SavedInfo> = viewer
+            .saved_tools()
+            .iter()
+            .map(|t| SavedInfo {
+                name: t.name.as_str().into(),
+                color: color(t.color),
+            })
+            .collect();
+        window.set_saved_tools(ModelRc::new(VecModel::from(saved)));
+        window.set_saved_in_use(
+            viewer
+                .saved_in_use()
+                .and_then(|i| i32::try_from(i).ok())
+                .unwrap_or(-1),
+        );
         let selected = viewer.selected();
         window.set_has_selection(selected.is_some());
         window.set_selected_text(selected.map(|m| m.text.as_str()).unwrap_or_default().into());

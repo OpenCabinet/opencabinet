@@ -16,10 +16,12 @@ use opencabinet_model::{Length, Units};
 use opencabinet_pdf::find::{Found, find};
 use opencabinet_pdf::{Document, Page, Point, View};
 use opencabinet_review::{
-    Color, FILL_OPACITY, Gesture, Kind, Markup, Review, Scale, Segment, Status, presets, stamps,
-    text_width,
+    Color, FILL_OPACITY, Gesture, Kind, Markup, Review, Scale, Segment, Status, pdf_date_text,
+    presets, stamps, text_width,
 };
 use opencabinet_session::{Guest, Host, Invite, Link, Shared};
+
+use crate::chest::{self, SavedTool};
 
 /// What the mouse does on the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +77,11 @@ pub const COLORS: [(&str, Color); 6] = [
     ("Green", [0.1, 0.55, 0.2]),
     ("Blue", [0.1, 0.35, 0.85]),
     ("Black", [0.0, 0.0, 0.0]),
+];
+
+/// The markup list's columns, in order.
+pub const COLUMNS: [&str; 7] = [
+    "Subject", "Page", "Comments", "Author", "Date", "Status", "Color",
 ];
 
 /// The stroke widths markups can take, in points.
@@ -177,6 +184,13 @@ pub struct Viewer {
     compare: Option<(String, Document)>,
     /// The review session this window is in, if any.
     session: Option<Session>,
+    /// The list's order: a column of [`COLUMNS`], and whether it goes
+    /// down.
+    sort: Option<(usize, bool)>,
+    /// My tools, where they are kept, and the one in use.
+    saved: Vec<SavedTool>,
+    saved_path: Option<PathBuf>,
+    style: Option<SavedTool>,
     status: String,
 }
 
@@ -211,6 +225,10 @@ impl Default for Viewer {
             searched: String::new(),
             compare: None,
             session: None,
+            sort: None,
+            saved: Vec::new(),
+            saved_path: None,
+            style: None,
             status: "Open a PDF to start.".into(),
         }
     }
@@ -494,6 +512,7 @@ impl Viewer {
     /// Picks a tool; a shape being drawn point by point is finished.
     pub fn choose_tool(&mut self, tool: Tool) {
         self.finish();
+        self.style = None;
         self.tool = tool;
         self.drag = None;
         self.status = match tool {
@@ -539,6 +558,9 @@ impl Viewer {
             return;
         };
         self.color = color;
+        if let Some(style) = self.style.as_mut() {
+            style.color = rgb;
+        }
         self.change_selected(|m| m.color = rgb);
     }
 
@@ -554,6 +576,9 @@ impl Viewer {
             return;
         };
         self.width = width;
+        if let Some(style) = self.style.as_mut() {
+            style.width = points;
+        }
         self.change_selected(|m| m.width = points);
     }
 
@@ -566,6 +591,9 @@ impl Viewer {
     /// Fills new shapes, and the selected one, or not.
     pub fn set_fill(&mut self, fill: bool) {
         self.fill = fill;
+        if let Some(style) = self.style.as_mut() {
+            style.fill = fill;
+        }
         self.change_selected(|m| m.fill = fill);
     }
 
@@ -592,6 +620,23 @@ impl Viewer {
     /// A new markup of `kind` through `points`, in the style in use.
     fn new_markup(&self, kind: Kind, points: Vec<Point>) -> Markup {
         let template = stamps::TEMPLATES[self.stamp];
+        if let Some(style) = self.style.as_ref().filter(|s| s.kind == kind) {
+            return Markup {
+                page: self.page,
+                kind,
+                points,
+                color: style.color,
+                width: style.width,
+                fill: style.fill && kind.fillable(),
+                subject: style.subject.clone(),
+                text: if kind == Kind::Stamp {
+                    template.words.into()
+                } else {
+                    String::new()
+                },
+                ..Markup::default()
+            };
+        }
         Markup {
             page: self.page,
             kind,
@@ -930,7 +975,7 @@ impl Viewer {
         let Some(review) = self.review.as_ref() else {
             return Vec::new();
         };
-        review
+        let mut listed: Vec<&Markup> = review
             .markups()
             .iter()
             .filter(|m| self.filter_status.is_none_or(|s| m.status == s))
@@ -945,7 +990,24 @@ impl Viewer {
                     .iter()
                     .any(|field| field.to_lowercase().contains(&self.filter_text))
             })
-            .collect()
+            .collect();
+        if let Some((column, down)) = self.sort {
+            listed.sort_by_cached_key(|m| match column {
+                1 => (m.page, String::new()),
+                4 => (0, m.modified.clone()),
+                _ => (0, self.cell(review, m, column).to_lowercase()),
+            });
+            if down {
+                listed.reverse();
+            }
+        }
+        listed
+    }
+
+    /// Orders the list by `column` of [`COLUMNS`], down or up; `None`
+    /// keeps the order markups were made in.
+    pub fn sort_by(&mut self, sort: Option<(usize, bool)>) {
+        self.sort = sort.filter(|(column, _)| *column < COLUMNS.len());
     }
 
     /// How many markups the list shows, of how many.
@@ -1089,7 +1151,7 @@ impl Viewer {
         shared.publish(review.markups(), review.scales());
         let pdf = Arc::new(review.document().bytes().to_vec());
         let host = Host::start(shared, pdf)?;
-        self.status = "Hosting a session: send the invitation to who joins.".into();
+        self.status = "Hosting a session: send the invitation to who joins. If Windows asks, allow private networks.".into();
         self.session = Some(Session {
             link: host.link,
             invite: Some(host.invite),
@@ -1230,12 +1292,7 @@ impl Viewer {
             .activity()
             .into_iter()
             .rev()
-            .map(|a| {
-                let time = chrono::DateTime::from_timestamp(a.when, 0)
-                    .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
-                    .unwrap_or_default();
-                format!("{time} {}: {}", a.who, a.what)
-            })
+            .map(|a| format!("{} {}: {}", clock(a.when), a.who, a.what))
             .collect()
     }
 
@@ -1349,31 +1406,160 @@ impl Viewer {
         }
     }
 
-    /// The markup list: page, subject, status, author, and text or
-    /// measurement.
+    /// The markup list, one cell per column of [`COLUMNS`].
     #[must_use]
-    pub fn rows(&self) -> Vec<[String; 5]> {
+    pub fn rows(&self) -> Vec<[String; 7]> {
         let Some(review) = self.review.as_ref() else {
             return Vec::new();
         };
         self.listed()
             .into_iter()
-            .map(|m| {
-                let text = m.text.lines().next().unwrap_or_default();
-                let what = match review.measured(m, self.units) {
+            .map(|m| std::array::from_fn(|column| self.cell(review, m, column)))
+            .collect()
+    }
+
+    /// What the list shows of `markup` in `column` of [`COLUMNS`].
+    fn cell(&self, review: &Review, markup: &Markup, column: usize) -> String {
+        match column {
+            0 => markup.subject().to_owned(),
+            1 => (markup.page + 1).to_string(),
+            2 => {
+                let text = markup.text.lines().collect::<Vec<_>>().join(" ");
+                match review.measured(markup, self.units) {
                     Some(value) if text.is_empty() => value,
                     Some(value) => format!("{value} · {text}"),
-                    None => text.to_owned(),
-                };
-                [
-                    (m.page + 1).to_string(),
-                    m.subject().to_owned(),
-                    m.status.label().to_owned(),
-                    m.author.clone(),
-                    what,
-                ]
-            })
+                    None => text,
+                }
+            }
+            3 => markup.author.clone(),
+            4 => pdf_date_text(&markup.modified),
+            5 => markup.status.label().to_owned(),
+            6 => color_name(markup.color),
+            _ => String::new(),
+        }
+    }
+
+    /// Writes `text` in the session's chat; whether it was written.
+    pub fn say(&mut self, text: &str) -> bool {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        session
+            .link
+            .shared
+            .lock()
+            .is_ok_and(|mut shared| shared.say(text))
+    }
+
+    /// The session's chat, oldest first: `14:32 María: Is it centered?`.
+    #[must_use]
+    pub fn chat(&self) -> Vec<String> {
+        let Some(session) = self.session.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(shared) = session.link.shared.lock() else {
+            return Vec::new();
+        };
+        shared
+            .chat()
+            .into_iter()
+            .map(|said| format!("{} {}: {}", clock(said.when), said.who, said.text))
             .collect()
+    }
+
+    /// Reads My tools from `path` and keeps them there from now on.
+    pub fn keep_saved_tools_at(&mut self, path: PathBuf) {
+        self.saved = chest::load(&path);
+        self.saved_path = Some(path);
+    }
+
+    /// My tools.
+    #[must_use]
+    pub fn saved_tools(&self) -> &[SavedTool] {
+        &self.saved
+    }
+
+    /// Saves the selected markup's style in My tools.
+    ///
+    /// # Errors
+    /// A message for the user when nothing is selected or it cannot be
+    /// kept.
+    pub fn save_selected_tool(&mut self) -> Result<(), String> {
+        let markup = self.selected().ok_or("Select a markup to save its style")?;
+        let tool = SavedTool {
+            name: markup.subject().to_owned(),
+            kind: markup.kind,
+            color: markup.color,
+            width: markup.width,
+            fill: markup.fill,
+            subject: markup.subject.clone(),
+        };
+        let name = tool.name.clone();
+        match self
+            .saved
+            .iter_mut()
+            .find(|t| t.name == tool.name && t.kind == tool.kind)
+        {
+            Some(same) => *same = tool,
+            None => self.saved.push(tool),
+        }
+        self.keep_saved()?;
+        self.status = format!("Saved \"{name}\" in My tools.");
+        Ok(())
+    }
+
+    /// Draws with My tools' `index`.
+    pub fn use_saved_tool(&mut self, index: usize) {
+        let Some(tool) = self.saved.get(index).cloned() else {
+            return;
+        };
+        self.choose_tool(Tool::Draw(tool.kind));
+        if let Some(color) = COLORS
+            .iter()
+            .position(|(_, c)| c.iter().zip(tool.color).all(|(a, b)| (a - b).abs() < 1e-9))
+        {
+            self.color = color;
+        }
+        if let Some(width) = WIDTHS
+            .iter()
+            .position(|(_, w)| (*w - tool.width).abs() < 1e-9)
+        {
+            self.width = width;
+        }
+        self.fill = tool.fill;
+        self.status = format!("Drawing with \"{}\" from My tools.", tool.name);
+        self.style = Some(tool);
+    }
+
+    /// Takes My tools' `index` out.
+    ///
+    /// # Errors
+    /// A message for the user when the change cannot be kept.
+    pub fn remove_saved_tool(&mut self, index: usize) -> Result<(), String> {
+        if index < self.saved.len() {
+            let gone = self.saved.remove(index);
+            if self.style.as_ref() == Some(&gone) {
+                self.style = None;
+            }
+            self.keep_saved()?;
+        }
+        Ok(())
+    }
+
+    /// My tools' tool in use, if any.
+    #[must_use]
+    pub fn saved_in_use(&self) -> Option<usize> {
+        let style = self.style.as_ref()?;
+        self.saved.iter().position(|t| t == style)
+    }
+
+    fn keep_saved(&self) -> Result<(), String> {
+        match &self.saved_path {
+            Some(path) => {
+                chest::store(path, &self.saved).map_err(|e| format!("Cannot keep My tools: {e}"))
+            }
+            None => Ok(()),
+        }
     }
 
     /// What to draw over the page: the markups on it, the one being drawn
@@ -1520,6 +1706,30 @@ struct Session {
     invite: Option<Invite>,
     /// How many changes from others were taken in.
     seen: u64,
+}
+
+/// `14:32`, in this computer's time.
+fn clock(when: i64) -> String {
+    chrono::DateTime::from_timestamp(when, 0)
+        .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_default()
+}
+
+/// The name of one of [`COLORS`], or `#rrggbb`.
+fn color_name(color: Color) -> String {
+    if let Some((name, _)) = COLORS
+        .iter()
+        .find(|(_, c)| c.iter().zip(color).all(|(a, b)| (a - b).abs() < 0.02))
+    {
+        return (*name).to_owned();
+    }
+    color.iter().fold("#".to_owned(), |mut out, c| {
+        // Clamped to 0–255 first, so nothing is lost.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let byte = (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
 }
 
 impl Drop for Viewer {
@@ -1684,15 +1894,10 @@ mod tests {
         assert!((markup.width - 4.0).abs() < f64::EPSILON);
         assert!(markup.fill);
         let author = viewer.author.clone();
+        let row = &viewer.rows()[0];
         assert_eq!(
-            viewer.rows()[0],
-            [
-                "1".to_owned(),
-                "Phase 2".into(),
-                "Accepted".into(),
-                author,
-                "Check with GC".into()
-            ]
+            [&row[0], &row[1], &row[2], &row[3], &row[5], &row[6]],
+            ["Phase 2", "1", "Check with GC", &author, "Accepted", "Blue"]
         );
         let (shapes, _) = viewer.overlay();
         assert!(shapes[0].fill.is_some());
@@ -1739,7 +1944,7 @@ mod tests {
         }
         // Changing tools finishes the count.
         viewer.choose_tool(Tool::Select);
-        assert_eq!(viewer.rows()[1][4], "4");
+        assert_eq!(viewer.rows()[1][2], "4");
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1755,7 +1960,7 @@ mod tests {
         assert_eq!(viewer.scale_label(), "Scale 1/4\" = 1'-0\"");
         viewer.choose_tool(Tool::Draw(Kind::Length));
         drag(&mut viewer, (100.0, 300.0), (100.0, 408.0));
-        assert_eq!(viewer.rows()[0][4], "6'-0\"");
+        assert_eq!(viewer.rows()[0][2], "6'-0\"");
         let (_, labels) = viewer.overlay();
         assert_eq!(labels[0].text, "6'-0\"");
 
@@ -1765,7 +1970,7 @@ mod tests {
         }
         viewer.finish();
         // 12' × 10' at 1" = 4': 120 square feet.
-        assert_eq!(viewer.rows()[1][4], "120.00 sq ft");
+        assert_eq!(viewer.rows()[1][2], "120.00 sq ft");
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1808,7 +2013,7 @@ mod tests {
         viewer.paste();
         let rows = viewer.rows();
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[2][4], "Here");
+        assert_eq!(rows[2][2], "Here");
         // Each paste lands beside the one before.
         let third = viewer.selected().unwrap().points[0];
         assert_eq!(third, Point::new(136.0, 1628.0 - 36.0));
@@ -1840,7 +2045,7 @@ mod tests {
         viewer.zoom = 1.0;
         viewer.scroll = (0.0, 0.0);
         drag(&mut viewer, (100.0, 300.0), (100.0, 381.0));
-        assert_eq!(viewer.rows()[0][4], "4'-6\"");
+        assert_eq!(viewer.rows()[0][2], "4'-6\"");
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1890,7 +2095,7 @@ mod tests {
         assert_eq!(viewer.rows().len(), 1);
         assert_eq!(viewer.list_label(), "1 of 2 markups");
         viewer.set_filter(None, "fill");
-        assert_eq!(viewer.rows()[0][4], "Filler");
+        assert_eq!(viewer.rows()[0][2], "Filler");
         viewer.select_row(0);
         assert_eq!(viewer.selected().unwrap().text, "Filler");
         viewer.set_filter(None, "");
@@ -1983,9 +2188,87 @@ mod tests {
         assert_eq!(host.rows()[1][3], "María");
         assert_eq!(host.people(), ["Andrés", "María"]);
         assert!(host.activity()[0].contains("María: added an arrow on page 1"));
+
+        // A word in the chat.
+        assert!(guest.say("Is the sink centered?"));
+        let start = std::time::Instant::now();
+        while host.chat().is_empty() {
+            assert!(start.elapsed().as_secs() < 10, "the chat did not arrive");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(host.chat()[0].ends_with("María: Is the sink centered?"));
+        assert!(!Viewer::default().say("Nobody hears this"));
         guest.leave_session();
         host.leave_session();
         assert!(!host.in_session());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_list_sorts_by_any_column() {
+        let (mut viewer, dir) = viewer();
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (100.0, 100.0), (200.0, 200.0));
+        viewer.set_subject("Zeta");
+        viewer.choose_tool(Tool::Draw(Kind::Cloud));
+        drag(&mut viewer, (300.0, 100.0), (400.0, 200.0));
+        viewer.set_subject("alpha");
+        viewer.choose_color(4);
+        let subjects =
+            |v: &Viewer| -> Vec<String> { v.rows().into_iter().map(|r| r[0].clone()).collect() };
+        assert_eq!(subjects(&viewer), ["Zeta", "alpha"]);
+        viewer.sort_by(Some((0, false)));
+        assert_eq!(subjects(&viewer), ["alpha", "Zeta"]);
+        viewer.sort_by(Some((0, true)));
+        assert_eq!(subjects(&viewer), ["Zeta", "alpha"]);
+        viewer.sort_by(Some((6, false)));
+        assert_eq!(viewer.rows()[0][6], "Blue");
+        assert_eq!(viewer.rows()[1][6], "Red");
+        // The selection follows its markup wherever it is listed.
+        assert_eq!(viewer.selected_row(), Some(0));
+        viewer.sort_by(None);
+        assert_eq!(viewer.selected_row(), Some(1));
+        assert!(viewer.rows()[0][4].starts_with("20"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn my_tools_draw_with_a_saved_style_and_are_kept() {
+        let (mut viewer, dir) = viewer();
+        let kept = dir.join("settings").join("tools.json");
+        viewer.keep_saved_tools_at(kept.clone());
+        assert!(viewer.save_selected_tool().is_err());
+        viewer.choose_tool(Tool::Draw(Kind::Cloud));
+        drag(&mut viewer, (100.0, 100.0), (200.0, 200.0));
+        viewer.choose_color(3);
+        viewer.choose_width(2);
+        viewer.set_subject("RFI");
+        viewer.save_selected_tool().unwrap();
+        // Saved again under the same name, it is replaced, not repeated.
+        viewer.save_selected_tool().unwrap();
+        assert_eq!(viewer.saved_tools().len(), 1);
+
+        viewer.choose_tool(Tool::Select);
+        viewer.choose_color(0);
+        viewer.use_saved_tool(0);
+        assert_eq!(viewer.tool(), Tool::Draw(Kind::Cloud));
+        assert_eq!(viewer.saved_in_use(), Some(0));
+        drag(&mut viewer, (300.0, 300.0), (400.0, 400.0));
+        let made = viewer.selected().unwrap();
+        assert_eq!((made.subject.as_str(), made.color), ("RFI", COLORS[3].1));
+        assert!((made.width - WIDTHS[2].1).abs() < f64::EPSILON);
+        // Another tool leaves it.
+        viewer.choose_tool(Tool::Draw(Kind::Cloud));
+        assert_eq!(viewer.saved_in_use(), None);
+
+        // Another window finds it, and removing it is kept too.
+        let mut other = Viewer::default();
+        other.keep_saved_tools_at(kept.clone());
+        assert_eq!(other.saved_tools()[0].name, "RFI");
+        other.remove_saved_tool(0).unwrap();
+        let mut third = Viewer::default();
+        third.keep_saved_tools_at(kept);
+        assert_eq!(third.saved_tools(), []);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -2017,7 +2300,7 @@ mod tests {
         let mut again = Viewer::default();
         again.open(&dir.join("sheets.pdf")).unwrap();
         assert_eq!(again.rows().len(), 1);
-        assert_eq!(again.rows()[0][1], "Arrow");
+        assert_eq!(again.rows()[0][0], "Arrow");
         std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -8,7 +8,7 @@
 //! Each markup is stored whole, as JSON under its id, so two people
 //! changing the same markup at once end with one of the two versions on
 //! every copy. Every change says who made it, when, and what it did, which
-//! is the activity log.
+//! is the activity log. The chat is a list in the same document.
 
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,6 +32,17 @@ pub struct Activity {
     pub what: String,
 }
 
+/// A chat message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Said {
+    /// Who wrote it.
+    pub who: String,
+    /// When, in seconds since 1970.
+    pub when: i64,
+    /// What they wrote.
+    pub text: String,
+}
+
 /// One participant's copy of the session.
 #[derive(Debug)]
 pub struct Shared {
@@ -41,6 +52,9 @@ pub struct Shared {
 const MARKUPS: &str = "markups";
 const SCALES: &str = "scales";
 const PEOPLE: &str = "people";
+const CHAT: &str = "chat";
+/// The longest chat message kept.
+const MAX_SAID: usize = 4000;
 
 fn now() -> i64 {
     SystemTime::now()
@@ -58,13 +72,9 @@ impl Shared {
             // A fresh document always takes a new map.
             let _ = doc.put_object(ROOT, key, ObjType::Map);
         }
-        doc.commit_with(
-            CommitOptions::default()
-                .with_message("started the session")
-                .with_time(now()),
-        );
+        let _ = doc.put_object(ROOT, CHAT, ObjType::List);
         let mut shared = Self { doc };
-        shared.introduce(name);
+        shared.introduce(name, "started the session");
         shared
     }
 
@@ -80,7 +90,7 @@ impl Shared {
         if shared.map(MARKUPS).is_none() {
             return Err("this is not a review session".into());
         }
-        shared.introduce(name);
+        shared.introduce(name, "joined the session");
         Ok(shared)
     }
 
@@ -93,24 +103,77 @@ impl Shared {
         self.doc.get_actor().to_hex_string()
     }
 
-    fn introduce(&mut self, name: &str) {
+    fn introduce(&mut self, name: &str, what: &str) {
         let Some(people) = self.map(PEOPLE) else {
             return;
         };
         let actor = self.actor();
         let _ = self.doc.put(&people, actor, name);
-        self.doc.commit_with(
-            CommitOptions::default()
-                .with_message("joined the session")
-                .with_time(now()),
-        );
+        self.doc
+            .commit_with(CommitOptions::default().with_message(what).with_time(now()));
+    }
+
+    /// This participant's name in the session.
+    fn own_name(&self) -> String {
+        self.map(PEOPLE)
+            .and_then(|map| self.strings(&map).remove(&self.actor()))
+            .unwrap_or_else(|| "Someone".into())
     }
 
     fn map(&self, key: &str) -> Option<ObjId> {
+        self.object(key, ObjType::Map)
+    }
+
+    fn object(&self, key: &str, kind: ObjType) -> Option<ObjId> {
         match self.doc.get(ROOT, key).ok()?? {
-            (Value::Object(ObjType::Map), id) => Some(id),
+            (Value::Object(found), id) if found == kind => Some(id),
             _ => None,
         }
+    }
+
+    /// Writes `text` in the chat; whether it was written.
+    pub fn say(&mut self, text: &str) -> bool {
+        let text = text.trim();
+        let Some(chat) = self.object(CHAT, ObjType::List) else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        let text: String = text.chars().take(MAX_SAID).collect();
+        let said = json!({ "who": self.own_name(), "when": now(), "text": text });
+        let end = self.doc.length(&chat);
+        if self.doc.insert(&chat, end, said.to_string()).is_err() {
+            return false;
+        }
+        // No message: the chat is not part of the activity log.
+        self.doc
+            .commit_with(CommitOptions::default().with_time(now()));
+        true
+    }
+
+    /// The chat, oldest first.
+    #[must_use]
+    pub fn chat(&self) -> Vec<Said> {
+        let Some(chat) = self.object(CHAT, ObjType::List) else {
+            return Vec::new();
+        };
+        (0..self.doc.length(&chat))
+            .filter_map(|i| match self.doc.get(&chat, i).ok()?? {
+                (Value::Scalar(value), _) => match value.as_ref() {
+                    ScalarValue::Str(text) => {
+                        let json: Json = serde_json::from_str(text).ok()?;
+                        Some(Said {
+                            who: json.get("who")?.as_str()?.to_owned(),
+                            when: json.get("when")?.as_i64()?,
+                            text: json.get("text")?.as_str()?.to_owned(),
+                        })
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
     }
 
     fn strings(&self, map: &ObjId) -> BTreeMap<String, String> {
@@ -398,13 +461,39 @@ mod tests {
             what,
             [
                 "started the session",
-                "joined the session",
                 "added a cloud on page 1",
                 "changed a cloud on page 1, added a cloud on page 2",
                 "deleted a cloud on page 1",
             ]
         );
         assert!(shared.activity().iter().all(|a| a.who == "Andrés"));
+    }
+
+    #[test]
+    fn the_chat_reaches_the_other_copy_and_stays_out_of_the_log() {
+        let mut host = Shared::start("Andrés");
+        let mut guest = Shared::join(&host.save(), "María").unwrap();
+        assert!(guest.say("  Is the sink centered?  "));
+        assert!(!guest.say("   "));
+        let (mut a, mut b) = (State::new(), State::new());
+        for _ in 0..6 {
+            if let Some(m) = guest.outgoing(&mut a) {
+                host.incoming(&mut b, &m).unwrap();
+            }
+            if let Some(m) = host.outgoing(&mut b) {
+                guest.incoming(&mut a, &m).unwrap();
+            }
+        }
+        assert!(host.say("Yes, on the window."));
+        let chat = host.chat();
+        assert_eq!(chat.len(), 2);
+        assert_eq!(
+            (chat[0].who.as_str(), chat[0].text.as_str()),
+            ("María", "Is the sink centered?")
+        );
+        assert_eq!(chat[1].who, "Andrés");
+        let what: Vec<String> = host.activity().into_iter().map(|a| a.what).collect();
+        assert_eq!(what, ["started the session", "joined the session"]);
     }
 
     #[test]

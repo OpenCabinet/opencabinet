@@ -7,4 +7,4 @@ mod net;
 mod shared;
 
 pub use net::{Guest, Host, Invite, Link};
-pub use shared::{Activity, Shared};
+pub use shared::{Activity, Said, Shared};
