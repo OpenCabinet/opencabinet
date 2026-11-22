@@ -53,7 +53,13 @@ fn converge(links: &[&Link], count: usize) {
 fn host() -> Host {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let pdf = Arc::new(sample::sheets(1, 2592.0, 1728.0, 2));
-    Host::start_on(Shared::start("Andrés"), pdf, loopback, loopback).unwrap()
+    Host::start_on(
+        Shared::start("Andrés"),
+        pdf,
+        loopback,
+        vec![Ipv4Addr::LOCALHOST],
+    )
+    .unwrap()
 }
 
 #[test]
@@ -122,7 +128,7 @@ fn a_large_drawing_reaches_who_joins() {
         Shared::start("Andrés"),
         Arc::clone(&pdf),
         loopback,
-        loopback,
+        vec![Ipv4Addr::LOCALHOST],
     )
     .unwrap();
     let guest = Guest::join(&host.invite.to_string(), "María").unwrap();

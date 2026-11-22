@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // OpenCabinet Review's window: menus on top; on the left, a rail that opens
-// one panel at a time (pages, find, measure, session); under the drawing,
+// one panel at a time (pages, bookmarks, find, measure, session); under the drawing,
 // the markup list; on the right, the tools and My tools; at the bottom, a
 // status bar with the page, the zoom and the scale. The drawing takes
 // everything else.
@@ -35,6 +35,13 @@ export struct ToolInfo {
     name: string,
     icon: string,
     filled: bool,
+}
+
+// A bookmark: what it says, how deep it is, whether it goes to a page.
+export struct BookmarkInfo {
+    title: string,
+    level: int,
+    has-page: bool,
 }
 
 // A saved tool in My tools: its name and color.
@@ -170,17 +177,21 @@ export component ReviewWindow inherits Window {
     in-out property <int> document-number;
     in-out property <string> author;
     in property <int> units;
-    // The left panel open: -1 none, 0 pages, 2 find, 3 measure, 4 session.
+    // The left panel open: -1 none, 0 pages, 1 bookmarks, 2 find, 3 measure,
+    // 4 session.
     in-out property <int> panel: 0;
     // Whether the markup list is open under the drawing.
     in-out property <bool> list-open: true;
     in property <[StandardListViewItem]> chat;
     in property <[SavedInfo]> saved-tools;
+    in property <[BookmarkInfo]> bookmarks;
     in property <int> saved-in-use: -1;
     in property <bool> in-session;
     in property <bool> hosting;
     in property <string> session-state: "Not in a session";
     in property <string> invite;
+    in property <string> firewall-advice;
+    in property <bool> firewall-blocks;
     in property <[StandardListViewItem]> people;
     in property <[StandardListViewItem]> activity;
 
@@ -234,12 +245,15 @@ export component ReviewWindow inherits Window {
     callback start-session();
     callback join-session(string);
     callback leave-session();
+    callback allow-firewall();
     callback quit();
     callback say(string);
     callback save-tool();
     callback use-saved(int);
     callback remove-saved(int);
     callback sort-list(int, bool);
+    callback go-to-bookmark(int);
+    callback export-summary();
 
     title: root.window-title;
     preferred-width: 1366px;
@@ -259,7 +273,8 @@ export component ReviewWindow inherits Window {
             MenuItem { title: "Save"; shortcut: @keys(Control + S); enabled: root.has-document; activated => { root.save(); } }
             MenuItem { title: "Save as…"; enabled: root.has-document; activated => { root.save-as(); } }
             MenuSeparator { }
-            MenuItem { title: "Export markup list…"; enabled: root.has-document; activated => { root.export-list(); } }
+            MenuItem { title: "Export markup summary (PDF)…"; enabled: root.has-document; activated => { root.export-summary(); } }
+            MenuItem { title: "Export markup list (CSV)…"; enabled: root.has-document; activated => { root.export-list(); } }
             MenuItem { title: "Export flattened PDF…"; enabled: root.has-document; activated => { root.export-flattened(); } }
             MenuSeparator { }
             MenuItem { title: "Compare with…"; enabled: root.has-document && !root.comparing; activated => { root.compare(); } }
@@ -291,6 +306,7 @@ export component ReviewWindow inherits Window {
             MenuItem { title: "Previous page"; enabled: root.has-document; activated => { root.previous-page(); } }
             MenuSeparator { }
             MenuItem { title: "Pages"; activated => { root.toggle(0); } }
+            MenuItem { title: "Bookmarks"; activated => { root.toggle(1); } }
             MenuItem { title: "Markup list"; activated => { root.list-open = !root.list-open; } }
             MenuItem { title: "Find"; shortcut: @keys(Control + F); activated => { root.panel = 2; } }
             MenuItem { title: "Measure"; activated => { root.toggle(3); } }
@@ -349,6 +365,12 @@ export component ReviewWindow inherits Window {
                             icon: "M 4 3 L 14 3 L 14 13 L 4 13 Z M 10 11 L 20 11 L 20 21 L 10 21 Z";
                             active: root.panel == 0;
                             clicked => { root.toggle(0); }
+                        }
+                        RailButton {
+                            name: "Bookmarks";
+                            icon: "M 6 3 L 18 3 L 18 21 L 12 16 L 6 21 Z";
+                            active: root.panel == 1;
+                            clicked => { root.toggle(1); }
                         }
                         RailButton {
                             name: "Markups";
@@ -417,6 +439,43 @@ export component ReviewWindow inherits Window {
                                         font-size: 11px;
                                     }
                                     TouchArea { clicked => { root.go-to-page(i); } }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.panel == 1: VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        PanelTitle { text: "Bookmarks"; }
+                        if root.bookmarks.length == 0: Text {
+                            text: root.has-document ? "This PDF has no bookmarks." : "No PDF open.";
+                            wrap: word-wrap;
+                            font-size: 11px;
+                        }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                for mark[i] in root.bookmarks: Rectangle {
+                                    height: 24px;
+                                    border-radius: 3px;
+                                    background: mark-touch.has-hover && mark.has-page ? Palette.foreground.transparentize(90%) : transparent;
+                                    accessible-role: button;
+                                    accessible-label: mark.title;
+                                    accessible-action-default => { root.go-to-bookmark(i); }
+                                    Text {
+                                        x: 6px + min(mark.level, 8) * 14px;
+                                        width: parent.width - self.x - 6px;
+                                        height: parent.height;
+                                        text: mark.title;
+                                        font-size: 12px;
+                                        font-weight: mark.level == 0 ? 600 : 400;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        color: mark.has-page ? Palette.foreground : Palette.foreground.transparentize(40%);
+                                    }
+                                    mark-touch := TouchArea { clicked => { root.go-to-bookmark(i); } }
                                 }
                             }
                         }
@@ -540,10 +599,30 @@ export component ReviewWindow inherits Window {
                         if root.hosting: VerticalLayout {
                             spacing: 2px;
                             Text { text: "Send this invitation to who joins:"; font-size: 11px; }
-                            LineEdit {
-                                accessible-label: "Invitation to send";
-                                read-only: true;
-                                text: root.invite;
+                            HorizontalLayout {
+                                spacing: 4px;
+                                invite-field := LineEdit {
+                                    accessible-label: "Invitation to send";
+                                    read-only: true;
+                                    text: root.invite;
+                                }
+                                Button {
+                                    text: "Copy";
+                                    clicked => {
+                                        invite-field.select-all();
+                                        invite-field.copy();
+                                    }
+                                }
+                            }
+                            if root.firewall-advice != "": Text {
+                                text: root.firewall-advice;
+                                wrap: word-wrap;
+                                font-size: 11px;
+                                color: #c77700;
+                            }
+                            if root.firewall-blocks: Button {
+                                text: "Allow Review through the firewall…";
+                                clicked => { root.allow-firewall(); }
                             }
                         }
                         if root.in-session: Button {
@@ -675,7 +754,7 @@ export component ReviewWindow inherits Window {
                 }
 
                 if root.list-open: Rectangle {
-                    height: 230px;
+                    height: 250px;
                     background: Palette.background;
                     border-width: 1px;
                     border-color: Palette.border;
@@ -699,12 +778,13 @@ export component ReviewWindow inherits Window {
                                 selected => { root.set-filter(self.current-index, words.text); }
                             }
                             words := LineEdit {
-                                width: 200px;
+                                width: 160px;
                                 accessible-label: "Show markups with words";
                                 placeholder-text: "Filter";
                                 edited(text) => { root.set-filter(status-filter.current-index, text); }
                             }
-                            Button { text: "Export…"; enabled: root.has-document; clicked => { root.export-list(); } }
+                            Button { text: "Summary PDF…"; enabled: root.has-document; clicked => { root.export-summary(); } }
+                            Button { text: "CSV…"; enabled: root.has-document; clicked => { root.export-list(); } }
                             BarButton { text: "✕"; label: "Close the markup list"; clicked => { root.list-open = false; } }
                         }
                         HorizontalLayout {
@@ -713,7 +793,7 @@ export component ReviewWindow inherits Window {
                                 horizontal-stretch: 1;
                                 columns: [
                                     { title: "Subject", width: 130px },
-                                    { title: "Page", width: 50px },
+                                    { title: "Page", width: 84px },
                                     { title: "Comments", width: 300px, horizontal-stretch: 1 },
                                     { title: "Author", width: 100px },
                                     { title: "Date", width: 120px },
@@ -744,6 +824,7 @@ export component ReviewWindow inherits Window {
                                         spacing: 2px;
                                         Text { text: "Status"; font-size: 11px; }
                                         ComboBox {
+                                            width: 110px;
                                             accessible-label: "Markup status";
                                             model: root.statuses;
                                             current-index: root.selected-status;
@@ -753,6 +834,7 @@ export component ReviewWindow inherits Window {
                                 }
                                 TextEdit {
                                     accessible-label: "Markup text";
+                                    min-height: 40px;
                                     vertical-stretch: 1;
                                     text <=> root.selected-text;
                                     edited(text) => { root.text-edited(text); }
@@ -787,6 +869,7 @@ export component ReviewWindow inherits Window {
                                     spacing: 2px;
                                     alignment: start;
                                     for tool[i] in root.tools: Rectangle {
+                                        width: 52px;
                                         height: mod(i, 2) == 0 ? 46px : 0px;
                                         visible: mod(i, 2) == 0;
                                         RailButton {
@@ -803,6 +886,7 @@ export component ReviewWindow inherits Window {
                                     spacing: 2px;
                                     alignment: start;
                                     for tool[i] in root.tools: Rectangle {
+                                        width: 52px;
                                         height: mod(i, 2) == 1 ? 46px : 0px;
                                         visible: mod(i, 2) == 1;
                                         RailButton {
@@ -853,11 +937,26 @@ export component ReviewWindow inherits Window {
                                 }
                             }
                             Text { text: "Line"; font-size: 10px; horizontal-alignment: center; }
-                            ComboBox {
-                                accessible-label: "Line width";
-                                model: root.widths;
-                                current-index: root.width-index;
-                                selected => { root.choose-width(self.current-index); }
+                            // Three line samples, the one in use framed.
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                for name[i] in root.widths: Rectangle {
+                                    width: 32px;
+                                    height: 24px;
+                                    border-radius: 3px;
+                                    border-width: i == root.width-index ? 2px : 1px;
+                                    border-color: i == root.width-index ? Palette.accent-background : Palette.border;
+                                    accessible-role: button;
+                                    accessible-label: name + " line";
+                                    accessible-action-default => { root.choose-width(i); }
+                                    Rectangle {
+                                        width: 20px;
+                                        height: i == 0 ? 1px : i == 1 ? 2px : 4px;
+                                        background: Palette.foreground;
+                                    }
+                                    TouchArea { clicked => { root.choose-width(i); } }
+                                }
                             }
                             CheckBox {
                                 text: "Fill";
@@ -865,11 +964,24 @@ export component ReviewWindow inherits Window {
                                 toggled => { root.set-fill(self.checked); }
                             }
                             if root.stamping: Text { text: "Stamp"; font-size: 10px; horizontal-alignment: center; }
-                            if root.stamping: ComboBox {
-                                accessible-label: "Stamp";
-                                model: root.stamps;
-                                current-index: root.stamp;
-                                selected => { root.choose-stamp(self.current-index); }
+                            for words[i] in root.stamping ? root.stamps : []: Rectangle {
+                                height: 22px;
+                                border-radius: 3px;
+                                background: i == root.stamp ? Rail.active.transparentize(70%)
+                                    : stamp-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                                accessible-role: button;
+                                accessible-label: "Stamp " + words;
+                                accessible-action-default => { root.choose-stamp(i); }
+                                Text {
+                                    x: 6px;
+                                    width: parent.width - 12px;
+                                    height: parent.height;
+                                    text: words;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                stamp-touch := TouchArea { clicked => { root.choose-stamp(i); } }
                             }
                             Rectangle { height: 1px; background: Palette.border; }
                             Text { text: "My tools"; font-size: 10px; horizontal-alignment: center; }

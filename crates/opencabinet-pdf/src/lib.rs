@@ -19,7 +19,9 @@
 pub mod annotations;
 pub mod find;
 mod flatten;
+pub mod outline;
 mod render;
+pub mod report;
 pub mod sample;
 mod text;
 

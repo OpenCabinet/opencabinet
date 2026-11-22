@@ -185,6 +185,10 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     window.invoke_export_list();
     let list = std::fs::read_to_string(dir.join("A-201 list.csv")).unwrap();
     assert_eq!(list.lines().count(), 3);
+    *answers.save.borrow_mut() = Some(dir.join("A-201 summary.pdf"));
+    window.invoke_export_summary();
+    let summary = std::fs::read(dir.join("A-201 summary.pdf")).unwrap();
+    assert!(summary.starts_with(b"%PDF"));
     window.invoke_open();
     assert_eq!(window.get_rows().row_count(), 2);
 

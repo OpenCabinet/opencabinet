@@ -35,7 +35,7 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::{Label, ReviewWindow, SavedInfo, Shape, ToolInfo};
+pub use ui::{BookmarkInfo, Label, ReviewWindow, SavedInfo, Shape, ToolInfo};
 
 /// The most pages drawn as thumbnails.
 const MAX_THUMBNAILS: usize = 500;
@@ -221,6 +221,7 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     }));
     window.on_leave_session(on(|app| app.change(Viewer::leave_session)));
+    window.on_allow_firewall(on(|app| app.change(Viewer::allow_firewall)));
     let a = Rc::clone(app);
     window.on_join_session(move |invite| {
         let result = a.viewer.borrow_mut().join_session(&invite);
@@ -232,6 +233,13 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     });
     window.on_export_flattened(on(App::export_flattened));
+    window.on_export_summary(on(App::export_summary));
+    let a = Rc::clone(app);
+    window.on_go_to_bookmark(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.go_to_bookmark(i));
+        }
+    });
     window.on_save_tool(on(|app| {
         let result = app.viewer.borrow_mut().save_selected_tool();
         app.refresh();
@@ -457,6 +465,8 @@ impl App {
         window.set_people(items(viewer.people()));
         window.set_activity(items(viewer.activity()));
         window.set_chat(items(viewer.chat()));
+        window.set_firewall_advice(viewer.firewall_advice().into());
+        window.set_firewall_blocks(viewer.firewall_blocks());
     }
 
     fn choose_and_open(&self) {
@@ -515,6 +525,29 @@ impl App {
         }
     }
 
+    fn export_summary(&self) {
+        let suggested = self
+            .viewer
+            .borrow()
+            .path()
+            .and_then(Path::file_stem)
+            .map_or_else(
+                || "drawing".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+        let Some(path) = self
+            .dialogs
+            .save_path(&format!("{suggested} (markup summary).pdf"), FileKind::Pdf)
+        else {
+            return;
+        };
+        let result = self.viewer.borrow_mut().export_summary(&path);
+        self.refresh();
+        if let Err(message) = result {
+            self.status(&message);
+        }
+    }
+
     fn export_flattened(&self) {
         let suggested = self
             .viewer
@@ -567,6 +600,19 @@ impl App {
         let Some(window) = self.window.upgrade() else {
             return;
         };
+        // The bookmarks change with the document too.
+        let marks: Vec<BookmarkInfo> = self
+            .viewer
+            .borrow()
+            .bookmarks()
+            .iter()
+            .map(|b| BookmarkInfo {
+                title: b.title.as_str().into(),
+                level: i32::try_from(b.level).unwrap_or(0),
+                has_page: b.page.is_some(),
+            })
+            .collect();
+        window.set_bookmarks(ModelRc::new(VecModel::from(marks)));
         let Some(document) = self.viewer.borrow().review().map(|r| r.document().clone()) else {
             window.set_thumbnails(ModelRc::default());
             return;

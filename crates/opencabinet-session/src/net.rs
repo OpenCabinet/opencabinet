@@ -17,10 +17,10 @@
 
 use std::fmt;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -43,6 +43,11 @@ const NAME: &str = "opencabinet-review";
 const MAX_FRAME: u32 = 512 * 1024 * 1024;
 /// How long a read waits before the loop looks for something to send.
 const TICK: Duration = Duration::from_millis(40);
+/// The port a host listens on when it is free, so that a firewall rule
+/// or a router can name it; another one otherwise.
+pub const PORT: u16 = 47100;
+/// How long whoever joins waits for the host to answer at an address.
+const KNOCK: Duration = Duration::from_secs(6);
 /// How long joining may take before either side gives up.
 const GREETING: Duration = Duration::from_secs(30);
 
@@ -51,10 +56,16 @@ const WELCOME: u8 = 2;
 const SYNC: u8 = 3;
 
 /// What someone needs to join a session.
+///
+/// Written `ocr1:<addresses>:<port>:<secret>:<fingerprint>`, the
+/// addresses separated by commas: a computer may be on more than one
+/// network, and whoever joins tries them all.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invite {
-    /// Where the host listens.
-    pub address: SocketAddr,
+    /// The host's IPv4 addresses, the likeliest first.
+    pub addresses: Vec<Ipv4Addr>,
+    /// The port the host listens on.
+    pub port: u16,
     /// What proves the invitation.
     pub secret: [u8; 16],
     /// The SHA-256 of the host's certificate.
@@ -82,11 +93,12 @@ fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
 
 impl fmt::Display for Invite {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let addresses: Vec<String> = self.addresses.iter().map(ToString::to_string).collect();
         write!(
             f,
             "ocr1:{}:{}:{}:{}",
-            self.address.ip(),
-            self.address.port(),
+            addresses.join(","),
+            self.port,
             hex(&self.secret),
             hex(&self.fingerprint)
         )
@@ -99,16 +111,24 @@ impl FromStr for Invite {
     fn from_str(text: &str) -> Result<Self, String> {
         let bad = || "This is not an invitation to a review session".to_owned();
         let parts: Vec<&str> = text.trim().split(':').collect();
-        let [tag, ip, port, secret, fingerprint] = parts[..] else {
+        let [tag, addresses, port, secret, fingerprint] = parts[..] else {
             return Err(bad());
         };
         if tag != "ocr1" {
             return Err(bad());
         }
-        let ip: IpAddr = ip.parse().map_err(|_| bad())?;
+        let addresses = addresses
+            .split(',')
+            .map(|a| a.trim().parse::<Ipv4Addr>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| bad())?;
         let port: u16 = port.parse().map_err(|_| bad())?;
+        if addresses.is_empty() || port == 0 {
+            return Err(bad());
+        }
         Ok(Self {
-            address: SocketAddr::new(ip, port),
+            addresses,
+            port,
             secret: unhex(secret).ok_or_else(bad)?,
             fingerprint: unhex(fingerprint).ok_or_else(bad)?,
         })
@@ -150,15 +170,46 @@ fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// The address this computer is reached at on its network; the loopback
-/// address when it has none. Connecting a UDP socket sends nothing.
-fn local_ip() -> IpAddr {
-    UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+/// The addresses this computer is reached at on its networks, the one it
+/// reaches the internet through first; the loopback address when it has
+/// none.
+#[must_use]
+pub fn local_addresses() -> Vec<Ipv4Addr> {
+    // Connecting a UDP socket sends nothing; it only picks the address.
+    let routed = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
         .and_then(|socket| {
             socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9))?;
             socket.local_addr()
         })
-        .map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |a| a.ip())
+        .ok()
+        .and_then(|a| match a.ip() {
+            IpAddr::V4(ip) => Some(ip),
+            IpAddr::V6(_) => None,
+        });
+    // The computer's own name resolves to the addresses of every network
+    // it is on.
+    let name = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    let named = (name.as_str(), 0)
+        .to_socket_addrs()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| match a.ip() {
+            IpAddr::V4(ip) => Some(ip),
+            IpAddr::V6(_) => None,
+        });
+    let mut addresses: Vec<Ipv4Addr> = Vec::new();
+    for ip in routed.into_iter().chain(named) {
+        let usable = !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified();
+        if usable && !addresses.contains(&ip) {
+            addresses.push(ip);
+        }
+    }
+    if addresses.is_empty() {
+        addresses.push(Ipv4Addr::LOCALHOST);
+    }
+    addresses
 }
 
 /// A session hosted from this computer.
@@ -177,10 +228,15 @@ impl Host {
     /// # Errors
     /// When the computer cannot listen or make its certificate.
     pub fn start(shared: Shared, pdf: Arc<Vec<u8>>) -> Result<Self, String> {
-        Self::start_on(shared, pdf, IpAddr::V4(Ipv4Addr::UNSPECIFIED), local_ip())
+        Self::start_on(
+            shared,
+            pdf,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            local_addresses(),
+        )
     }
 
-    /// Hosts on `bind`, telling who joins to come to `shown`.
+    /// Hosts on `bind`, telling who joins to come to one of `shown`.
     ///
     /// # Errors
     /// When the computer cannot listen or make its certificate.
@@ -188,7 +244,7 @@ impl Host {
         shared: Shared,
         pdf: Arc<Vec<u8>>,
         bind: IpAddr,
-        shown: IpAddr,
+        shown: Vec<Ipv4Addr>,
     ) -> Result<Self, String> {
         let certified = rcgen::generate_simple_self_signed(vec![NAME.to_owned()])
             .map_err(|e| format!("Cannot make the session's certificate: {e}"))?;
@@ -209,7 +265,9 @@ impl Host {
             .with_single_cert(vec![certificate], key)
             .map_err(|e| e.to_string())?;
         let config = Arc::new(config);
-        let listener = TcpListener::bind((bind, 0)).map_err(|e| format!("Cannot listen: {e}"))?;
+        let listener = TcpListener::bind((bind, PORT))
+            .or_else(|_| TcpListener::bind((bind, 0)))
+            .map_err(|e| format!("Cannot listen: {e}"))?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let link = Link::new(shared);
@@ -232,7 +290,8 @@ impl Host {
         });
         Ok(Self {
             invite: Invite {
-                address: SocketAddr::new(shown, port),
+                addresses: shown,
+                port,
                 secret,
                 fingerprint,
             },
@@ -306,13 +365,7 @@ impl Guest {
                 provider: provider(),
             }))
             .with_no_client_auth();
-        let stream = TcpStream::connect_timeout(&invite.address, Duration::from_secs(5))
-            .map_err(|e| {
-                format!(
-                    "Cannot reach the host at {}: {e}. Check that both computers are on the                      same network and that the host let OpenCabinet Review through the Windows                      firewall on private networks.",
-                    invite.address
-                )
-            })?;
+        let (stream, address) = knock(&invite)?;
         stream.set_nodelay(true).ok();
         stream
             .set_read_timeout(Some(GREETING))
@@ -327,10 +380,7 @@ impl Guest {
             .map_err(|e| format!("The host did not answer as expected: {e}"))?;
         let mut frames = Frames::default();
         let (kind, welcome) = frames.read_blocking(&mut tls).map_err(|e| {
-            format!(
-                "The host at {} closed the connection while letting you in: {e}",
-                invite.address
-            )
+            format!("The host at {address} closed the connection while letting you in: {e}")
         })?;
         if kind != WELCOME || welcome.len() < 4 {
             return Err("The host did not let you in".into());
@@ -350,6 +400,31 @@ impl Guest {
         });
         Ok(Self { link, pdf })
     }
+}
+
+/// Tries every address of the invitation at once, and keeps the first
+/// that answers.
+fn knock(invite: &Invite) -> Result<(TcpStream, SocketAddr), String> {
+    let (answered, answers) = mpsc::channel();
+    for &ip in &invite.addresses {
+        let address = SocketAddr::new(IpAddr::V4(ip), invite.port);
+        let answered = answered.clone();
+        thread::spawn(move || {
+            let _ = answered.send((address, TcpStream::connect_timeout(&address, KNOCK)));
+        });
+    }
+    drop(answered);
+    let mut failures = Vec::new();
+    for (address, result) in answers {
+        match result {
+            Ok(stream) => return Ok((stream, address)),
+            Err(e) => failures.push(format!("{address}: {e}")),
+        }
+    }
+    Err(format!(
+        "Cannot reach the host ({}). Check that both computers are on the same network, and that the host let OpenCabinet Review through the Windows firewall (Session panel, on the host).",
+        failures.join("; ")
+    ))
 }
 
 /// Accepts the host's certificate only when it is the one the invitation
@@ -543,14 +618,30 @@ mod tests {
     #[test]
     fn an_invitation_is_written_and_read_back() {
         let invite = Invite {
-            address: "192.168.1.20:52000".parse().unwrap(),
+            addresses: vec![Ipv4Addr::new(192, 168, 1, 20), Ipv4Addr::new(10, 0, 0, 5)],
+            port: 52000,
             secret: [7; 16],
             fingerprint: [0xab; 32],
         };
         let text = invite.to_string();
-        assert!(text.starts_with("ocr1:192.168.1.20:52000:0707"));
+        assert!(text.starts_with("ocr1:192.168.1.20,10.0.0.5:52000:0707"));
         assert_eq!(text.parse::<Invite>().unwrap(), invite);
+        // One address, as the first invitations were written.
+        let one = text.replacen(",10.0.0.5", "", 1);
+        assert_eq!(one.parse::<Invite>().unwrap().addresses.len(), 1);
         assert!("hello".parse::<Invite>().is_err());
         assert!("ocr1:1.2.3.4:1:00:00".parse::<Invite>().is_err());
+        assert!(
+            text.replacen(":52000:", ":0:", 1)
+                .parse::<Invite>()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn this_computer_has_an_address() {
+        let addresses = local_addresses();
+        assert_ne!(addresses.len(), 0);
+        assert!(addresses.iter().all(|a| !a.is_link_local()));
     }
 }

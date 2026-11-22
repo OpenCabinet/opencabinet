@@ -48,6 +48,11 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+; Installed for everyone (as an administrator), the installer can let
+; review sessions through the Windows firewall, on private and work
+; networks, for this program only. Installed for one user, Review offers
+; it in its Session panel instead.
+Name: "firewall"; Description: "Allow review sessions through the Windows firewall (private networks)"; Check: IsAdminInstallMode
 
 [Files]
 Source: "..\..\target\release\opencabinet-review.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -65,4 +70,8 @@ Name: "{autoprograms}\OpenCabinet Review"; Filename: "{app}\opencabinet-review.e
 Name: "{autodesktop}\OpenCabinet Review"; Filename: "{app}\opencabinet-review.exe"; Tasks: desktopicon
 
 [Run]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""OpenCabinet Review sessions"" dir=in action=allow program=""{app}\opencabinet-review.exe"" enable=yes profile=private,domain"; Flags: runhidden; Tasks: firewall
 Filename: "{app}\opencabinet-review.exe"; Description: "{cm:LaunchProgram,OpenCabinet Review}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""OpenCabinet Review sessions"" program=""{app}\opencabinet-review.exe"""; Flags: runhidden; Check: IsAdminInstallMode; RunOnceId: "RemoveFirewallRule"

@@ -14,11 +14,14 @@ use std::sync::atomic::Ordering;
 
 use opencabinet_model::{Length, Units};
 use opencabinet_pdf::find::{Found, find};
+use opencabinet_pdf::outline::{Bookmark, bookmarks};
+use opencabinet_pdf::report::{self, Row, Table};
 use opencabinet_pdf::{Document, Page, Point, View};
 use opencabinet_review::{
     Color, FILL_OPACITY, Gesture, Kind, Markup, Review, Scale, Segment, Status, pdf_date_text,
     presets, stamps, text_width,
 };
+use opencabinet_session::firewall::{self, Firewall};
 use opencabinet_session::{Guest, Host, Invite, Link, Shared};
 
 use crate::chest::{self, SavedTool};
@@ -191,6 +194,8 @@ pub struct Viewer {
     saved: Vec<SavedTool>,
     saved_path: Option<PathBuf>,
     style: Option<SavedTool>,
+    /// The open PDF's bookmarks.
+    bookmarks: Vec<Bookmark>,
     status: String,
 }
 
@@ -229,6 +234,7 @@ impl Default for Viewer {
             saved: Vec::new(),
             saved_path: None,
             style: None,
+            bookmarks: Vec::new(),
             status: "Open a PDF to start.".into(),
         }
     }
@@ -247,6 +253,8 @@ impl Viewer {
     fn open_bytes(&mut self, bytes: Vec<u8>, path: Option<&Path>) -> Result<(), String> {
         self.leave_session();
         let review = Review::open(bytes).map_err(|e| capitalize(&e.to_string()))?;
+        // A drawing whose bookmarks cannot be read still opens.
+        self.bookmarks = bookmarks(review.document().bytes()).unwrap_or_default();
         self.status = format!(
             "{} pages, {} markups.",
             review.document().pages().len(),
@@ -1137,6 +1145,72 @@ impl Viewer {
         Ok(())
     }
 
+    /// The open PDF's bookmarks.
+    #[must_use]
+    pub fn bookmarks(&self) -> &[Bookmark] {
+        &self.bookmarks
+    }
+
+    /// Shows the page bookmark `index` goes to.
+    pub fn go_to_bookmark(&mut self, index: usize) {
+        let Some(bookmark) = self.bookmarks.get(index) else {
+            return;
+        };
+        match bookmark.page {
+            Some(page) => {
+                let title = bookmark.title.clone();
+                self.go_to(page);
+                self.status = title;
+            }
+            None => self.status = "This bookmark does not go to a page.".into(),
+        }
+    }
+
+    /// The markup summary: the list as it is shown (filtered and sorted)
+    /// as a PDF report.
+    ///
+    /// # Errors
+    /// A message for the user when there is no PDF or it cannot be
+    /// written.
+    pub fn summary(&self) -> Result<Vec<u8>, String> {
+        let review = self.review.as_ref().ok_or("There is no PDF open")?;
+        let listed = self.listed();
+        let file = self
+            .path
+            .as_deref()
+            .map_or_else(|| "Drawing".to_owned(), file_name);
+        let date = chrono::Local::now().format("%Y-%m-%d %H:%M");
+        let shown = [0, 1, 2, 3, 4, 5];
+        let table = Table {
+            title: "Markup summary".into(),
+            subtitle: format!("{file} · {date} · {}", self.list_label()),
+            columns: shown
+                .iter()
+                .zip([1.4, 0.5, 4.0, 1.1, 1.3, 0.9])
+                .map(|(&c, share)| (COLUMNS[c].to_owned(), share))
+                .collect(),
+            rows: listed
+                .iter()
+                .map(|m| Row {
+                    color: Some(m.color),
+                    cells: shown.iter().map(|&c| self.cell(review, m, c)).collect(),
+                })
+                .collect(),
+        };
+        report::table(&table).map_err(|e| capitalize(&e.to_string()))
+    }
+
+    /// Writes the markup summary to `path`.
+    ///
+    /// # Errors
+    /// A message for the user when it cannot be written.
+    pub fn export_summary(&mut self, path: &Path) -> Result<(), String> {
+        let bytes = self.summary()?;
+        std::fs::write(path, bytes).map_err(|e| format!("Cannot save: {e}"))?;
+        self.status = format!("Wrote the markup summary, {}.", file_name(path));
+        Ok(())
+    }
+
     /// Starts a review session with the PDF open, hosted from here.
     ///
     /// # Errors
@@ -1152,8 +1226,11 @@ impl Viewer {
         let pdf = Arc::new(review.document().bytes().to_vec());
         let host = Host::start(shared, pdf)?;
         self.status = "Hosting a session: send the invitation to who joins. If Windows asks, allow private networks.".into();
+        let firewall = Arc::new(std::sync::Mutex::new((None, String::new())));
+        look_at_firewall(&firewall, None);
         self.session = Some(Session {
             link: host.link,
+            firewall,
             invite: Some(host.invite),
             seen: 0,
         });
@@ -1174,6 +1251,7 @@ impl Viewer {
         }
         self.session = Some(Session {
             link,
+            firewall: Arc::default(),
             invite: None,
             seen: 0,
         });
@@ -1266,6 +1344,44 @@ impl Viewer {
                 };
                 format!("{role} · {people} people")
             }
+        }
+    }
+
+    /// What may keep people from joining, when hosting; empty when
+    /// nothing is known to.
+    #[must_use]
+    pub fn firewall_advice(&self) -> String {
+        let Some(session) = self.session.as_ref().filter(|s| s.invite.is_some()) else {
+            return String::new();
+        };
+        let Ok(state) = session.firewall.lock() else {
+            return String::new();
+        };
+        let advice = state.0.and_then(Firewall::advice).unwrap_or_default();
+        match (advice, state.1.as_str()) {
+            ("", answer) => answer.to_owned(),
+            (advice, "") => advice.to_owned(),
+            (advice, answer) => format!("{answer} {advice}"),
+        }
+    }
+
+    /// Whether the host should be offered to let Review through the
+    /// firewall.
+    #[must_use]
+    pub fn firewall_blocks(&self) -> bool {
+        self.session
+            .as_ref()
+            .filter(|s| s.invite.is_some())
+            .and_then(|s| s.firewall.lock().ok().and_then(|f| f.0))
+            .is_some_and(|f| f.allowed == Some(false))
+    }
+
+    /// Asks Windows to let Review through the firewall; Windows asks the
+    /// user for permission first.
+    pub fn allow_firewall(&mut self) {
+        if let Some(session) = self.session.as_ref() {
+            look_at_firewall(&session.firewall, Some(()));
+            self.status = "Windows asks for permission to let Review in.".into();
         }
     }
 
@@ -1702,10 +1818,33 @@ impl Viewer {
 #[derive(Debug)]
 struct Session {
     link: Link,
+    /// What the firewall lets in, when hosting, once looked at; and the
+    /// answer to allowing Review through it.
+    firewall: Arc<std::sync::Mutex<(Option<Firewall>, String)>>,
     /// The invitation, when this window hosts.
     invite: Option<Invite>,
     /// How many changes from others were taken in.
     seen: u64,
+}
+
+/// Looks at the firewall away from the window, after letting this
+/// program through it when `allow` is given.
+fn look_at_firewall(state: &Arc<std::sync::Mutex<(Option<Firewall>, String)>>, allow: Option<()>) {
+    let Ok(program) = std::env::current_exe() else {
+        return;
+    };
+    let state = Arc::clone(state);
+    std::thread::spawn(move || {
+        let answer = match allow.map(|()| firewall::allow(&program)) {
+            Some(Ok(())) => "Review is allowed through the Windows firewall.".to_owned(),
+            Some(Err(message)) => message,
+            None => String::new(),
+        };
+        let found = firewall::check(&program);
+        if let Ok(mut state) = state.lock() {
+            *state = (Some(found), answer);
+        }
+    });
 }
 
 /// `14:32`, in this computer's time.
@@ -2163,9 +2302,7 @@ mod tests {
         // On the network address, which this test does not use: a guest
         // joins on this computer's loopback address instead.
         let mut invite = host.invite().unwrap().clone();
-        invite
-            .address
-            .set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        invite.addresses = vec![std::net::Ipv4Addr::LOCALHOST];
 
         let mut guest = Viewer::default();
         guest.author = "María".into();
@@ -2201,6 +2338,49 @@ mod tests {
         guest.leave_session();
         host.leave_session();
         assert!(!host.in_session());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn bookmarks_go_to_their_pages() {
+        let dir = std::env::temp_dir().join(format!("oc-bookmarks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("set.pdf");
+        std::fs::write(&path, opencabinet_pdf::sample::bookmarked()).unwrap();
+        let mut viewer = Viewer::default();
+        viewer.resize(1000.0, 700.0);
+        viewer.open(&path).unwrap();
+        assert_eq!(viewer.bookmarks().len(), 4);
+        viewer.go_to_bookmark(2);
+        assert_eq!(viewer.page(), 1);
+        assert_eq!(viewer.status(), "A-102 Elevación norte");
+        viewer.go_to_bookmark(0);
+        assert_eq!(viewer.page(), 1);
+        viewer.go_to_bookmark(3);
+        assert_eq!(viewer.page(), 2);
+        viewer.go_to_bookmark(99);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_summary_lists_what_the_list_shows() {
+        let (mut viewer, dir) = viewer();
+        assert!(Viewer::default().summary().is_err());
+        viewer.choose_tool(Tool::Draw(Kind::Cloud));
+        drag(&mut viewer, (100.0, 100.0), (200.0, 200.0));
+        viewer.set_text("Confirm the sink centerline");
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (300.0, 100.0), (400.0, 200.0));
+        viewer.set_status(1);
+        viewer.set_filter(Some(Status::Open), "");
+        let path = dir.join("summary.pdf");
+        viewer.export_summary(&path).unwrap();
+        let summary = Document::open(std::fs::read(&path).unwrap()).unwrap();
+        let found = |words: &str| find(&summary, 0, words).unwrap().len();
+        assert_eq!(found("Confirm the sink centerline"), 1);
+        assert_eq!(found("1 of 2 markups"), 1);
+        // Filtered out, so not in the summary.
+        assert_eq!(found("Rectangle"), 0);
         std::fs::remove_dir_all(dir).ok();
     }
 

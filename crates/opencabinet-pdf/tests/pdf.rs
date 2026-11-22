@@ -256,3 +256,59 @@ fn a_markup_on_a_missing_page_is_refused() {
     };
     assert!(annotations::save(&original, &markups).is_err());
 }
+
+#[test]
+fn bookmarks_point_at_their_pages() {
+    let found = opencabinet_pdf::outline::bookmarks(&sample::bookmarked()).unwrap();
+    let seen: Vec<(&str, usize, Option<usize>)> = found
+        .iter()
+        .map(|b| (b.title.as_str(), b.level, b.page))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("Plans", 0, None),
+            ("A-101 Floor plan", 1, Some(0)),
+            ("A-102 Elevación norte", 1, Some(1)),
+            ("Details", 0, Some(2)),
+        ]
+    );
+    // A PDF without bookmarks has none.
+    let none = opencabinet_pdf::outline::bookmarks(&sample::sheets(1, 612.0, 792.0, 2)).unwrap();
+    assert_eq!(none, []);
+}
+
+#[test]
+fn a_summary_table_is_a_pdf_with_its_pages() {
+    use opencabinet_pdf::report::{Row, Table, table};
+    let rows = (0..120)
+        .map(|i| Row {
+            color: Some([0.85, 0.1, 0.1]),
+            cells: vec![
+                "Cloud".into(),
+                (i % 3 + 1).to_string(),
+                format!("Comment number {i}, which is long enough to wrap onto a second line in its column for sure"),
+                "Andrés".into(),
+            ],
+        })
+        .collect();
+    let bytes = table(&Table {
+        title: "Markup summary".into(),
+        subtitle: "A-201.pdf · 120 markups".into(),
+        columns: vec![
+            ("Subject".into(), 1.0),
+            ("Page".into(), 0.5),
+            ("Comments".into(), 4.0),
+            ("Author".into(), 1.0),
+        ],
+        rows,
+    })
+    .unwrap();
+    let document = Document::open(bytes).unwrap();
+    assert!(document.pages().len() > 2);
+    let last = document.pages().len() - 1;
+    let words = opencabinet_pdf::find::find(&document, last, "Comment number 119").unwrap();
+    assert_eq!(words.len(), 1);
+    let first = opencabinet_pdf::find::find(&document, 0, "Markup summary").unwrap();
+    assert_eq!(first.len(), 1);
+}
