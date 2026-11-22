@@ -86,7 +86,7 @@ fn markups_and_scales_survive_saving_and_opening_again() {
             .measured(review.markup(id).unwrap(), Units::Imperial)
             .unwrap()
     };
-    assert_eq!(shown(&review, &path), "264\"");
+    assert_eq!(shown(&review, &path), "22'-0\"");
     assert_eq!(shown(&review, &area), "120.00 sq ft");
     assert_eq!(shown(&review, &count), "3");
     assert!(review.modified());
@@ -129,11 +129,15 @@ fn another_programs_markups_are_shown_and_kept() {
     assert_eq!(review.scale(0), None);
     assert_eq!(
         review.measured(&line, Units::Imperial).as_deref(),
-        Some("144\"")
+        Some("12'-0\"")
     );
-    // The page is drawn without them.
-    let hidden = annotations::read(review.document().bytes()).unwrap();
-    assert_eq!(hidden.annotations.len(), 0);
+    // Untouched, they are drawn from their own look, with the page.
+    assert!(!review.draws(&line));
+    let (page, first) = review.page_document().unwrap();
+    assert_eq!(
+        annotations::read(page.bytes()).unwrap().annotations.len(),
+        2
+    );
 
     // Saved untouched, the file is unchanged.
     assert_eq!(review.save(Units::Imperial).unwrap(), original);
@@ -142,6 +146,14 @@ fn another_programs_markups_are_shown_and_kept() {
     let cloud = review.markups()[0].id.clone();
     review.checkpoint();
     review.change_quietly(&cloud, |m| m.shift(20.0, 0.0));
+    // Moved, Review draws it, and the page leaves it out.
+    assert!(review.draws(&review.markups()[0].clone()));
+    let (page, second) = review.page_document().unwrap();
+    assert_eq!(
+        annotations::read(page.bytes()).unwrap().annotations.len(),
+        1
+    );
+    assert_ne!(first, second);
     let saved = review.save(Units::Imperial).unwrap();
     let read = annotations::read(&saved).unwrap();
     assert_eq!(read.annotations[0].rect, [110.0, 90.0, 330.0, 210.0]);

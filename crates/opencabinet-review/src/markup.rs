@@ -529,7 +529,7 @@ impl Markup {
     /// Whether its outline is stroked.
     #[must_use]
     pub fn stroked(&self) -> bool {
-        self.kind != Kind::Highlight
+        self.kind != Kind::Highlight && self.width > 0.0
     }
 
     /// The text it shows on the page, with `value` the measurement a
@@ -680,6 +680,7 @@ impl Markup {
                 .leader()
                 .map(|(tip, end)| vec![tip, end])
                 .unwrap_or_default(),
+            inset: [0.0; 4],
             color: self.color,
             interior: self.filled().then_some(self.color),
             opacity: 1.0,
@@ -739,6 +740,13 @@ impl Markup {
             None => foreign_kind(annotation)?,
         };
         let [x0, y0, x1, y1] = annotation.rect;
+        // The box itself, inside what its leader or border needs.
+        let [left, bottom, right, top] = annotation.inset;
+        let (bx0, by0, bx1, by1) = if x1 - x0 > left + right && y1 - y0 > bottom + top {
+            (x0 + left, y0 + bottom, x1 - right, y1 - top)
+        } else {
+            (x0, y0, x1, y1)
+        };
         let saved = annotation
             .own
             .get("Points")
@@ -752,9 +760,9 @@ impl Markup {
                     .first()
                     .copied()
                     .unwrap_or(Point::new(x0, y0));
-                vec![tip, Point::new(x0, y0), Point::new(x1, y1)]
+                vec![tip, Point::new(bx0, by0), Point::new(bx1, by1)]
             }
-            k if k.boxed() => vec![Point::new(x0, y0), Point::new(x1, y1)],
+            k if k.boxed() => vec![Point::new(bx0, by0), Point::new(bx1, by1)],
             _ => annotation.vertices.clone(),
         });
         if points.is_empty() {
@@ -1253,6 +1261,27 @@ mod tests {
         let (tip, end) = callout.leader().unwrap();
         assert_eq!(tip, Point::new(0.0, 50.0));
         assert_eq!(end, Point::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn another_programs_callout_keeps_its_box_inside_its_leader() {
+        let annotation = Annotation {
+            subtype: Subtype::FreeText,
+            rect: [0.0, 0.0, 300.0, 100.0],
+            inset: [100.0, 20.0, 0.0, 30.0],
+            callout: vec![Point::new(0.0, 0.0), Point::new(100.0, 50.0)],
+            width: 0.0,
+            contents: "SIDE OVERHANG".into(),
+            ..Annotation::default()
+        };
+        let callout = Markup::from_annotation(&annotation).unwrap();
+        assert_eq!(callout.kind, Kind::Callout);
+        assert_eq!(
+            callout.text_box(),
+            (Point::new(100.0, 20.0), Point::new(300.0, 70.0))
+        );
+        // No border: only its words and leader would be drawn.
+        assert!(!callout.stroked());
     }
 
     #[test]

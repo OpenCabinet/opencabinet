@@ -71,6 +71,8 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     window.invoke_open();
     assert!(window.get_has_document());
     assert_eq!(window.get_page_label(), "Page 1 of 2");
+    // A thumbnail for each page, drawn as they come.
+    assert_eq!(window.get_thumbnails().row_count(), 2);
     assert_eq!(window.get_window_title(), "A-201.pdf — OpenCabinet Review");
     window.invoke_resized(800.0, 600.0);
     let image = window.get_page_image().size();
@@ -122,6 +124,21 @@ fn a_drawing_is_opened_marked_up_and_saved() {
         "Rejected"
     );
     window.invoke_delete_selected();
+
+    // A copy of the cloud pasted beside it, then undone.
+    window.invoke_row_selected(0);
+    window.invoke_copy();
+    window.invoke_paste();
+    assert_eq!(window.get_rows().row_count(), 3);
+    window.invoke_undo();
+    assert_eq!(window.get_rows().row_count(), 2);
+
+    // A common scale for every page.
+    let quarter = (0..window.get_scales().row_count())
+        .find(|&i| window.get_scales().row_data(i).unwrap() == "1/4\" = 1'-0\"")
+        .unwrap();
+    window.invoke_choose_scale(i32::try_from(quarter).unwrap(), true);
+    assert_eq!(window.get_scale_label(), "Scale 1/4\" = 1'-0\"");
 
     // Opening another drawing asks first; no keeps the markups.
     window.invoke_open();

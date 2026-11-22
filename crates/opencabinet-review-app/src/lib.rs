@@ -18,8 +18,8 @@ use std::rc::Rc;
 use opencabinet_model::Units;
 use opencabinet_pdf::{View, render};
 use slint::{
-    CloseRequestResponse, Color, ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer,
-    SharedString, StandardListViewItem, VecModel,
+    CloseRequestResponse, Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel,
+    SharedPixelBuffer, SharedString, StandardListViewItem, VecModel,
 };
 
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
@@ -34,6 +34,33 @@ mod ui {
 }
 
 pub use ui::{Label, ReviewWindow, Shape};
+
+/// The most pages drawn as thumbnails.
+const MAX_THUMBNAILS: usize = 500;
+/// A thumbnail's largest size, in pixels.
+const THUMBNAIL: (f64, f64) = (120.0, 80.0);
+
+/// A small picture of page `index`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "thumbnail sizes are small positive numbers"
+)]
+fn thumbnail(
+    document: &opencabinet_pdf::Document,
+    index: usize,
+) -> Option<opencabinet_pdf::Bitmap> {
+    let page = document.pages().get(index)?;
+    let zoom = (THUMBNAIL.0 / page.width).min(THUMBNAIL.1 / page.height);
+    let view = View {
+        page: index,
+        zoom,
+        origin: opencabinet_pdf::Point::new(0.0, 0.0),
+        width: (page.width * zoom).ceil().max(1.0) as u32,
+        height: (page.height * zoom).ceil().max(1.0) as u32,
+    };
+    render(document, view).ok()
+}
 
 /// The name and version shown to users.
 pub const NAME_AND_VERSION: &str = concat!("OpenCabinet Review ", env!("CARGO_PKG_VERSION"));
@@ -53,7 +80,7 @@ struct App {
     window: slint::Weak<ReviewWindow>,
     /// What the page image shows, so it is drawn again only when that
     /// changes.
-    drawn: RefCell<Option<(View, usize)>>,
+    drawn: RefCell<Option<(View, usize, u64)>>,
     /// Bumped whenever another document opens, which may share a view.
     generation: RefCell<usize>,
 }
@@ -87,6 +114,8 @@ pub fn create_with(
     window.set_stamps(strings(&words));
     let statuses: Vec<SharedString> = Status::ALL.iter().map(|s| s.label().into()).collect();
     window.set_statuses(strings(&statuses));
+    let scales: Vec<SharedString> = Viewer::scale_names().into_iter().map(Into::into).collect();
+    window.set_scales(strings(&scales));
     let colors: Vec<Color> = COLORS.iter().map(|&(_, rgb)| color(rgb)).collect();
     window.set_colors(ModelRc::new(VecModel::from(colors)));
     let names: Vec<SharedString> = COLORS.iter().map(|&(name, _)| name.into()).collect();
@@ -127,6 +156,11 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     window.on_undo(on(|app| app.change(Viewer::undo)));
     window.on_redo(on(|app| app.change(Viewer::redo)));
     window.on_finish(on(|app| app.change(Viewer::finish)));
+    window.on_copy(on(|app| app.change(Viewer::copy)));
+    window.on_paste(on(|app| app.change(Viewer::paste)));
+    window.on_duplicate(on(|app| app.change(Viewer::duplicate)));
+    window.on_zoom_to_selected(on(|app| app.change(Viewer::zoom_to_selected)));
+    window.on_scale_every_page(on(|app| app.change(Viewer::scale_every_page)));
     window.on_double_clicked(on(|app| app.change(Viewer::double_click)));
     window.on_cancel(on(|app| app.change(Viewer::cancel)));
     window.on_delete_selected(on(|app| app.change(Viewer::delete_selected)));
@@ -141,6 +175,18 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     window.on_choose_color(move |i| {
         if let Ok(i) = usize::try_from(i) {
             a.change(|v| v.choose_color(i));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_choose_scale(move |i, every| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.choose_scale(i, every));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_go_to_page(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.go_to(i));
         }
     });
     let a = Rc::clone(app);
@@ -167,6 +213,10 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     window.on_subject_edited(move |text| {
         a.viewer.borrow_mut().set_subject(&text);
         a.refresh_list();
+        if let Some(window) = a.window.upgrade() {
+            a.refresh_page(&window);
+        }
+        a.refresh_overlay();
     });
     let a = Rc::clone(app);
     window.on_author_edited(move |text| text.trim().clone_into(&mut a.viewer.borrow_mut().author));
@@ -212,6 +262,9 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         a.viewer.borrow_mut().set_text(&text);
         // Not the whole window: the field being typed in keeps its text.
         a.refresh_list();
+        if let Some(window) = a.window.upgrade() {
+            a.refresh_page(&window);
+        }
         a.refresh_overlay();
     });
     let a = Rc::clone(app);
@@ -251,6 +304,7 @@ impl App {
     fn open(&self, path: &Path) {
         let result = self.viewer.borrow_mut().open(path);
         *self.generation.borrow_mut() += 1;
+        self.draw_thumbnails();
         self.refresh();
         if let Err(message) = result {
             self.status(&message);
@@ -305,6 +359,48 @@ impl App {
         }
     }
 
+    /// Draws a small picture of every page, on a thread of its own, and
+    /// shows each as it is ready; another file opened meanwhile wins.
+    fn draw_thumbnails(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let Some(document) = self.viewer.borrow().review().map(|r| r.document().clone()) else {
+            window.set_thumbnails(ModelRc::default());
+            return;
+        };
+        let count = document.pages().len().min(MAX_THUMBNAILS);
+        let blank = vec![Image::default(); count];
+        window.set_thumbnails(ModelRc::new(VecModel::from(blank)));
+        let generation = *self.generation.borrow();
+        let weak = window.as_weak();
+        std::thread::spawn(move || {
+            for index in 0..count {
+                let Some(bitmap) = thumbnail(&document, index) else {
+                    continue;
+                };
+                let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                    &bitmap.pixels,
+                    bitmap.width,
+                    bitmap.height,
+                );
+                let delivered = weak.upgrade_in_event_loop(move |window| {
+                    if window.get_document_number() != i32::try_from(generation).unwrap_or(-1) {
+                        return;
+                    }
+                    let thumbnails = window.get_thumbnails();
+                    if index < thumbnails.row_count() {
+                        thumbnails.set_row_data(index, Image::from_rgba8(buffer));
+                    }
+                });
+                if delivered.is_err() {
+                    return;
+                }
+            }
+        });
+        window.set_document_number(i32::try_from(generation).unwrap_or(-1));
+    }
+
     fn status(&self, message: &str) {
         if let Some(window) = self.window.upgrade() {
             window.set_status(message.into());
@@ -320,6 +416,7 @@ impl App {
         window.set_window_title(viewer.title().into());
         window.set_has_document(viewer.review().is_some());
         window.set_page_label(viewer.page_label().into());
+        window.set_page_index(i32::try_from(viewer.page()).unwrap_or(0));
         window.set_zoom_label(viewer.zoom_label().into());
         window.set_scale_label(viewer.scale_label().into());
         window.set_status(viewer.status().into());
@@ -391,18 +488,25 @@ impl App {
     /// Draws the page again when what is shown of it changed.
     fn refresh_page(&self, window: &ReviewWindow) {
         let scale = f64::from(window.window().scale_factor());
-        let viewer = self.viewer.borrow();
+        let mut viewer = self.viewer.borrow_mut();
         let Some(view) = viewer.view(scale) else {
             return;
         };
-        let key = (view, *self.generation.borrow());
+        let Some(review) = viewer.review_mut() else {
+            return;
+        };
+        let (document, version) = match review.page_document() {
+            Ok(shown) => shown,
+            Err(e) => {
+                window.set_status(format!("Cannot draw the page: {e}").into());
+                return;
+            }
+        };
+        let key = (view, *self.generation.borrow(), version);
         if self.drawn.borrow().as_ref() == Some(&key) {
             return;
         }
-        let Some(review) = viewer.review() else {
-            return;
-        };
-        match render(review.document(), view) {
+        match render(document, view) {
             Ok(bitmap) => {
                 let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
                     &bitmap.pixels,

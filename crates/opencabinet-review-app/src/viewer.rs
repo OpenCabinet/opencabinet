@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use opencabinet_model::{Length, Units};
 use opencabinet_pdf::{Page, Point, View};
 use opencabinet_review::{
-    Color, FILL_OPACITY, Gesture, Kind, Markup, Review, Scale, Segment, Status, stamps, text_width,
+    Color, FILL_OPACITY, Gesture, Kind, Markup, Review, Scale, Segment, Status, presets, stamps,
+    text_width,
 };
 
 /// What the mouse does on the page.
@@ -158,6 +159,8 @@ pub struct Viewer {
     building: Option<(Kind, Vec<Point>, Option<Point>)>,
     selected: Option<String>,
     calibrating: Option<(Point, Point)>,
+    /// What was copied, to paste.
+    clipboard: Option<Markup>,
     status: String,
 }
 
@@ -184,6 +187,7 @@ impl Default for Viewer {
             building: None,
             selected: None,
             calibrating: None,
+            clipboard: None,
             status: "Open a PDF to start.".into(),
         }
     }
@@ -246,6 +250,11 @@ impl Viewer {
     #[must_use]
     pub fn review(&self) -> Option<&Review> {
         self.review.as_ref()
+    }
+
+    /// The open review, to draw its pages.
+    pub fn review_mut(&mut self) -> Option<&mut Review> {
+        self.review.as_mut()
     }
 
     /// Where the PDF was opened from or saved to.
@@ -759,6 +768,108 @@ impl Viewer {
         Ok(())
     }
 
+    /// The common scales' names, to choose from.
+    #[must_use]
+    pub fn scale_names() -> Vec<String> {
+        presets().into_iter().map(|(name, _)| name).collect()
+    }
+
+    /// Calibrates the page, or every page, with a common scale.
+    pub fn choose_scale(&mut self, preset: usize, every_page: bool) {
+        let Some((name, scale)) = presets().into_iter().nth(preset) else {
+            return;
+        };
+        let page = self.page;
+        if let Some(review) = self.review.as_mut() {
+            if every_page {
+                review.set_scale_everywhere(scale);
+            } else {
+                review.set_scale(page, scale);
+            }
+            self.calibrating = None;
+            self.status = if every_page {
+                format!("Every page is at {name}.")
+            } else {
+                format!("This page is at {name}.")
+            };
+        }
+    }
+
+    /// Calibrates every page with this page's scale.
+    pub fn scale_every_page(&mut self) {
+        if let Some(scale) = self.page_scale()
+            && let Some(review) = self.review.as_mut()
+        {
+            review.set_scale_everywhere(scale);
+            self.status = "Every page has this page's scale.".into();
+        }
+    }
+
+    /// Copies the selected markup.
+    pub fn copy(&mut self) {
+        if let Some(markup) = self.selected().cloned() {
+            self.clipboard = Some(markup);
+            self.status = "Copied.".into();
+        }
+    }
+
+    /// Pastes what was copied on the page shown: beside where it was on
+    /// the same page, in the same place on another.
+    pub fn paste(&mut self) {
+        let Some(mut markup) = self.clipboard.clone() else {
+            return;
+        };
+        let offset = if markup.page == self.page { 18.0 } else { 0.0 };
+        markup.shift(offset, -offset);
+        markup.page = self.page;
+        markup.origin = None;
+        markup.scale = None;
+        // The next paste lands beside this one.
+        if let Some(copy) = self.clipboard.as_mut() {
+            copy.page = self.page;
+            copy.points.clone_from(&markup.points);
+        }
+        self.add(markup);
+    }
+
+    /// Copies and pastes the selected markup.
+    pub fn duplicate(&mut self) {
+        let kept = self.clipboard.take();
+        self.copy();
+        self.paste();
+        self.clipboard = kept;
+    }
+
+    /// Zooms to the selected markup, with room around it.
+    pub fn zoom_to_selected(&mut self) {
+        let (Some(markup), Some(page)) = (self.selected(), self.page_size()) else {
+            return;
+        };
+        let (low, high) = markup.bounds();
+        let corners = [page.to_page.apply(low), page.to_page.apply(high)];
+        let (x0, x1) = (
+            corners[0].x.min(corners[1].x),
+            corners[0].x.max(corners[1].x),
+        );
+        let (y0, y1) = (
+            corners[0].y.min(corners[1].y),
+            corners[0].y.max(corners[1].y),
+        );
+        let margin = 36.0;
+        let (w, h) = self.size;
+        if w < 1.0 || h < 1.0 {
+            return;
+        }
+        let zoom = (w / (x1 - x0 + 2.0 * margin))
+            .min(h / (y1 - y0 + 2.0 * margin))
+            .clamp(ZOOM.0, ZOOM.1);
+        self.zoom = zoom;
+        self.scroll = (
+            f64::midpoint(x0, x1) * zoom - w / 2.0,
+            f64::midpoint(y0, y1) * zoom - h / 2.0,
+        );
+    }
+
     /// Stops what is under way: a shape, a drag, a calibration, a
     /// selection.
     pub fn cancel(&mut self) {
@@ -918,7 +1029,7 @@ impl Viewer {
                 width: (markup.width * self.zoom).max(1.0),
                 selected,
             });
-            let value = review.measured(markup, self.units);
+            let value = review.measured_on_page(markup, self.units);
             for caption in markup.captions(value.as_deref()) {
                 let size = caption.size * self.zoom;
                 let (x, y) = self.to_screen(&page, caption.at);
@@ -937,8 +1048,22 @@ impl Viewer {
                 });
             }
         };
+        let mut outlines = Vec::new();
         for markup in review.markups().iter().filter(|m| m.page == self.page) {
-            draw(markup, self.selected.as_deref() == Some(markup.id.as_str()));
+            let selected = self.selected.as_deref() == Some(markup.id.as_str());
+            if review.draws(markup) {
+                draw(markup, selected);
+            } else if selected {
+                // Drawn on the page from its own look: only show it is
+                // picked.
+                outlines.push(Shape {
+                    commands: self.commands(&page, &markup.outline()),
+                    stroke: None,
+                    fill: None,
+                    width: 1.0,
+                    selected: true,
+                });
+            }
         }
         if let Some(Drag::Draw { kind, points, .. }) = &self.drag
             && let Some(points) = drawn(*kind, points.clone(), false)
@@ -952,6 +1077,7 @@ impl Viewer {
             }
             draw(&self.new_markup(*kind, points), false);
         }
+        shapes.extend(outlines);
         let line = match &self.drag {
             Some(Drag::Calibrate { a, b }) => Some((*a, *b)),
             _ => self.calibrating,
@@ -1222,12 +1348,12 @@ mod tests {
         assert!(viewer.calibrating());
         assert_eq!(viewer.calibrate("tall"), Err("Not a length".into()));
         viewer.calibrate("144").unwrap();
-        assert_eq!(viewer.scale_label(), "Scale 1\" = 48\"");
+        assert_eq!(viewer.scale_label(), "Scale 1/4\" = 1'-0\"");
         viewer.choose_tool(Tool::Draw(Kind::Length));
         drag(&mut viewer, (100.0, 300.0), (100.0, 408.0));
-        assert_eq!(viewer.rows()[0][4], "72\"");
+        assert_eq!(viewer.rows()[0][4], "6'-0\"");
         let (_, labels) = viewer.overlay();
-        assert_eq!(labels[0].text, "72\"");
+        assert_eq!(labels[0].text, "6'-0\"");
 
         viewer.choose_tool(Tool::Draw(Kind::Area));
         for at in [(0.0, 0.0), (216.0, 0.0), (216.0, 180.0), (0.0, 180.0)] {
@@ -1264,6 +1390,66 @@ mod tests {
         let (_, labels) = viewer.overlay();
         assert!(labels.iter().any(|l| l.text == "REJECTED"));
         assert_eq!(viewer.rows().len(), 4);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn markups_are_copied_pasted_and_duplicated() {
+        let (mut viewer, dir) = viewer();
+        viewer.choose_tool(Tool::Draw(Kind::Arrow));
+        drag(&mut viewer, (100.0, 100.0), (300.0, 200.0));
+        viewer.set_text("Here");
+        viewer.copy();
+        viewer.paste();
+        viewer.paste();
+        let rows = viewer.rows();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2][4], "Here");
+        // Each paste lands beside the one before.
+        let third = viewer.selected().unwrap().points[0];
+        assert_eq!(third, Point::new(136.0, 1628.0 - 36.0));
+        viewer.duplicate();
+        assert_eq!(viewer.rows().len(), 4);
+        // On another page, in the same place.
+        viewer.go_to(1);
+        viewer.paste();
+        assert_eq!(viewer.selected().unwrap().page, 1);
+        assert_eq!(viewer.selected().unwrap().points[0], third);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_common_scale_is_chosen_for_one_page_or_all() {
+        let (mut viewer, dir) = viewer();
+        let names = Viewer::scale_names();
+        let quarter = names.iter().position(|n| n == "1/4\" = 1'-0\"").unwrap();
+        viewer.choose_scale(quarter, false);
+        assert_eq!(viewer.scale_label(), "Scale 1/4\" = 1'-0\"");
+        viewer.go_to(1);
+        assert_eq!(viewer.scale_label(), "Not to scale");
+        viewer.go_to(0);
+        viewer.scale_every_page();
+        viewer.go_to(1);
+        assert_eq!(viewer.scale_label(), "Scale 1/4\" = 1'-0\"");
+        viewer.choose_tool(Tool::Draw(Kind::Length));
+        // Back to 1 pixel a point; 18 points is a foot.
+        viewer.zoom = 1.0;
+        viewer.scroll = (0.0, 0.0);
+        drag(&mut viewer, (100.0, 300.0), (100.0, 381.0));
+        assert_eq!(viewer.rows()[0][4], "4'-6\"");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn zooming_to_a_markup_frames_it() {
+        let (mut viewer, dir) = viewer();
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (100.0, 100.0), (300.0, 200.0));
+        viewer.zoom_to_selected();
+        // 200 × 100 plus 36 around, in 1000 × 700: the width decides.
+        assert!((viewer.zoom - 1000.0 / 272.0).abs() < 1e-9);
+        let middle = viewer.to_pdf((500.0, 350.0)).unwrap();
+        assert!(middle.distance(Point::new(200.0, 1578.0)) < 1e-6);
         std::fs::remove_dir_all(dir).ok();
     }
 

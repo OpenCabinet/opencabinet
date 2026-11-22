@@ -144,6 +144,9 @@ pub struct Annotation {
     pub vertices: Vec<Point>,
     /// A text box's callout line, from its tip to the box.
     pub callout: Vec<Point>,
+    /// How far inside `rect` a text box or shape is drawn: left, bottom,
+    /// right, top (`RD`); a callout's box is `rect` less these.
+    pub inset: [f64; 4],
     /// Stroke color, RGB from 0 to 1.
     pub color: [f64; 3],
     /// Fill color, if filled.
@@ -197,6 +200,7 @@ impl Default for Annotation {
             rect: [0.0; 4],
             vertices: Vec::new(),
             callout: Vec::new(),
+            inset: [0.0; 4],
             color: [1.0, 0.0, 0.0],
             interior: None,
             opacity: 1.0,
@@ -616,6 +620,10 @@ fn read_annotation(
         rect,
         vertices,
         callout: list(b"CL"),
+        inset: match numbers(document, dict.get(b"RD").ok())[..] {
+            [l, b, r, t] => [l, b, r, t],
+            _ => [0.0; 4],
+        },
         color,
         interior: rgb(&numbers(document, dict.get(b"IC").ok())),
         opacity: dict.get(b"CA").ok().and_then(number).unwrap_or(1.0),
@@ -793,6 +801,8 @@ fn fill(
     dict.remove(b"AS");
     // Rich text would show other words than the new contents.
     dict.remove(b"RC");
+    // Its insets belonged to the old rectangle.
+    dict.remove(b"RD");
     dict.remove(b"DS");
     optional_keys(dict, annotation, opacity);
     for key in [b"L".as_slice(), b"Vertices", b"InkList", b"CL", b"DA"] {

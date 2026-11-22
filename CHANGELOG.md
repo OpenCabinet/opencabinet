@@ -17,7 +17,10 @@ follow [Semantic Versioning](https://semver.org/).
   `opencabinet-review`, with an installer of its own, that opens PDF
   drawings and marks them up.
   - **Viewing:** pages drawn with hayro, fit to the window or its width,
-    zoomed with Ctrl and the wheel, moved by dragging.
+    zoomed with Ctrl and the wheel, moved by dragging; a column of page
+    thumbnails to go to any page. Markups other programs made are drawn
+    from their own appearance, exactly as that program drew them, until
+    they are changed.
   - **Markups:** cloud, rectangle, ellipse, polygon, arrow, line,
     polyline, pen, highlight, text box, callout, note and stamp. Each is
     picked, moved, recolored, made thinner or thicker, filled, given a
@@ -26,8 +29,12 @@ follow [Semantic Versioning](https://semver.org/).
     wordings and colors, with who stamped and when, and their words can be
     changed.
   - **Measuring:** a page is calibrated by drawing along a known
-    dimension; lengths, lengths along a path, areas and counts then read
-    to scale in imperial or metric units.
+    dimension or by choosing a common scale (architects', engineers' or
+    metric), for one page or all; lengths, lengths along a path, areas
+    and counts then read to scale, in feet and inches (`12'-6 1/2"`) or
+    millimeters. Other programs' measurements keep their own scale.
+  - **Copy, paste and duplicate** markups, on the same page or another,
+    and zoom to the one selected.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

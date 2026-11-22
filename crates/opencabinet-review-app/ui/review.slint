@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import {
-    Button, CheckBox, ComboBox, LineEdit, Palette, StandardTableView, TextEdit,
+    Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, StandardTableView, TextEdit,
 } from "std-widgets.slint";
 
 // A markup's outline over the page, in the view's pixels.
@@ -66,6 +66,12 @@ export component ReviewWindow inherits Window {
     in property <bool> building;
     in property <bool> can-undo;
     in property <bool> can-redo;
+    in property <[string]> scales;
+    in property <[image]> thumbnails;
+    in property <int> page-index;
+    in-out property <bool> show-pages: true;
+    // Which file the thumbnails belong to.
+    in-out property <int> document-number;
     in-out property <string> author;
     in property <int> units;
 
@@ -75,6 +81,13 @@ export component ReviewWindow inherits Window {
     callback export-list();
     callback undo();
     callback redo();
+    callback copy();
+    callback paste();
+    callback duplicate();
+    callback zoom-to-selected();
+    callback choose-scale(int, bool);
+    callback scale-every-page();
+    callback go-to-page(int);
     callback previous-page();
     callback next-page();
     callback zoom-in();
@@ -120,6 +133,18 @@ export component ReviewWindow inherits Window {
                 root.redo();
                 return accept;
             }
+            if (event.modifiers.control && (event.text == "c" || event.text == "C")) {
+                root.copy();
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "v" || event.text == "V")) {
+                root.paste();
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "d" || event.text == "D")) {
+                root.duplicate();
+                return accept;
+            }
             if (event.text == Key.Delete || event.text == Key.Backspace) {
                 root.delete-selected();
                 return accept;
@@ -158,6 +183,13 @@ export component ReviewWindow inherits Window {
                 Button { text: "+"; accessible-label: "Zoom in"; enabled: root.has-document; clicked => { root.zoom-in(); } }
                 Button { text: "Fit"; enabled: root.has-document; clicked => { root.fit(); } }
                 Button { text: "Width"; accessible-label: "Fit width"; enabled: root.has-document; clicked => { root.fit-width(); } }
+                Button {
+                    text: "Pages";
+                    checkable: true;
+                    checked: root.show-pages;
+                    enabled: root.has-document;
+                    clicked => { root.show-pages = !root.show-pages; }
+                }
                 Rectangle { horizontal-stretch: 1; }
                 ComboBox {
                     accessible-label: "Units";
@@ -245,6 +277,38 @@ export component ReviewWindow inherits Window {
                         model: root.stamps;
                         current-index: root.stamp;
                         selected => { root.choose-stamp(self.current-index); }
+                    }
+                }
+
+                if root.has-document && root.show-pages: ScrollView {
+                    width: 136px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        padding: 4px;
+                        for thumbnail[i] in root.thumbnails: Rectangle {
+                            height: 104px;
+                            border-width: i == root.page-index ? 2px : 1px;
+                            border-color: i == root.page-index ? Palette.accent-background : Palette.border;
+                            accessible-role: button;
+                            accessible-label: "Page " + (i + 1);
+                            accessible-action-default => { root.go-to-page(i); }
+                            Image {
+                                x: 4px;
+                                y: 4px;
+                                width: parent.width - 8px;
+                                height: 80px;
+                                source: thumbnail;
+                                image-fit: contain;
+                            }
+                            Text {
+                                y: 86px;
+                                width: parent.width;
+                                horizontal-alignment: center;
+                                text: i + 1;
+                                font-size: 11px;
+                            }
+                            TouchArea { clicked => { root.go-to-page(i); } }
+                        }
                     }
                 }
 
@@ -359,7 +423,12 @@ export component ReviewWindow inherits Window {
                             text <=> root.selected-text;
                             edited(text) => { root.text-edited(text); }
                         }
-                        Button { text: "Delete markup"; clicked => { root.delete-selected(); } }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Button { text: "Zoom to"; clicked => { root.zoom-to-selected(); } }
+                            Button { text: "Duplicate"; clicked => { root.duplicate(); } }
+                            Button { text: "Delete"; clicked => { root.delete-selected(); } }
+                        }
                     }
                     if root.calibrating: VerticalLayout {
                         spacing: 4px;
@@ -374,6 +443,20 @@ export component ReviewWindow inherits Window {
                             Button { text: "Set scale"; clicked => { root.calibrate(length.text); } }
                             Button { text: "Cancel"; clicked => { root.cancel(); } }
                         }
+                    }
+                    if root.has-document: HorizontalLayout {
+                        spacing: 4px;
+                        scale-choice := ComboBox {
+                            accessible-label: "Scale";
+                            horizontal-stretch: 1;
+                            model: root.scales;
+                            selected => { root.choose-scale(self.current-index, every.checked); }
+                        }
+                        every := CheckBox { text: "All pages"; }
+                    }
+                    if root.has-document: Button {
+                        text: "Use this page's scale on every page";
+                        clicked => { root.scale-every-page(); }
                     }
                     Text { text: root.scale-label; color: Palette.foreground.transparentize(30%); }
                 }

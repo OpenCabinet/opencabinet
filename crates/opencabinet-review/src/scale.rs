@@ -75,9 +75,7 @@ impl Scale {
         reason = "one inch of sheet is far inside the range"
     )]
     pub fn from_measure(measure: &Measure) -> Option<Self> {
-        let unit = measure.unit.trim().to_lowercase();
-        let unit = unit.trim_end_matches('.');
-        let (_, nm) = UNITS.iter().find(|(name, _)| *name == unit)?;
+        let nm = unit_nm(&measure.unit)?;
         let real = Length::from_nm((72.0 * measure.factor * nm).round() as i64);
         (real > Length::ZERO).then_some(Self { points: 72.0, real })
     }
@@ -100,18 +98,142 @@ impl Scale {
     /// The scale as people read it: `1" = 48"`.
     #[must_use]
     pub fn label(&self, units: Units) -> String {
-        format!("1\" = {}", shown(self.length(72.0), units))
+        match units {
+            Units::Imperial => {
+                // An architect's scale: so much sheet to a foot, when that
+                // is a plain fraction of an inch.
+                let sheet = self.sheet_for(Length::from_inches(12));
+                let fine = Length::from_inch_fraction(1, 64).unwrap_or(Length::from_mm(1));
+                let shown_sheet = sheet.show(Units::Imperial, fine);
+                if shown_sheet.exact && sheet <= Length::from_inches(12) {
+                    format!("{} = 1'-0\"", shown_sheet.text.replace('-', " "))
+                } else {
+                    format!("1\" = {}", shown(self.length(72.0), units))
+                }
+            }
+            Units::Metric => {
+                let ratio = self.ratio();
+                if (ratio - ratio.round()).abs() < 0.01 && ratio >= 1.0 {
+                    format!("1:{}", ratio.round())
+                } else {
+                    format!("1 mm = {}", shown(self.length(72.0 / 25.4), units))
+                }
+            }
+        }
     }
+
+    /// How long `real` is on the sheet.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "lengths far inside both ranges"
+    )]
+    fn sheet_for(&self, real: Length) -> Length {
+        let points = self.points * real.nm() as f64 / self.real.nm() as f64;
+        Length::from_nm((points / 72.0 * Length::NM_PER_INCH as f64).round() as i64)
+    }
+
+    /// Real length per length on the sheet.
+    #[expect(clippy::cast_precision_loss, reason = "lengths far below 2^52 nm")]
+    fn ratio(&self) -> f64 {
+        self.real.nm() as f64 / (self.points / 72.0 * Length::NM_PER_INCH as f64)
+    }
+
+    /// A scale where `sheet` on paper stands for `real`.
+    #[must_use]
+    #[expect(clippy::cast_precision_loss, reason = "lengths far below 2^52 nm")]
+    pub fn of(sheet: Length, real: Length) -> Self {
+        Self {
+            points: sheet.nm() as f64 / Length::NM_PER_INCH as f64 * 72.0,
+            real,
+        }
+    }
+}
+
+/// The common scales: architects' and engineers' in imperial units, and
+/// the metric ratios, with how they are written.
+#[must_use]
+pub fn presets() -> Vec<(String, Scale)> {
+    let inch = |n: i64, d: i64| Length::from_inch_fraction(n, d).unwrap_or(Length::ZERO);
+    let foot = Length::from_inches(12);
+    let mut out = Vec::new();
+    for (n, d) in [
+        (1, 16),
+        (3, 32),
+        (1, 8),
+        (3, 16),
+        (1, 4),
+        (3, 8),
+        (1, 2),
+        (3, 4),
+        (1, 1),
+        (3, 2),
+        (3, 1),
+    ] {
+        let scale = Scale::of(inch(n, d), foot);
+        out.push((scale.label(Units::Imperial), scale));
+    }
+    for feet in [10, 20, 30, 40, 50, 60, 100] {
+        out.push((
+            format!("1\" = {feet}'"),
+            Scale::of(inch(1, 1), Length::from_inches(12 * feet)),
+        ));
+    }
+    for ratio in [1, 2, 5, 10, 20, 25, 50, 100, 200, 500] {
+        out.push((
+            format!("1:{ratio}"),
+            Scale::of(Length::from_mm(1), Length::from_mm(ratio)),
+        ));
+    }
+    out
+}
+
+/// Nanometers in a unit as programs write it: `ft`, `ft'`, `'`, `feet`,
+/// `in`, `"`, `inches`, `mm`, `m`, and so on.
+fn unit_nm(unit: &str) -> Option<f64> {
+    let unit = unit.trim().to_lowercase();
+    let unit = unit.trim_end_matches('.');
+    let name = match unit {
+        "'" | "ft'" | "feet" | "foot" | "ft-in" | "ft' in\"" | "ft'-in\"" => "ft",
+        "\"" | "in\"" | "inch" | "inches" => "in",
+        "yard" | "yards" => "yd",
+        "mile" | "miles" => "mi",
+        "millimeter" | "millimeters" | "millimetre" | "millimetres" => "mm",
+        "centimeter" | "centimeters" | "centimetre" | "centimetres" => "cm",
+        "meter" | "meters" | "metre" | "metres" => "m",
+        "kilometer" | "kilometers" | "kilometre" | "kilometres" => "km",
+        other => other,
+    };
+    UNITS.iter().find(|(n, _)| *n == name).map(|&(_, nm)| nm)
 }
 
 /// How a measured length is shown: to the nearest 1/16" or 0.1 mm.
 #[must_use]
 pub fn shown(length: Length, units: Units) -> String {
-    let precision = match units {
-        Units::Imperial => Length::from_inch_fraction(1, 16).unwrap_or(Length::from_mm(1)),
-        Units::Metric => Length::from_nm(100_000),
-    };
-    length.show(units, precision).text
+    match units {
+        Units::Imperial => feet_and_inches(length),
+        Units::Metric => length.show(units, Length::from_nm(100_000)).text,
+    }
+}
+
+/// A length in feet and inches to the nearest 1/16", as drawings write
+/// it: `12'-6 1/2"`, or `6 1/2"` under a foot.
+fn feet_and_inches(length: Length) -> String {
+    let sixteenth = Length::from_inch_fraction(1, 16).unwrap_or(Length::from_mm(1));
+    let negative = length < Length::ZERO;
+    let nm = length.nm().abs();
+    let steps = (nm + sixteenth.nm() / 2) / sixteenth.nm();
+    let (feet, rest) = (steps / 192, steps % 192);
+    let inches = Length::from_nm(rest * sixteenth.nm())
+        .show(Units::Imperial, sixteenth)
+        .text
+        .replacen('-', " ", 1);
+    let sign = if negative { "-" } else { "" };
+    if feet == 0 {
+        format!("{sign}{inches}")
+    } else {
+        format!("{sign}{feet}'-{inches}")
+    }
 }
 
 /// How an area in square millimeters is shown: square feet or square
@@ -163,7 +285,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(scale.length(216.0), Length::from_inches(144));
-        assert_eq!(scale.label(Units::Imperial), "1\" = 48\"");
+        assert_eq!(scale.label(Units::Imperial), "1/4\" = 1'-0\"");
+        assert_eq!(shown(scale.length(216.0), Units::Imperial), "12'-0\"");
+        assert_eq!(
+            shown(Length::from_inch_fraction(301, 2).unwrap(), Units::Imperial),
+            "12'-6 1/2\""
+        );
+        assert_eq!(
+            shown(Length::from_inch_fraction(13, 2).unwrap(), Units::Imperial),
+            "6 1/2\""
+        );
         // A 10' × 12' room: 180 × 216 points.
         let area = scale.area_mm2(180.0 * 216.0);
         assert_eq!(shown_area(area, Units::Imperial), "120.00 sq ft");
@@ -171,6 +302,17 @@ mod tests {
         assert_eq!(measure.unit, "in");
         let back = Scale::from_measure(&measure).unwrap();
         assert_eq!(back.length(216.0), Length::from_inches(144));
+    }
+
+    #[test]
+    fn the_common_scales_are_offered_by_name() {
+        let presets = presets();
+        let named = |name: &str| presets.iter().find(|(n, _)| n == name).map(|(_, s)| *s);
+        let quarter = named("1/4\" = 1'-0\"").unwrap();
+        assert!((quarter.length(18.0).nm() - Length::from_inches(12).nm()).abs() < 2);
+        assert!(named("1 1/2\" = 1'-0\"").is_some());
+        assert!(named("1\" = 20'").is_some());
+        assert_eq!(named("1:50").unwrap().label(Units::Metric), "1:50");
     }
 
     #[test]
@@ -185,6 +327,8 @@ mod tests {
         let meters = Scale::from_measure(&measure("m", 0.05)).unwrap();
         assert_eq!(meters.length(20.0), Length::from_mm(1000));
         assert_eq!(Scale::from_measure(&measure("furlong", 1.0)), None);
+        let quoted = Scale::from_measure(&measure("ft'", 1.0 / 18.0)).unwrap();
+        assert_eq!(quoted.length(216.0), Length::from_inches(144));
     }
 
     #[test]

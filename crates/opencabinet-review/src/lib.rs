@@ -20,7 +20,7 @@ mod markup;
 mod scale;
 pub mod stamps;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use opencabinet_model::{Id, Length, Units};
@@ -31,7 +31,7 @@ pub use markup::{
     COUNT_RADIUS, Caption, Color, FILL_OPACITY, FONT_SIZE, Gesture, Kind, Markup, NOTE_SIZE,
     Segment, Status, text_width,
 };
-pub use scale::{Scale, path_length, polygon_area, shown, shown_area};
+pub use scale::{Scale, path_length, polygon_area, presets, shown, shown_area};
 
 /// How many steps can be undone.
 const HISTORY: usize = 200;
@@ -48,7 +48,14 @@ struct State {
 #[derive(Clone, Debug)]
 pub struct Review {
     original: Document,
+    /// The PDF the pages are drawn from: the original without the
+    /// annotations in `hidden`, which Review draws itself.
     shown: Document,
+    hidden: BTreeSet<ObjectRef>,
+    /// Bumped whenever `shown` changes.
+    shown_version: u64,
+    /// Review's own entries for each page, as read.
+    read_pages: BTreeMap<usize, BTreeMap<String, String>>,
     state: State,
     /// The markups read from the PDF, as read, by id.
     read: BTreeMap<String, Markup>,
@@ -92,13 +99,6 @@ impl Review {
                 (points > 0.0 && real > Length::ZERO).then_some((page, Scale { points, real }))
             })
             .collect();
-        // The page as drawn: the PDF without the markups Review shows.
-        let hidden = Markups {
-            annotations: Vec::new(),
-            pages: saved.pages.clone(),
-            removed: markups.iter().filter_map(|m| m.origin).collect(),
-        };
-        let shown = Document::open(annotations::save(original.bytes(), &hidden)?)?;
         let read = markups
             .iter()
             .filter(|m| m.origin.is_some())
@@ -110,8 +110,13 @@ impl Review {
             removed: Vec::new(),
         };
         Ok(Self {
+            // Markups read from the PDF are drawn from their own
+            // appearance, as their program made them, until they change.
+            shown: original.clone(),
+            hidden: BTreeSet::new(),
+            shown_version: 0,
+            read_pages: saved.pages,
             original,
-            shown,
             saved: state.clone(),
             state,
             read,
@@ -122,10 +127,49 @@ impl Review {
         })
     }
 
-    /// The PDF to draw pages from, without the markups Review shows.
+    /// The PDF as opened: its pages and their sizes.
     #[must_use]
     pub fn document(&self) -> &Document {
-        &self.shown
+        &self.original
+    }
+
+    /// Whether Review draws `markup` itself: one made here, or one read
+    /// from the PDF that has changed since. The others are drawn from
+    /// their own appearance, as the program that made them drew them.
+    #[must_use]
+    pub fn draws(&self, markup: &Markup) -> bool {
+        markup.origin.is_none() || self.change_of(markup) != Change::Unchanged
+    }
+
+    /// The PDF to draw pages from, without the annotations Review draws
+    /// itself, and a number that changes whenever it does.
+    ///
+    /// # Errors
+    /// When the PDF can no longer be written.
+    pub fn page_document(&mut self) -> Result<(&Document, u64), Error> {
+        let hidden: BTreeSet<ObjectRef> = self
+            .state
+            .markups
+            .iter()
+            .filter(|m| self.draws(m))
+            .filter_map(|m| m.origin)
+            .chain(self.state.removed.iter().copied())
+            .collect();
+        if hidden != self.hidden {
+            self.shown = if hidden.is_empty() {
+                self.original.clone()
+            } else {
+                let without = Markups {
+                    annotations: Vec::new(),
+                    pages: self.read_pages.clone(),
+                    removed: hidden.iter().copied().collect(),
+                };
+                Document::open(annotations::save(self.original.bytes(), &without)?)?
+            };
+            self.hidden = hidden;
+            self.shown_version += 1;
+        }
+        Ok((&self.shown, self.shown_version))
     }
 
     /// The markups, in the order they were made.
@@ -267,6 +311,28 @@ impl Review {
             self.checkpoint();
             self.state.scales.insert(page, scale);
         }
+    }
+
+    /// Calibrates every page with `scale`, as one step.
+    pub fn set_scale_everywhere(&mut self, scale: Scale) {
+        let pages = self.original.pages().len();
+        if (0..pages).all(|page| self.state.scales.get(&page) == Some(&scale)) {
+            return;
+        }
+        self.checkpoint();
+        for page in 0..pages {
+            self.state.scales.insert(page, scale);
+        }
+    }
+
+    /// What a measuring markup shows on the page: its measurement when it
+    /// can be read, nothing when its page has no scale.
+    #[must_use]
+    pub fn measured_on_page(&self, markup: &Markup, units: Units) -> Option<String> {
+        if markup.kind != Kind::Count && self.scale_of(markup).is_none() {
+            return None;
+        }
+        self.measured(markup, units)
     }
 
     /// The scale a markup measures with: its own, or its page's.
