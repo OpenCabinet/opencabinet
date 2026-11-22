@@ -134,7 +134,7 @@ mod imp {
     }
 
     pub fn allow(_program: &Path) -> Result<(), String> {
-        Ok(())
+        Err("Only the Windows firewall can be changed from Review.".into())
     }
 }
 
