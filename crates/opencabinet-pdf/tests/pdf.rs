@@ -267,6 +267,35 @@ fn replies_are_read_with_their_markup_and_new_ones_appended() {
 }
 
 #[test]
+fn a_dense_sheet_is_read_for_snapping_and_answers_at_once() {
+    use opencabinet_pdf::snaps::{Snap, Snaps};
+    // A border and a 10 000 by 10 000 line grid: 20 004 lines.
+    let bytes = sample::sheets(1, SHEET.0, SHEET.1, 10_000);
+    let document = Document::open(bytes).unwrap();
+    let started = std::time::Instant::now();
+    let snaps = Snaps::of(&document, 0).unwrap();
+    assert_eq!(snaps.len(), 20_004);
+    let read = started.elapsed();
+    let started = std::time::Instant::now();
+    for i in 0..1000 {
+        let x = 100.0 + f64::from(i);
+        assert!(snaps.nearest(Point::new(x, 900.0), 3.0).is_some());
+    }
+    let asked = started.elapsed();
+    // Generous, for slow test machines: a debug build, two cores.
+    assert!(read.as_secs_f64() < 5.0, "{read:?}");
+    assert!(asked.as_secs_f64() < 2.0, "{asked:?}");
+    // On a plain sheet, the border's corner is an end.
+    let plain = Document::open(sample::sheets(1, SHEET.0, SHEET.1, 4)).unwrap();
+    let corner = Snaps::of(&plain, 0)
+        .unwrap()
+        .nearest(Point::new(19.0, 19.0), 3.0)
+        .unwrap();
+    assert_eq!(corner.kind, Snap::End);
+    assert_eq!(corner.at, Point::new(18.0, 18.0));
+}
+
+#[test]
 fn a_measurement_is_saved_with_a_standard_scale() {
     let original = sample::sheets(1, SHEET.0, SHEET.1, 0);
     let mut line = square(0, "m");

@@ -72,6 +72,16 @@ fn main() {
         review.invoke_reply("42\", per the revised elevation.".into());
         review.set_editor_tab(1);
     }
+    // SNAP=1 shows a line placed by a first click, the mouse snapped to
+    // where two grid lines cross.
+    if std::env::var("SNAP").is_ok() {
+        review.invoke_choose_tool(6);
+        review.invoke_pressed(560.0, 140.0, 0);
+        review.invoke_released(560.0, 140.0);
+        for (x, y) in [(580.0, 180.0), (590.0, 221.0)] {
+            review.invoke_moved_to(x, y, false);
+        }
+    }
     // The left panel to show: 0 pages, 1 bookmarks, 2 find, 3 measure, 4
     // session.
     let panel = std::env::var("PANEL")

@@ -16,6 +16,7 @@ use opencabinet_model::{Length, Units};
 use opencabinet_pdf::find::{Found, find};
 use opencabinet_pdf::outline::{Bookmark, bookmarks};
 use opencabinet_pdf::report::{self, Row, Table};
+use opencabinet_pdf::snaps::{Snap, Snapped, Snaps};
 use opencabinet_pdf::{Document, Page, Point, View};
 use opencabinet_review::{
     Color, FILL_OPACITY, Gesture, Kind, Markup, Review, Scale, Segment, Status, pdf_date_text,
@@ -24,7 +25,7 @@ use opencabinet_review::{
 use opencabinet_session::firewall::{self, Firewall};
 use opencabinet_session::{Guest, Host, Invite, Link, Shared};
 
-use crate::chest::{self, SavedTool};
+use crate::chest::{self, SavedTool, Settings};
 
 /// What the mouse does on the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +95,10 @@ pub const WIDTHS: [(&str, f64); 3] = [("Thin", 1.0), ("Medium", 2.0), ("Thick", 
 const PICK: f64 = 6.0;
 /// A grip's half side, in pixels.
 const GRIP: f64 = 4.0;
+/// How near the mouse a point snaps, in pixels.
+const SNAP: f64 = 10.0;
+/// A snap marker's half side, in pixels.
+const MARK: f64 = 6.0;
 
 /// The keys held when a mouse button goes down.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -195,6 +200,19 @@ pub struct Viewer {
     /// Selected with it, by Control or a box.
     also: Vec<String>,
     calibrating: Option<(Point, Point)>,
+    /// The first end of a calibration line placed with a click.
+    calibrate_from: Option<Point>,
+    /// Snapping, and whether the wheel zooms.
+    settings: Settings,
+    /// The snap points of a page, read when first needed.
+    snaps: Option<(usize, Snaps)>,
+    /// What the mouse snaps to now.
+    snapped: Option<Snapped>,
+    /// Where the mouse is, after snapping, while drawing.
+    cursor: Option<Point>,
+    /// The keys held at the last mouse event.
+    keys: Keys,
+
     /// What was copied, to paste.
     clipboard: Option<Markup>,
     /// The markup list shows only markups with this status, if any, and
@@ -245,6 +263,13 @@ impl Default for Viewer {
             selected: None,
             also: Vec::new(),
             calibrating: None,
+            calibrate_from: None,
+            settings: Settings::default(),
+            snaps: None,
+            snapped: None,
+            cursor: None,
+            keys: Keys::default(),
+
             clipboard: None,
             filter_status: None,
             filter_text: String::new(),
@@ -284,6 +309,7 @@ impl Viewer {
             review.markups().len()
         );
         self.review = Some(review);
+        self.snaps = None;
         self.path = path.map(Path::to_owned);
         self.page = 0;
         self.selected = None;
@@ -399,6 +425,7 @@ impl Viewer {
             .map_or(0, |r| r.document().pages().len());
         if page < count && page != self.page {
             self.page = page;
+            self.snapped = None;
             self.drag = None;
             self.building = None;
             self.calibrating = None;
@@ -470,12 +497,13 @@ impl Viewer {
 
     /// The mouse wheel: scrolls, or zooms with Ctrl held.
     pub fn wheel(&mut self, delta: (f64, f64), zoom: bool, at: (f64, f64)) {
-        if zoom {
-            self.zoom_by(1.2_f64.powf(delta.1 / 120.0), at);
-        } else {
+        // In one full page, the wheel zooms and Ctrl+wheel moves.
+        if zoom == self.settings.wheel_zooms {
             self.scroll.0 -= delta.0;
             self.scroll.1 -= delta.1;
             self.clamp_scroll();
+        } else {
+            self.zoom_by(1.2_f64.powf(delta.1 / 120.0), at);
         }
     }
 
@@ -546,6 +574,8 @@ impl Viewer {
         self.style = None;
         self.tool = tool;
         self.drag = None;
+        self.calibrate_from = None;
+        self.snapped = None;
         self.status = match tool {
             Tool::Select => {
                 "Click a markup to select it, Ctrl+click for several, Shift+drag for a box; drag to move. Ctrl+wheel zooms.".into()
@@ -555,7 +585,7 @@ impl Viewer {
                 "Drag a box, or click, then type its text on the right.".into()
             }
             Tool::Draw(Kind::Callout) => {
-                "Press where it points, and drag to where its text goes.".into()
+                "Click where it points, then where its text goes (or drag).".into()
             }
             Tool::Draw(Kind::Note) => {
                 "Click where the note goes, then type it on the right.".into()
@@ -571,9 +601,16 @@ impl Viewer {
                 "Click each point of the {}; Enter or double click to finish.",
                 kind.label().to_lowercase()
             ),
-            Tool::Draw(Kind::Length) => "Drag from one end to the other.".into(),
-            Tool::Draw(kind) => format!("Drag to draw a {}.", kind.label().to_lowercase()),
-            Tool::Calibrate => "Drag along a dimension you know, then type its length.".into(),
+            Tool::Draw(Kind::Length) => {
+                "Click one end, then the other (or drag); Shift keeps it straight.".into()
+            }
+            Tool::Draw(kind) => format!(
+                "Click one corner of the {}, then the other (or drag); Shift keeps it straight or square.",
+                kind.label().to_lowercase()
+            ),
+            Tool::Calibrate => {
+                "Click both ends of a dimension you know (or drag), then type its length.".into()
+            }
         };
     }
 
@@ -764,8 +801,14 @@ impl Viewer {
 
     /// A mouse button went down with `keys` held.
     pub fn press_with(&mut self, at: (f64, f64), button: u8, keys: Keys) {
-        let Some(point) = self.to_pdf(at) else {
+        self.keys = keys;
+        let Some(raw) = self.to_pdf(at) else {
             return;
+        };
+        let point = if button == 0 {
+            self.aim(raw, keys)
+        } else {
+            raw
         };
         if button == 2 {
             self.drag = Some(Drag::Pan { last: at });
@@ -778,67 +821,35 @@ impl Viewer {
         if button != 0 {
             return;
         }
-        if let Some((_, points, _)) = &mut self.building {
+        if let Some((kind, points, _)) = &mut self.building {
             points.push(point);
+            // A shape placed by two clicks is done at the second.
+            if kind.gesture() == Gesture::Drag
+                && let Some((kind, points, _)) = self.building.take()
+            {
+                self.place_dragged(kind, &points);
+            }
             return;
         }
-        self.drag = Some(match self.tool {
-            Tool::Select => {
-                if !keys.control
-                    && !keys.shift
-                    && let Some((id, index)) = self.grip_at(point)
-                {
-                    if let Some(review) = self.review.as_mut() {
-                        review.checkpoint();
-                    }
-                    self.drag = Some(Drag::Grip { id, index });
-                    return;
-                }
-                let tolerance = PICK / self.zoom;
-                let hit = self
-                    .review
-                    .as_ref()
-                    .and_then(|r| r.hit(self.page, point, tolerance))
-                    .map(|m| m.id.clone());
-                match hit {
-                    Some(id) if keys.control => {
-                        self.toggle_selected(id);
-                        return;
-                    }
-                    Some(id) => {
-                        if !self.chosen().contains(&id) {
-                            self.select_only(Some(id));
-                        }
-                        let ids: Vec<String> = self
-                            .chosen()
-                            .into_iter()
-                            .filter(|i| {
-                                self.review
-                                    .as_ref()
-                                    .and_then(|r| r.markup(i))
-                                    .is_some_and(|m| m.page == self.page)
-                            })
-                            .collect();
-                        if let Some(review) = self.review.as_mut() {
-                            review.checkpoint();
-                        }
-                        Drag::Move { ids, last: point }
-                    }
-                    None if keys.shift || keys.control => {
-                        if !keys.control {
-                            self.select_only(None);
-                        }
-                        Drag::Area {
-                            start: point,
-                            end: point,
-                        }
-                    }
-                    None => {
-                        self.select_only(None);
-                        Drag::Pan { last: at }
-                    }
-                }
+        if self.tool == Tool::Calibrate
+            && let Some(a) = self.calibrate_from.take()
+        {
+            if a.distance(point) * self.zoom >= CLICK {
+                self.calibrating = Some((a, point));
+                self.status = "Type the real length of the line on the right.".into();
             }
+            return;
+        }
+        let point = if self.tool == Tool::Select {
+            raw
+        } else {
+            point
+        };
+        self.drag = Some(match self.tool {
+            Tool::Select => match self.press_select(at, point, keys) {
+                Some(drag) => drag,
+                None => return,
+            },
             Tool::Draw(kind) => match kind.gesture() {
                 Gesture::Clicks => {
                     self.building = Some((kind, vec![point], None));
@@ -859,11 +870,77 @@ impl Viewer {
         });
     }
 
+    /// A press with the select tool: a grip, a markup, or empty paper.
+    fn press_select(&mut self, at: (f64, f64), point: Point, keys: Keys) -> Option<Drag> {
+        if !keys.control
+            && !keys.shift
+            && let Some((id, index)) = self.grip_at(point)
+        {
+            if let Some(review) = self.review.as_mut() {
+                review.checkpoint();
+            }
+            return Some(Drag::Grip { id, index });
+        }
+        let tolerance = PICK / self.zoom;
+        let hit = self
+            .review
+            .as_ref()
+            .and_then(|r| r.hit(self.page, point, tolerance))
+            .map(|m| m.id.clone());
+        match hit {
+            Some(id) if keys.control => {
+                self.toggle_selected(id);
+                None
+            }
+            Some(id) => {
+                if !self.chosen().contains(&id) {
+                    self.select_only(Some(id));
+                }
+                let ids: Vec<String> = self
+                    .chosen()
+                    .into_iter()
+                    .filter(|i| {
+                        self.review
+                            .as_ref()
+                            .and_then(|r| r.markup(i))
+                            .is_some_and(|m| m.page == self.page)
+                    })
+                    .collect();
+                if let Some(review) = self.review.as_mut() {
+                    review.checkpoint();
+                }
+                Some(Drag::Move { ids, last: point })
+            }
+            None if keys.shift || keys.control => {
+                if !keys.control {
+                    self.select_only(None);
+                }
+                Some(Drag::Area {
+                    start: point,
+                    end: point,
+                })
+            }
+            None => {
+                self.select_only(None);
+                Some(Drag::Pan { last: at })
+            }
+        }
+    }
+
     /// The mouse moved, a button held or not.
     pub fn drag(&mut self, at: (f64, f64)) {
-        let Some(point) = self.to_pdf(at) else {
+        self.pointer_moved(at, self.keys);
+    }
+
+    /// The mouse moved with `keys` held: Shift keeps a line at a multiple
+    /// of 45° or a box square.
+    pub fn pointer_moved(&mut self, at: (f64, f64), keys: Keys) {
+        self.keys = keys;
+        let Some(raw) = self.to_pdf(at) else {
             return;
         };
+        let point = self.aim(raw, keys);
+        self.cursor = Some(point);
         if let Some((_, _, cursor)) = &mut self.building {
             *cursor = Some(point);
         }
@@ -888,8 +965,8 @@ impl Viewer {
                 }
             }
             Some(Drag::Move { ids, last }) => {
-                let (dx, dy) = (point.x - last.x, point.y - last.y);
-                *last = point;
+                let (dx, dy) = (raw.x - last.x, raw.y - last.y);
+                *last = raw;
                 let ids = ids.clone();
                 if let Some(review) = self.review.as_mut() {
                     for id in &ids {
@@ -903,7 +980,7 @@ impl Viewer {
                     review.change_quietly(&id, |m| m.move_grip(index, point));
                 }
             }
-            Some(Drag::Area { end, .. }) => *end = point,
+            Some(Drag::Area { end, .. }) => *end = raw,
             Some(Drag::Calibrate { b, .. }) => *b = point,
             None => {}
         }
@@ -921,7 +998,13 @@ impl Viewer {
                 start,
             }) => {
                 let click = (at.0 - start.0).hypot(at.1 - start.1) < CLICK;
-                if let Some(points) = drawn(kind, points, click) {
+                if click && !matches!(kind, Kind::Text | Kind::Stamp | Kind::Pen) {
+                    // A click places the first point; the next click the
+                    // other.
+                    self.building = Some((kind, vec![points[0]], self.cursor));
+                    self.status =
+                        "Click where it ends. Shift keeps it straight or square; Esc stops.".into();
+                } else if let Some(points) = drawn(kind, points, click) {
                     self.add(self.new_markup(kind, points));
                     if matches!(kind, Kind::Text | Kind::Callout) {
                         self.status = "Type the text on the right.".into();
@@ -966,6 +1049,10 @@ impl Viewer {
                 self.calibrating = Some((a, b));
                 self.status = "Type the real length of the line on the right.".into();
             }
+            Some(Drag::Calibrate { a, .. }) => {
+                self.calibrate_from = Some(a);
+                self.status = "Click the other end of the known dimension.".into();
+            }
             _ => {}
         }
     }
@@ -980,6 +1067,13 @@ impl Viewer {
         let Some((kind, mut points, _)) = self.building.take() else {
             return;
         };
+        if kind.gesture() == Gesture::Drag {
+            // Placed by clicks: done only by its second click.
+            if points.len() >= 2 {
+                self.place_dragged(kind, &points);
+            }
+            return;
+        }
         if kind != Kind::Count {
             // A double click's second press adds its point again.
             points.dedup_by(|a, b| a.distance(*b) < 1e-9);
@@ -992,6 +1086,182 @@ impl Viewer {
         if points.len() >= enough {
             self.add(self.new_markup(kind, points));
         }
+    }
+
+    /// Adds a markup of a dragged kind from its first and last points.
+    fn place_dragged(&mut self, kind: Kind, points: &[Point]) {
+        let (Some(&a), Some(&b)) = (points.first(), points.last()) else {
+            return;
+        };
+        if a.distance(b) * self.zoom < CLICK {
+            return;
+        }
+        if let Some(points) = drawn(kind, vec![a, b], false) {
+            self.add(self.new_markup(kind, points));
+            if kind == Kind::Callout {
+                self.status = "Type the text on the right.".into();
+            }
+        }
+    }
+
+    /// Whether the point under the mouse snaps: while drawing, measuring,
+    /// calibrating or dragging a grip; never for a pen stroke.
+    fn aims(&self) -> bool {
+        matches!(self.drag, Some(Drag::Grip { .. }))
+            || matches!(self.tool, Tool::Draw(kind) if kind != Kind::Pen)
+            || self.tool == Tool::Calibrate
+    }
+
+    /// The point a line or box being drawn starts from, and whether it
+    /// is a box.
+    fn anchor(&self) -> Option<(Point, bool)> {
+        if let Some((kind, points, _)) = &self.building {
+            return Some((*points.last()?, kind.boxed()));
+        }
+        match &self.drag {
+            Some(Drag::Draw { kind, points, .. }) if *kind != Kind::Pen => {
+                Some((*points.first()?, kind.boxed()))
+            }
+            Some(Drag::Calibrate { a, .. }) => Some((*a, false)),
+            _ => self.calibrate_from.map(|a| (a, false)),
+        }
+    }
+
+    /// Where `raw` lands: kept straight or square with Shift, else
+    /// snapped to the drawing or a markup when one is near.
+    fn aim(&mut self, raw: Point, keys: Keys) -> Point {
+        self.snapped = None;
+        if !self.aims() {
+            return raw;
+        }
+        if keys.shift
+            && let Some((anchor, square)) = self.anchor()
+        {
+            return straighten(anchor, raw, square);
+        }
+        if !self.settings.snap {
+            return raw;
+        }
+        let reach = SNAP / self.zoom;
+        let rank = |kind: Snap| match kind {
+            Snap::End | Snap::Intersection => 0,
+            Snap::Middle => 1,
+            Snap::OnLine => 2,
+        };
+        let mut best = self.page_snaps().and_then(|s| s.nearest(raw, reach));
+        // The points of the markups on the page, except the one whose grip
+        // is dragged.
+        let dragged = match &self.drag {
+            Some(Drag::Grip { id, .. }) => Some(id.clone()),
+            _ => None,
+        };
+        if let Some(review) = self.review.as_ref() {
+            for markup in review.markups() {
+                if markup.page != self.page || Some(&markup.id) == dragged.as_ref() {
+                    continue;
+                }
+                for p in markup.grips() {
+                    let distance = p.distance(raw);
+                    let better =
+                        best.is_none_or(|b| (0, distance) < (rank(b.kind), b.at.distance(raw)));
+                    if distance <= reach && better {
+                        best = Some(Snapped {
+                            at: p,
+                            kind: Snap::End,
+                        });
+                    }
+                }
+            }
+        }
+        self.snapped = best;
+        best.map_or(raw, |s| s.at)
+    }
+
+    /// The snap points of the page shown, read once.
+    fn page_snaps(&mut self) -> Option<&Snaps> {
+        let fresh = self
+            .snaps
+            .as_ref()
+            .is_none_or(|(page, _)| *page != self.page);
+        if fresh {
+            let snaps = Snaps::of(self.review.as_ref()?.document(), self.page).unwrap_or_default();
+            self.snaps = Some((self.page, snaps));
+        }
+        self.snaps.as_ref().map(|(_, s)| s)
+    }
+
+    /// Whether a mouse button is held down on the drawing.
+    #[must_use]
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// Whether moving the mouse without a button changes what is shown:
+    /// a snap mark, or a shape being placed point by point.
+    #[must_use]
+    pub fn tracks_hover(&self) -> bool {
+        self.aims() || self.building.is_some() || self.calibrate_from.is_some()
+    }
+
+    /// Whether points snap.
+    #[must_use]
+    pub fn snapping(&self) -> bool {
+        self.settings.snap
+    }
+
+    /// Snaps points or not, and keeps the choice.
+    pub fn set_snap(&mut self, on: bool) {
+        self.settings.snap = on;
+        self.snapped = None;
+        self.keep_settings();
+        self.status = if on {
+            "Points snap to the drawing's ends, middles, crossings and lines.".into()
+        } else {
+            "Points no longer snap.".into()
+        };
+    }
+
+    /// What the mouse snaps to, for the status bar.
+    #[must_use]
+    pub fn snap_label(&self) -> String {
+        self.snapped
+            .map(|s| s.kind.label().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// Whether the wheel zooms without Ctrl.
+    #[must_use]
+    pub fn wheel_zooms(&self) -> bool {
+        self.settings.wheel_zooms
+    }
+
+    /// One full page: the page fits, and the wheel zooms without Ctrl;
+    /// or back to the wheel moving the page. The choice is kept.
+    pub fn set_wheel_zooms(&mut self, on: bool) {
+        self.settings.wheel_zooms = on;
+        if on {
+            self.fit();
+            self.status = "One full page: the wheel zooms, Ctrl+wheel moves the page.".into();
+        } else {
+            self.status = "The wheel moves the page; Ctrl+wheel zooms.".into();
+        }
+        self.keep_settings();
+    }
+
+    fn keep_settings(&self) {
+        if let Some(path) = self.saved_path.as_ref() {
+            // Not being able to keep a preference is no reason to stop.
+            let _ = chest::store_settings(path, self.settings);
+        }
+    }
+
+    /// Whether a shape of many points is being drawn, which Enter or a
+    /// double click finishes; not a line or box placed by two clicks.
+    #[must_use]
+    pub fn building_by_points(&self) -> bool {
+        self.building
+            .as_ref()
+            .is_some_and(|(kind, _, _)| kind.gesture() == Gesture::Clicks)
     }
 
     /// Whether a shape is being drawn point by point.
@@ -1134,9 +1404,12 @@ impl Viewer {
             || self.drag.is_some()
             || self.calibrating.is_some()
             || self.tool != Tool::Select;
+        let busy = busy || self.calibrate_from.is_some();
         self.drag = None;
         self.building = None;
         self.calibrating = None;
+        self.calibrate_from = None;
+        self.snapped = None;
         if busy {
             self.choose_tool(Tool::Select);
         } else {
@@ -1856,6 +2129,7 @@ impl Viewer {
     /// Reads My tools from `path` and keeps them there from now on.
     pub fn keep_saved_tools_at(&mut self, path: PathBuf) {
         self.saved = chest::load(&path);
+        self.settings = chest::load_settings(&path);
         self.saved_path = Some(path);
     }
 
@@ -2012,7 +2286,13 @@ impl Viewer {
             if *kind != Kind::Count {
                 points.extend(*cursor);
             }
-            draw(&self.new_markup(*kind, points), false);
+            if kind.gesture() == Gesture::Drag {
+                if let Some(points) = drawn(*kind, points, false).filter(|p| p.len() >= 2) {
+                    draw(&self.new_markup(*kind, points), false);
+                }
+            } else {
+                draw(&self.new_markup(*kind, points), false);
+            }
         }
         shapes.extend(outlines);
         self.handles(&page, &chosen, &mut shapes);
@@ -2040,25 +2320,37 @@ impl Viewer {
                 selected: false,
             });
         }
+        (shapes, labels)
+    }
+
+    /// What helps place and pick markups: the calibration line, what the
+    /// mouse snaps to, the grips of the one markup selected, and the box
+    /// being dragged to select.
+    fn handles(&self, page: &Page, chosen: &[String], shapes: &mut Vec<Shape>) {
         let line = match &self.drag {
             Some(Drag::Calibrate { a, b }) => Some((*a, *b)),
-            _ => self.calibrating,
+            _ => self
+                .calibrating
+                .or_else(|| Some((self.calibrate_from?, self.cursor?))),
         };
         if let Some((a, b)) = line {
             shapes.push(Shape {
-                commands: self.commands(&page, &[Segment::Move(a), Segment::Line(b)]),
+                commands: self.commands(page, &[Segment::Move(a), Segment::Line(b)]),
                 stroke: Some([0.0, 0.45, 0.9]),
                 fill: None,
                 width: 2.0,
                 selected: false,
             });
         }
-        (shapes, labels)
-    }
-
-    /// The grips of the one markup selected, and the box being dragged
-    /// to select.
-    fn handles(&self, page: &Page, chosen: &[String], shapes: &mut Vec<Shape>) {
+        if let Some(snapped) = self.snapped {
+            shapes.push(Shape {
+                commands: marker(self.to_screen(page, snapped.at), snapped.kind),
+                stroke: Some([1.0, 0.45, 0.0]),
+                fill: None,
+                width: 2.0,
+                selected: false,
+            });
+        }
         // The grips of the one markup selected.
         if let Some(markup) = self
             .selected()
@@ -2236,6 +2528,74 @@ fn drawn(kind: Kind, mut points: Vec<Point>, click: bool) -> Option<Vec<Point>> 
     }
 }
 
+/// `p` kept at a multiple of 45° from `anchor`, or, for a box, square.
+fn straighten(anchor: Point, p: Point, square: bool) -> Point {
+    let (dx, dy) = (p.x - anchor.x, p.y - anchor.y);
+    if square {
+        let side = dx.abs().max(dy.abs());
+        return Point::new(anchor.x + side.copysign(dx), anchor.y + side.copysign(dy));
+    }
+    let step = std::f64::consts::FRAC_PI_4;
+    let angle = (dy.atan2(dx) / step).round() * step;
+    let (sin, cos) = angle.sin_cos();
+    // The mouse's point projected on that direction, like a square
+    // against a straightedge.
+    let length = dx * cos + dy * sin;
+    // Exactly level or plumb, not a hair off.
+    let tidy = |v: f64| if v.abs() < 1e-12 { 0.0 } else { v };
+    Point::new(anchor.x + tidy(length * cos), anchor.y + tidy(length * sin))
+}
+
+/// The mark of a snap at `(x, y)` on the screen: a square for an end, a
+/// triangle for a middle, a cross for a crossing, a diamond on a line.
+fn marker((x, y): (f64, f64), kind: Snap) -> String {
+    let m = MARK;
+    match kind {
+        Snap::End => format!(
+            "M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} Z",
+            x - m,
+            y - m,
+            x + m,
+            y - m,
+            x + m,
+            y + m,
+            x - m,
+            y + m
+        ),
+        Snap::Middle => format!(
+            "M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} Z",
+            x,
+            y - m,
+            x + m,
+            y + m,
+            x - m,
+            y + m
+        ),
+        Snap::Intersection => format!(
+            "M {:.1} {:.1} L {:.1} {:.1} M {:.1} {:.1} L {:.1} {:.1}",
+            x - m,
+            y - m,
+            x + m,
+            y + m,
+            x + m,
+            y - m,
+            x - m,
+            y + m
+        ),
+        Snap::OnLine => format!(
+            "M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} Z",
+            x,
+            y - m,
+            x + m,
+            y,
+            x,
+            y + m,
+            x - m,
+            y
+        ),
+    }
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
@@ -2297,6 +2657,94 @@ mod tests {
         assert_eq!(viewer.title(), "sheets.pdf — OpenCabinet Review");
         viewer.fit_width();
         assert!((viewer.zoom - 0.98 * 1000.0 / 2592.0).abs() < 1e-9);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_line_is_placed_by_two_clicks_snapping_to_the_drawing() {
+        let (mut viewer, dir) = viewer();
+        viewer.choose_tool(Tool::Draw(Kind::Line));
+        // Near where two grid lines cross: x 529.2, y 1371.6 in the PDF,
+        // 356.4 down on the screen.
+        viewer.drag((526.0, 353.0));
+        assert_eq!(viewer.snap_label(), "Intersection");
+        click(&mut viewer, (526.0, 353.0));
+        assert!(viewer.building());
+        assert_eq!(viewer.rows().len(), 0);
+        // Along the horizontal grid line.
+        viewer.drag((700.0, 360.0));
+        assert_eq!(viewer.snap_label(), "On line");
+        click(&mut viewer, (700.0, 360.0));
+        assert!(!viewer.building());
+        let line = viewer.selected().unwrap().clone();
+        assert_eq!(line.kind, Kind::Line);
+        let close = |p: Point, x: f64, y: f64| (p.x - x).abs() < 0.01 && (p.y - y).abs() < 0.01;
+        assert!(close(line.points[0], 529.2, 1371.6), "{:?}", line.points);
+        assert!(close(line.points[1], 700.0, 1371.6), "{:?}", line.points);
+        // Snapping off, the point is where the mouse is.
+        viewer.set_snap(false);
+        viewer.drag((526.0, 353.0));
+        assert_eq!(viewer.snap_label(), "");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shift_keeps_a_line_level_and_a_box_square() {
+        let (mut viewer, dir) = viewer();
+        viewer.set_snap(false);
+        let shift = Keys {
+            shift: true,
+            ..Keys::default()
+        };
+        viewer.choose_tool(Tool::Draw(Kind::Line));
+        click(&mut viewer, (100.0, 100.0));
+        viewer.pointer_moved((300.0, 110.0), shift);
+        viewer.press_with((300.0, 110.0), 0, shift);
+        viewer.release((300.0, 110.0));
+        let line = viewer.selected().unwrap().clone();
+        assert_eq!(line.points[1], Point::new(300.0, 1628.0));
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        viewer.press_with((400.0, 100.0), 0, shift);
+        viewer.pointer_moved((500.0, 160.0), shift);
+        viewer.release((500.0, 160.0));
+        let (low, high) = viewer.selected().unwrap().bounds();
+        assert_eq!((high.x - low.x, high.y - low.y), (100.0, 100.0));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_page_is_calibrated_by_two_clicks() {
+        let (mut viewer, dir) = viewer();
+        viewer.set_snap(false);
+        viewer.choose_tool(Tool::Calibrate);
+        click(&mut viewer, (100.0, 100.0));
+        assert!(!viewer.calibrating());
+        viewer.drag((172.0, 100.0));
+        // The line follows the mouse.
+        let (shapes, _) = viewer.overlay();
+        assert_eq!(shapes.len(), 1);
+        click(&mut viewer, (172.0, 100.0));
+        assert!(viewer.calibrating());
+        viewer.calibrate("1'").unwrap();
+        assert_eq!(viewer.scale_label(), "Scale 1\" = 1'-0\"");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn one_full_page_lets_the_wheel_zoom() {
+        let (mut viewer, dir) = viewer();
+        let before = viewer.zoom;
+        viewer.wheel((0.0, 120.0), false, (500.0, 350.0));
+        assert!((viewer.zoom - before).abs() < 1e-12);
+        viewer.set_wheel_zooms(true);
+        assert!(viewer.wheel_zooms());
+        let fitted = viewer.zoom;
+        viewer.wheel((0.0, 120.0), false, (500.0, 350.0));
+        assert!(viewer.zoom > fitted);
+        // Ctrl+wheel then moves the page instead.
+        let zoomed = viewer.zoom;
+        viewer.wheel((0.0, -120.0), true, (500.0, 350.0));
+        assert!((viewer.zoom - zoomed).abs() < 1e-12);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -2438,9 +2886,12 @@ mod tests {
         );
         assert_eq!(markup.author, viewer.author);
         assert!(viewer.title().starts_with("* "));
-        // A click draws nothing.
+        // A click only places the first point; Escape lets it go.
         click(&mut viewer, (500.0, 500.0));
+        assert!(viewer.building());
         assert_eq!(viewer.rows().len(), 1);
+        viewer.escape();
+        viewer.choose_tool(Tool::Draw(Kind::Cloud));
         let (shapes, _) = viewer.overlay();
         // The cloud, and a grip on each of its four corners.
         assert_eq!(shapes.len(), 5);
