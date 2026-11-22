@@ -9,6 +9,7 @@
 //! never redraws the page.
 
 pub mod dialogs;
+pub mod icons;
 pub mod viewer;
 
 use std::cell::RefCell;
@@ -33,7 +34,7 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::{Label, ReviewWindow, Shape};
+pub use ui::{Label, ReviewWindow, Shape, ToolInfo};
 
 /// The most pages drawn as thumbnails.
 const MAX_THUMBNAILS: usize = 500;
@@ -103,11 +104,18 @@ pub fn create_with(
         generation: RefCell::new(0),
     });
 
-    let tools: Vec<SharedString> = TOOLS.iter().map(|t| t.label().into()).collect();
-    let split = tools.len().div_ceil(2);
-    window.set_tools_split(i32::try_from(split).unwrap_or(0));
-    window.set_tools_a(strings(&tools[..split]));
-    window.set_tools_b(strings(&tools[split..]));
+    let tools: Vec<ToolInfo> = TOOLS
+        .iter()
+        .map(|&t| {
+            let (icon, filled) = icons::icon(t);
+            ToolInfo {
+                name: t.label().into(),
+                icon: icon.into(),
+                filled,
+            }
+        })
+        .collect();
+    window.set_tools(ModelRc::new(VecModel::from(tools)));
     let widths: Vec<SharedString> = WIDTHS.iter().map(|&(name, _)| name.into()).collect();
     window.set_widths(strings(&widths));
     let words: Vec<SharedString> = stamps::TEMPLATES.iter().map(|t| t.words.into()).collect();
@@ -164,6 +172,14 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     window.on_double_clicked(on(|app| app.change(Viewer::double_click)));
     window.on_cancel(on(|app| app.change(Viewer::cancel)));
     window.on_escape(on(|app| app.change(Viewer::escape)));
+    let weak = window.as_weak();
+    window.on_quit(move || {
+        if let Some(window) = weak.upgrade() {
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+        }
+    });
     window.on_stop_compare(on(|app| {
         app.change(Viewer::stop_compare);
         *app.generation.borrow_mut() += 1;
