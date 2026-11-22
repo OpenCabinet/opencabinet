@@ -7,8 +7,10 @@
 //!
 //! Each markup is stored whole, as JSON under its id, so two people
 //! changing the same markup at once end with one of the two versions on
-//! every copy. Every change says who made it, when, and what it did, which
-//! is the activity log. The chat is a list in the same document.
+//! every copy. Replies are stored one by one, apart from their markup, so
+//! two people answering at once both keep their reply. Every change says
+//! who made it, when, and what it did, which is the activity log. The chat
+//! is a list in the same document.
 
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,7 +20,7 @@ use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use opencabinet_model::Length;
 use opencabinet_pdf::Point;
-use opencabinet_review::{Kind, Markup, Scale, Status};
+use opencabinet_review::{Kind, Markup, Reply, Scale, Status};
 use serde_json::{Value as Json, json};
 
 /// Something someone did in the session.
@@ -53,6 +55,7 @@ const MARKUPS: &str = "markups";
 const SCALES: &str = "scales";
 const PEOPLE: &str = "people";
 const CHAT: &str = "chat";
+const REPLIES: &str = "replies";
 /// The longest chat message kept.
 const MAX_SAID: usize = 4000;
 
@@ -68,7 +71,7 @@ impl Shared {
     pub fn start(name: &str) -> Self {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::random());
-        for key in [MARKUPS, SCALES, PEOPLE] {
+        for key in [MARKUPS, SCALES, PEOPLE, REPLIES] {
             // A fresh document always takes a new map.
             let _ = doc.put_object(ROOT, key, ObjType::Map);
         }
@@ -218,6 +221,7 @@ impl Shared {
                 said.push(format!("deleted {what}"));
             }
         }
+        said.extend(self.publish_replies(markups));
         let stored = self.strings(&scale_map);
         for (page, scale) in scales {
             let text = format!("{} {}", scale.points, scale.real.nm());
@@ -242,7 +246,45 @@ impl Shared {
         true
     }
 
-    /// The markups, in the order of their ids.
+    /// Writes the replies that differ from the session's; what was said
+    /// about them for the log.
+    fn publish_replies(&mut self, markups: &[Markup]) -> Vec<String> {
+        let Some(map) = self.map(REPLIES) else {
+            return Vec::new();
+        };
+        let stored = self.strings(&map);
+        let mut said = Vec::new();
+        let mut current = std::collections::BTreeSet::new();
+        for markup in markups {
+            let mut answered = false;
+            for (order, reply) in markup.replies.iter().enumerate() {
+                let key = format!("{}/{}", markup.id, reply_key(reply, order));
+                let text = encode_reply(reply, order).to_string();
+                if stored.get(&key) != Some(&text) {
+                    let _ = self.doc.put(&map, key.as_str(), text);
+                    answered |= !stored.contains_key(&key);
+                }
+                current.insert(key);
+            }
+            if answered {
+                said.push(format!("replied to {}", describe(markup)));
+            }
+        }
+        for key in stored.keys() {
+            if !current.contains(key) {
+                let _ = self.doc.delete(&map, key.as_str());
+                if let Some(markup) = key
+                    .split_once('/')
+                    .and_then(|(id, _)| markups.iter().find(|m| m.id == id))
+                {
+                    said.push(format!("took back a reply to {}", describe(markup)));
+                }
+            }
+        }
+        said
+    }
+
+    /// The markups, in the order of their ids, each with its replies.
     #[must_use]
     pub fn markups(&self) -> Vec<Markup> {
         let Some(map) = self.map(MARKUPS) else {
@@ -255,6 +297,28 @@ impl Shared {
             .collect();
         // Made-earlier first: ids are time ordered (UUIDv7).
         markups.sort_by(|a, b| a.id.cmp(&b.id));
+        if let Some(map) = self.map(REPLIES) {
+            let mut replies: BTreeMap<&str, Vec<(u64, String, Reply)>> = BTreeMap::new();
+            let stored = self.strings(&map);
+            for (key, text) in &stored {
+                let Some((id, rest)) = key.split_once('/') else {
+                    continue;
+                };
+                if let Some((order, reply)) = decode_reply(text) {
+                    replies
+                        .entry(id)
+                        .or_default()
+                        .push((order, rest.to_owned(), reply));
+                }
+            }
+            for markup in &mut markups {
+                if let Some(mut found) = replies.remove(markup.id.as_str()) {
+                    // In the order they were given; two at once by key.
+                    found.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+                    markup.replies = found.into_iter().map(|(_, _, r)| r).collect();
+                }
+            }
+        }
         markups
     }
 
@@ -363,6 +427,54 @@ fn encode(markup: &Markup) -> Json {
     })
 }
 
+/// What tells a reply apart among its markup's: its name, or the object
+/// it was read from, or its place.
+fn reply_key(reply: &Reply, order: usize) -> String {
+    if !reply.name.is_empty() && !reply.name.contains('/') {
+        reply.name.clone()
+    } else if let Some((number, generation)) = reply.origin {
+        format!("object-{number}-{generation}")
+    } else {
+        format!("at-{order}")
+    }
+}
+
+fn encode_reply(reply: &Reply, order: usize) -> Json {
+    json!({
+        "order": order,
+        "name": reply.name,
+        "author": reply.author,
+        "contents": reply.contents,
+        "modified": reply.modified,
+        "origin": reply.origin,
+    })
+}
+
+fn decode_reply(text: &str) -> Option<(u64, Reply)> {
+    let json: Json = serde_json::from_str(text).ok()?;
+    let string = |key: &str| {
+        json.get(key)
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let origin = json.get("origin").and_then(|o| {
+        let number = u32::try_from(o.get(0)?.as_u64()?).ok()?;
+        let generation = u16::try_from(o.get(1)?.as_u64()?).ok()?;
+        Some((number, generation))
+    });
+    Some((
+        json.get("order").and_then(Json::as_u64).unwrap_or(0),
+        Reply {
+            name: string("name"),
+            author: string("author"),
+            contents: string("contents"),
+            modified: string("modified"),
+            origin,
+        },
+    ))
+}
+
 fn decode(id: &str, text: &str) -> Option<Markup> {
     let json: Json = serde_json::from_str(text).ok()?;
     let number = |key: &str| json.get(key)?.as_f64();
@@ -408,6 +520,7 @@ fn decode(id: &str, text: &str) -> Option<Markup> {
         modified: string("modified"),
         scale,
         origin,
+        replies: Vec::new(),
     })
 }
 
@@ -467,6 +580,59 @@ mod tests {
             ]
         );
         assert!(shared.activity().iter().all(|a| a.who == "Andrés"));
+    }
+
+    #[test]
+    fn replies_given_at_once_are_both_kept() {
+        let mut host = Shared::start("Andrés");
+        let markups = vec![cloud("01", 0)];
+        assert!(host.publish(&markups, &BTreeMap::new()));
+        let mut guest = Shared::join(&host.save(), "Sam").unwrap();
+        let answer = |name: &str, who: &str| {
+            let mut answered = markups.clone();
+            answered[0].replies.push(Reply {
+                name: name.into(),
+                author: who.into(),
+                contents: format!("{who} agrees"),
+                ..Reply::default()
+            });
+            answered
+        };
+        assert!(host.publish(&answer("r-a", "Andrés"), &BTreeMap::new()));
+        assert!(guest.publish(&answer("r-b", "Sam"), &BTreeMap::new()));
+        let (mut a, mut b) = (State::new(), State::new());
+        for _ in 0..8 {
+            if let Some(m) = host.outgoing(&mut a) {
+                guest.incoming(&mut b, &m).unwrap();
+            }
+            if let Some(m) = guest.outgoing(&mut b) {
+                host.incoming(&mut a, &m).unwrap();
+            }
+        }
+        let on_host = host.markups();
+        assert_eq!(on_host, guest.markups());
+        let who: Vec<&str> = on_host[0]
+            .replies
+            .iter()
+            .map(|r| r.author.as_str())
+            .collect();
+        assert_eq!(who, ["Andrés", "Sam"]);
+        assert!(
+            host.activity()
+                .iter()
+                .any(|a| a.who == "Sam" && a.what == "replied to a cloud on page 1")
+        );
+        // Taking one back reaches the log too.
+        let mut fewer = on_host.clone();
+        fewer[0].replies.remove(1);
+        assert!(guest.publish(&fewer, &BTreeMap::new()));
+        assert_eq!(guest.markups(), fewer);
+        assert!(
+            guest
+                .activity()
+                .iter()
+                .any(|a| a.what == "took back a reply to a cloud on page 1")
+        );
     }
 
     #[test]

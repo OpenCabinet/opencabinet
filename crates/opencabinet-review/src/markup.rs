@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 
 use opencabinet_pdf::Point;
 use opencabinet_pdf::annotations::{
-    Annotation, Change, FONT, Measure, ObjectRef, STATE, Subtype, win_ansi_literal,
+    Annotation, Change, FONT, Measure, ObjectRef, Reply, STATE, Subtype, win_ansi_literal,
 };
 
 use crate::scale::Scale;
@@ -259,6 +259,8 @@ pub struct Markup {
     pub scale: Option<Scale>,
     /// The annotation it was read from, if any.
     pub origin: Option<ObjectRef>,
+    /// The replies to it, oldest first.
+    pub replies: Vec<Reply>,
 }
 
 impl Default for Markup {
@@ -278,6 +280,7 @@ impl Default for Markup {
             modified: String::new(),
             scale: None,
             origin: None,
+            replies: Vec::new(),
         }
     }
 }
@@ -398,6 +401,68 @@ impl Markup {
             _ => {
                 near_path(&self.points, false)
                     || self.points.len() == 1 && self.points[0].distance(point) <= reach
+            }
+        }
+    }
+
+    /// The points that can be dragged to reshape it: a box's four
+    /// corners, a callout's tip and its box's corners, every point of a
+    /// line or shape. None for a pen stroke or a note.
+    #[must_use]
+    pub fn grips(&self) -> Vec<Point> {
+        let corners = |(low, high): (Point, Point)| {
+            [
+                low,
+                Point::new(high.x, low.y),
+                high,
+                Point::new(low.x, high.y),
+            ]
+        };
+        match self.kind {
+            Kind::Pen | Kind::Note => Vec::new(),
+            k if k.boxed() && self.points.len() >= 2 => corners(self.bounds()).to_vec(),
+            Kind::Callout if self.points.len() >= 3 => {
+                let mut grips = vec![self.points[0]];
+                grips.extend(corners(self.text_box()));
+                grips
+            }
+            _ => self.points.clone(),
+        }
+    }
+
+    /// Moves grip `index` of [`grips`](Self::grips) to `to`; a box keeps
+    /// the opposite corner where it was.
+    pub fn move_grip(&mut self, index: usize, to: Point) {
+        let set_corner = |points: &mut [Point], (low, high): (Point, Point), corner: usize| {
+            // The opposite corner stays.
+            let fixed = match corner {
+                0 => high,
+                1 => Point::new(low.x, high.y),
+                2 => low,
+                _ => Point::new(high.x, low.y),
+            };
+            points[0] = Point::new(fixed.x.min(to.x), fixed.y.min(to.y));
+            points[1] = Point::new(fixed.x.max(to.x), fixed.y.max(to.y));
+        };
+        match self.kind {
+            Kind::Pen | Kind::Note => {}
+            k if k.boxed() && self.points.len() >= 2 && index < 4 => {
+                let bounds = self.bounds();
+                self.points.truncate(2);
+                set_corner(&mut self.points, bounds, index);
+            }
+            Kind::Callout if self.points.len() >= 3 => {
+                if index == 0 {
+                    self.points[0] = to;
+                } else if index < 5 {
+                    let bounds = self.text_box();
+                    set_corner(&mut self.points[1..3], bounds, index - 1);
+                }
+            }
+            _ => {
+                if let Some(point) = self.points.get_mut(index) {
+                    *point = to;
+                }
             }
         }
     }
@@ -710,6 +775,7 @@ impl Markup {
             appearance: self.appearance(label),
             origin: self.origin,
             change: Change::New,
+            replies: self.replies.clone(),
         }
     }
 
@@ -814,6 +880,7 @@ impl Markup {
                 annotation.measure.as_ref().and_then(Scale::from_measure)
             },
             origin: annotation.origin,
+            replies: annotation.replies.clone(),
         })
     }
 

@@ -16,8 +16,11 @@
 //!   does not manage; Review's keys and its appearance are written anew.
 //! - One that was removed goes, with its pop-up note and the replies to
 //!   it.
-//! - Annotations Review does not edit (links, form fields, replies and the
-//!   like) are never touched.
+//! - Replies to a markup (text annotations "in reply to" it, §12.5.6.10)
+//!   are read with it. A new reply is written as one more such annotation,
+//!   with nothing to draw; the replies that were there stay as they were.
+//! - Annotations Review does not edit (links, form fields and the like)
+//!   are never touched.
 //!
 //! Each annotation Review writes also carries a small dictionary of its own
 //! under the key `OpenCabinet`, which other programs ignore; every standard
@@ -130,6 +133,24 @@ pub struct Measure {
     pub factor: f64,
 }
 
+/// A reply to an annotation: a text annotation "in reply to" it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reply {
+    /// A name unique in the document, kept across saves.
+    pub name: String,
+    /// Who wrote it.
+    pub author: String,
+    /// What it says.
+    pub contents: String,
+    /// When it was written, as a PDF date.
+    pub modified: String,
+    /// The object it was read from; `None` for one written in Review.
+    pub origin: Option<ObjectRef>,
+}
+
+/// How deep a chain of replies to replies is followed.
+const REPLY_DEPTH: usize = 16;
+
 /// One annotation, in PDF space.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Annotation {
@@ -190,6 +211,9 @@ pub struct Annotation {
     pub origin: Option<ObjectRef>,
     /// What happened to it since it was read.
     pub change: Change,
+    /// The replies to it, in the order the PDF lists them; replies to
+    /// replies come with the markup they answer.
+    pub replies: Vec<Reply>,
 }
 
 impl Default for Annotation {
@@ -221,6 +245,7 @@ impl Default for Annotation {
             appearance: Vec::new(),
             origin: None,
             change: Change::New,
+            replies: Vec::new(),
         }
     }
 }
@@ -269,7 +294,107 @@ pub fn read(bytes: &[u8]) -> Result<Markups, Error> {
             }
         }
     }
+    read_replies(&document, &mut markups.annotations);
     Ok(markups)
+}
+
+/// Gives each annotation in `annotations` the replies the PDF holds for
+/// it.
+fn read_replies(document: &lopdf::Document, annotations: &mut [Annotation]) {
+    let index: BTreeMap<ObjectId, usize> = annotations
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| Some((a.origin?, i)))
+        .collect();
+    if index.is_empty() {
+        return;
+    }
+    for page_id in document.get_pages().values() {
+        let Ok(page) = document.get_dictionary(*page_id) else {
+            continue;
+        };
+        for entry in page_annotations(document, page) {
+            let Ok(id) = entry.as_reference() else {
+                continue;
+            };
+            let Ok(dict) = document.get_dictionary(id) else {
+                continue;
+            };
+            if dict.get(b"Subtype").and_then(Object::as_name).ok() != Some(b"Text".as_slice()) {
+                continue;
+            }
+            // A group (RT /Group) is one markup in several pieces, not a
+            // reply.
+            if dict
+                .get(b"RT")
+                .and_then(Object::as_name)
+                .is_ok_and(|rt| rt != b"R")
+            {
+                continue;
+            }
+            // The markup the chain of replies starts from.
+            let mut parent = dict.get(b"IRT").and_then(Object::as_reference).ok();
+            let mut depth = 0;
+            while let Some(at) = parent {
+                if index.contains_key(&at) || depth >= REPLY_DEPTH {
+                    break;
+                }
+                parent = document
+                    .get_dictionary(at)
+                    .ok()
+                    .and_then(|d| d.get(b"IRT").and_then(Object::as_reference).ok());
+                depth += 1;
+            }
+            let Some(&owner) = parent.and_then(|p| index.get(&p)) else {
+                continue;
+            };
+            annotations[owner].replies.push(Reply {
+                name: string(document, dict, b"NM"),
+                author: string(document, dict, b"T"),
+                contents: string(document, dict, b"Contents"),
+                modified: string(document, dict, b"M"),
+                origin: Some(id),
+            });
+        }
+    }
+}
+
+/// A new reply to the annotation `parent`, whose bounds are `rect`: a
+/// closed note with nothing to draw, so other programs list it under the
+/// markup instead of showing an icon on the page.
+fn reply_dictionary(
+    document: &mut lopdf::Document,
+    page: ObjectId,
+    parent: ObjectId,
+    rect: [f64; 4],
+    reply: &Reply,
+) -> Dictionary {
+    let [x0, _, _, y1] = rect;
+    let rect = [x0, y1 - 18.0, x0 + 18.0, y1];
+    let appearance = document.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => reals(rect),
+        },
+        Vec::new(),
+    ));
+    dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Text",
+        "P" => page,
+        "F" => 4,
+        "Rect" => reals(rect),
+        "IRT" => parent,
+        "RT" => "R",
+        "Name" => "Comment",
+        "Open" => false,
+        "Contents" => text_string(&reply.contents),
+        "T" => text_string(&reply.author),
+        "NM" => text_string(&reply.name),
+        "M" => text_string(&reply.modified),
+        "AP" => dictionary! { "N" => appearance },
+    }
 }
 
 /// `bytes` with an incremental update for what changed in `markups`, and
@@ -313,24 +438,30 @@ pub fn save(bytes: &[u8], markups: &Markups) -> Result<Vec<u8>, Error> {
             .iter()
             .filter(|a| a.page == index && a.origin.is_none())
             .collect();
+        // New replies to annotations the PDF already holds.
+        let answered: Vec<&Annotation> = markups
+            .annotations
+            .iter()
+            .filter(|a| {
+                a.page == index
+                    && a.origin.is_some()
+                    && a.replies.iter().any(|r| r.origin.is_none())
+            })
+            .collect();
         let own_old = own_entries(prev, page).unwrap_or_default();
         let own_new = markups.pages.get(&index).cloned().unwrap_or_default();
-        if kept.len() == old.len() && new.is_empty() && own_old == own_new {
+        if kept.len() == old.len() && new.is_empty() && answered.is_empty() && own_old == own_new {
             continue;
         }
         changed = true;
         let mut annots = kept;
-        for annotation in new {
-            let font = *font.get_or_insert_with(|| add_font(&mut document.new_document));
-            let mut dict = dictionary! {
-                "Type" => "Annot",
-                "P" => page_id,
-                // Printed with the page.
-                "F" => 4,
-            };
-            fill(&mut document.new_document, &mut dict, annotation, font);
-            annots.push(Object::Reference(document.new_document.add_object(dict)));
-        }
+        append_new(
+            &mut document.new_document,
+            page_id,
+            (&new, &answered),
+            &mut font,
+            &mut annots,
+        );
         document
             .opt_clone_object_to_new_document(page_id)
             .map_err(fail)?;
@@ -358,6 +489,43 @@ pub fn save(bytes: &[u8], markups: &Markups) -> Result<Vec<u8>, Error> {
         .save_to(&mut out)
         .map_err(|e| Error::Annotations(e.to_string()))?;
     Ok(out)
+}
+
+/// Adds to `annots`, the entries of page `page`, the annotations in `new`
+/// with their replies, and the new replies to the annotations in
+/// `answered`.
+fn append_new(
+    document: &mut lopdf::Document,
+    page: ObjectId,
+    (new, answered): (&[&Annotation], &[&Annotation]),
+    font: &mut Option<ObjectId>,
+    annots: &mut Vec<Object>,
+) {
+    for annotation in new {
+        let font = *font.get_or_insert_with(|| add_font(document));
+        let mut dict = dictionary! {
+            "Type" => "Annot",
+            "P" => page,
+            // Printed with the page.
+            "F" => 4,
+        };
+        fill(document, &mut dict, annotation, font);
+        let id = document.add_object(dict);
+        annots.push(Object::Reference(id));
+        for reply in &annotation.replies {
+            let dict = reply_dictionary(document, page, id, annotation.rect, reply);
+            annots.push(Object::Reference(document.add_object(dict)));
+        }
+    }
+    for annotation in answered {
+        let Some(parent) = annotation.origin else {
+            continue;
+        };
+        for reply in annotation.replies.iter().filter(|r| r.origin.is_none()) {
+            let dict = reply_dictionary(document, page, parent, annotation.rect, reply);
+            annots.push(Object::Reference(document.add_object(dict)));
+        }
+    }
 }
 
 /// Writes the annotations read from the PDF that changed over their own
@@ -644,6 +812,7 @@ fn read_annotation(
         appearance: Vec::new(),
         origin: None,
         change: Change::Unchanged,
+        replies: Vec::new(),
     })
 }
 

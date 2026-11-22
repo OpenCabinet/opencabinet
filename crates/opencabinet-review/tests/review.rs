@@ -252,7 +252,7 @@ fn the_markup_list_is_written_for_spreadsheets() {
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(
         lines[0],
-        "Page,Type,Subject,Status,Author,Modified,Text,Measurement"
+        "Page,Type,Subject,Status,Author,Modified,Text,Measurement,Replies"
     );
     assert!(
         lines[1].starts_with("1,Cloud,Phase 2,Open,Andrés,20"),
@@ -260,11 +260,81 @@ fn the_markup_list_is_written_for_spreadsheets() {
         lines[1]
     );
     assert!(
-        lines[1].ends_with(",\"Check \"\"A\"\", then B\","),
+        lines[1].ends_with(",\"Check \"\"A\"\", then B\",,"),
         "{}",
         lines[1]
     );
-    assert!(lines[2].ends_with(",Not to scale"), "{}", lines[2]);
+    assert!(lines[2].ends_with(",Not to scale,"), "{}", lines[2]);
+}
+
+#[test]
+fn replies_leave_the_markup_alone_and_come_back() {
+    let original = sample::foreign_markups();
+    let mut review = Review::open(original.clone()).unwrap();
+    let cloud = review.markups()[0].clone();
+    assert_eq!(cloud.replies.len(), 1);
+    assert_eq!(cloud.replies[0].contents, "Done");
+
+    // Answering the other program's cloud keeps its own look.
+    assert!(!review.reply(&cloud.id, "   ", "Andrés"));
+    assert!(review.reply(&cloud.id, "Agreed", "Andrés"));
+    let cloud = review.markup(&cloud.id).unwrap().clone();
+    assert!(!review.draws(&cloud));
+    assert_eq!(cloud.replies[1].author, "Andrés");
+    let saved = review.save(Units::Imperial).unwrap();
+    assert!(saved.starts_with(&original));
+    let mut again = Review::open(saved).unwrap();
+    let replies: Vec<&str> = again.markups()[0]
+        .replies
+        .iter()
+        .map(|r| r.contents.as_str())
+        .collect();
+    assert_eq!(replies, ["Done", "Agreed"]);
+
+    // A reply can be taken back, and that is a step like any other.
+    let id = again.markups()[0].id.clone();
+    again.remove_reply(&id, 0);
+    assert_eq!(again.markups()[0].replies.len(), 1);
+    again.undo();
+    assert_eq!(again.markups()[0].replies.len(), 2);
+    again.redo();
+    let saved = again.save(Units::Imperial).unwrap();
+    let read = annotations::read(&saved).unwrap();
+    assert_eq!(read.annotations[0].replies.len(), 1);
+    assert_eq!(read.annotations[0].replies[0].contents, "Agreed");
+}
+
+#[test]
+fn grips_reshape_a_box_a_callout_and_a_line() {
+    let mut rectangle = markup(0, Kind::Rectangle, &[(0.0, 0.0), (100.0, 50.0)]);
+    assert_eq!(rectangle.grips().len(), 4);
+    // Dragging the top right corner past the left keeps the bottom left
+    // corner where it was... which is now the bottom right.
+    rectangle.move_grip(2, Point::new(-20.0, 80.0));
+    assert_eq!(
+        rectangle.bounds(),
+        (Point::new(-20.0, 0.0), Point::new(0.0, 80.0))
+    );
+
+    let mut callout = markup(
+        0,
+        Kind::Callout,
+        &[(0.0, 50.0), (100.0, 20.0), (200.0, 80.0)],
+    );
+    assert_eq!(callout.grips().len(), 5);
+    callout.move_grip(0, Point::new(-10.0, 0.0));
+    assert_eq!(callout.points[0], Point::new(-10.0, 0.0));
+    callout.move_grip(3, Point::new(250.0, 90.0));
+    assert_eq!(
+        callout.text_box(),
+        (Point::new(100.0, 20.0), Point::new(250.0, 90.0))
+    );
+
+    let mut line = markup(0, Kind::Length, &[(0.0, 0.0), (72.0, 0.0)]);
+    line.move_grip(1, Point::new(144.0, 0.0));
+    assert_eq!(line.points[1], Point::new(144.0, 0.0));
+    let pen = markup(0, Kind::Pen, &[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)]);
+    assert_eq!(pen.grips().len(), 0);
 }
 
 #[test]
