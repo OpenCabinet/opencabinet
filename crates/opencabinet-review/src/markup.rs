@@ -111,7 +111,8 @@ impl Kind {
     }
 
     /// The name saved in the PDF, in Review's own dictionary.
-    const fn key(self) -> &'static str {
+    #[must_use]
+    pub const fn key(self) -> &'static str {
         match self {
             Self::Cloud => "cloud",
             Self::Rectangle => "rectangle",
@@ -133,7 +134,9 @@ impl Kind {
         }
     }
 
-    fn from_key(key: &str) -> Option<Self> {
+    /// The kind saved under `key`.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.key() == key)
     }
 
@@ -209,7 +212,9 @@ impl Status {
         }
     }
 
-    fn from_label(label: &str) -> Self {
+    /// The status called `label`; open for any other.
+    #[must_use]
+    pub fn from_label(label: &str) -> Self {
         Self::ALL
             .into_iter()
             .find(|s| s.label() == label)

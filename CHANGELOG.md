@@ -44,6 +44,18 @@ follow [Semantic Versioning](https://semver.org/).
     author or text.
   - Escape stops a tool and goes back to Select; the tool in use is the
     one highlighted.
+  - **A window built around the drawing:** menus on top, a rail on the
+    left that opens one panel at a time (pages, markups, find and
+    compare, measure, session), the tools on the right as icons of our
+    own, and a status bar with pages, zoom and scale.
+  - **Review sessions on the local network:** start one with the PDF
+    open and send the invitation; whoever joins gets the drawing and
+    everyone's markups, and every markup, change and delete reaches
+    everyone within a moment. The connection is encrypted with TLS
+    against the host's own certificate, whose fingerprint the invitation
+    carries, and only who has the invitation's secret gets in. The
+    session panel lists who is in and what each did. Not yet: a new host
+    when the host leaves, sessions across the internet, and chat.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

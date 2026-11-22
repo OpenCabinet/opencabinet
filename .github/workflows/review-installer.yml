@@ -15,6 +15,7 @@ on:
       - crates/opencabinet-pdf/**
       - crates/opencabinet-review/**
       - crates/opencabinet-review-app/**
+      - crates/opencabinet-session/**
       - Cargo.lock
       - packaging/windows/opencabinet-review.iss
       - .github/workflows/review-installer.yml

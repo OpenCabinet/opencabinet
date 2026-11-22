@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "opencabinet-session"
+description = "OpenCabinet Review's live review sessions: markups shared through Automerge, hosted from the desktop over TLS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+automerge = "0.12.0"
+opencabinet-model = { workspace = true }
+opencabinet-pdf = { workspace = true }
+opencabinet-review = { workspace = true }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }
+ring = "0.17"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

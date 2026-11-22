@@ -82,6 +82,9 @@ struct App {
     /// What the page image shows, so it is drawn again only when that
     /// changes.
     drawn: RefCell<Option<(View, usize, u64)>>,
+    /// Takes in others' changes in a review session, every few tenths of
+    /// a second.
+    timer: slint::Timer,
     /// Bumped whenever another document opens, which may share a view.
     generation: RefCell<usize>,
 }
@@ -102,7 +105,18 @@ pub fn create_with(
         window: window.as_weak(),
         drawn: RefCell::new(None),
         generation: RefCell::new(0),
+        timer: slint::Timer::default(),
     });
+    let polling = Rc::downgrade(&app);
+    app.timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(250),
+        move || {
+            if let Some(app) = polling.upgrade() {
+                app.poll();
+            }
+        },
+    );
 
     let tools: Vec<ToolInfo> = TOOLS
         .iter()
@@ -186,6 +200,24 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         app.refresh();
     }));
     window.on_compare(on(App::compare));
+    window.on_start_session(on(|app| {
+        let result = app.viewer.borrow_mut().start_session();
+        app.refresh();
+        if let Err(message) = result {
+            app.status(&message);
+        }
+    }));
+    window.on_leave_session(on(|app| app.change(Viewer::leave_session)));
+    let a = Rc::clone(app);
+    window.on_join_session(move |invite| {
+        let result = a.viewer.borrow_mut().join_session(&invite);
+        *a.generation.borrow_mut() += 1;
+        a.draw_thumbnails();
+        a.refresh();
+        if let Err(message) = result {
+            a.status(&message);
+        }
+    });
     window.on_export_flattened(on(App::export_flattened));
     window.on_delete_selected(on(|app| app.change(Viewer::delete_selected)));
 
@@ -247,7 +279,11 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     });
     let a = Rc::clone(app);
     window.on_subject_edited(move |text| {
-        a.viewer.borrow_mut().set_subject(&text);
+        {
+            let mut viewer = a.viewer.borrow_mut();
+            viewer.set_subject(&text);
+            viewer.publish();
+        }
         a.refresh_list();
         if let Some(window) = a.window.upgrade() {
             a.refresh_page(&window);
@@ -295,7 +331,11 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     });
     let a = Rc::clone(app);
     window.on_text_edited(move |text| {
-        a.viewer.borrow_mut().set_text(&text);
+        {
+            let mut viewer = a.viewer.borrow_mut();
+            viewer.set_text(&text);
+            viewer.publish();
+        }
         // Not the whole window: the field being typed in keeps its text.
         a.refresh_list();
         if let Some(window) = a.window.upgrade() {
@@ -324,8 +364,49 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
 
 impl App {
     fn change(&self, f: impl FnOnce(&mut Viewer)) {
-        f(&mut self.viewer.borrow_mut());
+        {
+            let mut viewer = self.viewer.borrow_mut();
+            f(&mut viewer);
+            viewer.publish();
+        }
         self.refresh();
+    }
+
+    /// Takes in others' changes in a review session.
+    fn poll(&self) {
+        let pulled = self.viewer.borrow_mut().pull();
+        if pulled {
+            self.refresh();
+        } else if self.viewer.borrow().in_session() {
+            self.refresh_session();
+        }
+    }
+
+    /// Shows the session's state, people and activity.
+    fn refresh_session(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let viewer = self.viewer.borrow();
+        window.set_in_session(viewer.in_session());
+        window.set_hosting(viewer.invite().is_some());
+        window.set_invite(
+            viewer
+                .invite()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .into(),
+        );
+        window.set_session_state(viewer.session_state().into());
+        let items = |lines: Vec<String>| {
+            let items: Vec<StandardListViewItem> = lines
+                .iter()
+                .map(|l| StandardListViewItem::from(l.as_str()))
+                .collect();
+            ModelRc::new(VecModel::from(items))
+        };
+        window.set_people(items(viewer.people()));
+        window.set_activity(items(viewer.activity()));
     }
 
     fn choose_and_open(&self) {
@@ -527,6 +608,7 @@ impl App {
                 .unwrap_or(0),
         );
         drop(viewer);
+        self.refresh_session();
         self.refresh_list();
         self.refresh_page(&window);
         self.refresh_overlay();

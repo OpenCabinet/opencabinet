@@ -9,6 +9,8 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use opencabinet_model::{Length, Units};
 use opencabinet_pdf::find::{Found, find};
@@ -17,6 +19,7 @@ use opencabinet_review::{
     Color, FILL_OPACITY, Gesture, Kind, Markup, Review, Scale, Segment, Status, presets, stamps,
     text_width,
 };
+use opencabinet_session::{Guest, Host, Invite, Link, Shared};
 
 /// What the mouse does on the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,6 +175,8 @@ pub struct Viewer {
     searched: String,
     /// Another drawing laid over this one, and its name.
     compare: Option<(String, Document)>,
+    /// The review session this window is in, if any.
+    session: Option<Session>,
     status: String,
 }
 
@@ -205,6 +210,7 @@ impl Default for Viewer {
             found_index: 0,
             searched: String::new(),
             compare: None,
+            session: None,
             status: "Open a PDF to start.".into(),
         }
     }
@@ -217,6 +223,11 @@ impl Viewer {
     /// A message for the user when it cannot be read.
     pub fn open(&mut self, path: &Path) -> Result<(), String> {
         let bytes = std::fs::read(path).map_err(|e| format!("Cannot read the file: {e}"))?;
+        self.open_bytes(bytes, Some(path))
+    }
+
+    fn open_bytes(&mut self, bytes: Vec<u8>, path: Option<&Path>) -> Result<(), String> {
+        self.leave_session();
         let review = Review::open(bytes).map_err(|e| capitalize(&e.to_string()))?;
         self.status = format!(
             "{} pages, {} markups.",
@@ -224,7 +235,7 @@ impl Viewer {
             review.markups().len()
         );
         self.review = Some(review);
-        self.path = Some(path.to_owned());
+        self.path = path.map(Path::to_owned);
         self.page = 0;
         self.selected = None;
         self.calibrating = None;
@@ -1064,6 +1075,170 @@ impl Viewer {
         Ok(())
     }
 
+    /// Starts a review session with the PDF open, hosted from here.
+    ///
+    /// # Errors
+    /// A message for the user when there is no PDF or the computer cannot
+    /// host.
+    pub fn start_session(&mut self) -> Result<(), String> {
+        let review = self.review.as_ref().ok_or("Open a PDF first")?;
+        if self.session.is_some() {
+            return Err("You are in a session already".into());
+        }
+        let mut shared = Shared::start(&self.name());
+        shared.publish(review.markups(), review.scales());
+        let pdf = Arc::new(review.document().bytes().to_vec());
+        let host = Host::start(shared, pdf)?;
+        self.status = "Hosting a session: send the invitation to who joins.".into();
+        self.session = Some(Session {
+            link: host.link,
+            invite: Some(host.invite),
+            seen: 0,
+        });
+        Ok(())
+    }
+
+    /// Joins the review session `invite` names, with its drawing.
+    ///
+    /// # Errors
+    /// A message for the user when the invitation is wrong or the host
+    /// cannot be reached.
+    pub fn join_session(&mut self, invite: &str) -> Result<(), String> {
+        let guest = Guest::join(invite, &self.name())?;
+        let Guest { link, pdf } = guest;
+        if let Err(message) = self.open_bytes(pdf, None) {
+            link.stop();
+            return Err(message);
+        }
+        self.session = Some(Session {
+            link,
+            invite: None,
+            seen: 0,
+        });
+        self.pull();
+        self.status = "Joined the session. Save as to keep a copy.".into();
+        Ok(())
+    }
+
+    /// Leaves the review session; the markups stay as they are here.
+    pub fn leave_session(&mut self) {
+        if let Some(session) = self.session.take() {
+            session.link.stop();
+            self.status = "Left the session.".into();
+        }
+    }
+
+    fn name(&self) -> String {
+        if self.author.trim().is_empty() {
+            "Someone".into()
+        } else {
+            self.author.trim().to_owned()
+        }
+    }
+
+    /// Shares this window's markups with the session, if any.
+    pub fn publish(&mut self) {
+        let (Some(session), Some(review)) = (self.session.as_ref(), self.review.as_ref()) else {
+            return;
+        };
+        if let Ok(mut shared) = session.link.shared.lock() {
+            shared.publish(review.markups(), review.scales());
+        }
+    }
+
+    /// Takes in what others changed in the session since last asked;
+    /// whether anything did.
+    pub fn pull(&mut self) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let changed = session.link.changed.load(Ordering::SeqCst);
+        if changed == session.seen && session.seen != 0 {
+            return false;
+        }
+        session.seen = changed.max(1);
+        let Ok(shared) = session.link.shared.lock() else {
+            return false;
+        };
+        let (markups, scales) = (shared.markups(), shared.scales());
+        drop(shared);
+        let taken = self
+            .review
+            .as_mut()
+            .is_some_and(|review| review.take_shared(markups, scales));
+        if taken {
+            self.forget_missing();
+        }
+        taken
+    }
+
+    /// Whether this window is in a session.
+    #[must_use]
+    pub fn in_session(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// The invitation to send, when hosting.
+    #[must_use]
+    pub fn invite(&self) -> Option<&Invite> {
+        self.session.as_ref()?.invite.as_ref()
+    }
+
+    /// The session panel's first line.
+    #[must_use]
+    pub fn session_state(&self) -> String {
+        match &self.session {
+            None => {
+                "Not in a session. Start one with the PDF open, or paste an invitation to join one."
+                    .into()
+            }
+            Some(session) if session.link.stopped() => {
+                "The session ended: the host left or the connection closed.".into()
+            }
+            Some(session) => {
+                let people = session.link.shared.lock().map_or(0, |s| s.people().len());
+                let role = if session.invite.is_some() {
+                    "Hosting"
+                } else {
+                    "In a session"
+                };
+                format!("{role} · {people} people")
+            }
+        }
+    }
+
+    /// Who is in the session.
+    #[must_use]
+    pub fn people(&self) -> Vec<String> {
+        self.session
+            .as_ref()
+            .and_then(|s| s.link.shared.lock().ok().map(|s| s.people()))
+            .unwrap_or_default()
+    }
+
+    /// What everyone did, newest first: `14:32 María: added a cloud on
+    /// page 1`.
+    #[must_use]
+    pub fn activity(&self) -> Vec<String> {
+        let Some(session) = self.session.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(mut shared) = session.link.shared.lock() else {
+            return Vec::new();
+        };
+        shared
+            .activity()
+            .into_iter()
+            .rev()
+            .map(|a| {
+                let time = chrono::DateTime::from_timestamp(a.when, 0)
+                    .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+                    .unwrap_or_default();
+                format!("{time} {}: {}", a.who, a.what)
+            })
+            .collect()
+    }
+
     /// Stops what is under way: a shape, a drag, a calibration, a
     /// selection.
     pub fn cancel(&mut self) {
@@ -1334,6 +1509,22 @@ impl Viewer {
             }
         }
         out.trim_start().to_owned()
+    }
+}
+
+/// A review session this window is in.
+#[derive(Debug)]
+struct Session {
+    link: Link,
+    /// The invitation, when this window hosts.
+    invite: Option<Invite>,
+    /// How many changes from others were taken in.
+    seen: u64,
+}
+
+impl Drop for Viewer {
+    fn drop(&mut self) {
+        self.leave_session();
     }
 }
 
@@ -1753,6 +1944,48 @@ mod tests {
                 .len(),
             0
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_session_is_hosted_joined_and_kept_in_step() {
+        let (mut host, dir) = viewer();
+        host.author = "Andrés".into();
+        host.choose_tool(Tool::Draw(Kind::Cloud));
+        drag(&mut host, (100.0, 100.0), (300.0, 200.0));
+        host.start_session().unwrap();
+        assert!(host.session_state().starts_with("Hosting"));
+        // On the network address, which this test does not use: a guest
+        // joins on this computer's loopback address instead.
+        let mut invite = host.invite().unwrap().clone();
+        invite
+            .address
+            .set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+
+        let mut guest = Viewer::default();
+        guest.author = "María".into();
+        guest.resize(1000.0, 700.0);
+        guest.join_session(&invite.to_string()).unwrap();
+        assert_eq!(guest.rows().len(), 1);
+        assert_eq!(guest.page_label(), "Page 1 of 2");
+
+        guest.zoom = 1.0;
+        guest.scroll = (0.0, 0.0);
+        guest.choose_tool(Tool::Draw(Kind::Arrow));
+        drag(&mut guest, (400.0, 400.0), (500.0, 500.0));
+        guest.publish();
+        let start = std::time::Instant::now();
+        while !host.pull() {
+            assert!(start.elapsed().as_secs() < 10, "the arrow did not arrive");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(host.rows().len(), 2);
+        assert_eq!(host.rows()[1][3], "María");
+        assert_eq!(host.people(), ["Andrés", "María"]);
+        assert!(host.activity()[0].contains("María: added an arrow on page 1"));
+        guest.leave_session();
+        host.leave_session();
+        assert!(!host.in_session());
         std::fs::remove_dir_all(dir).ok();
     }
 
