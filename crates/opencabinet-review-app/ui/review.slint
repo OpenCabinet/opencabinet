@@ -117,12 +117,16 @@ component BarButton inherits Rectangle {
     in property <string> text;
     in property <string> label;
     in property <bool> enabled: true;
+    // For a switch: whether it is on, shown highlighted.
+    in property <bool> checked;
     callback clicked();
     min-width: 26px;
     height: 24px;
     border-radius: 3px;
-    background: touch.has-hover && root.enabled ? Palette.foreground.transparentize(88%) : transparent;
+    background: root.checked ? Palette.accent-background.transparentize(75%)
+        : touch.has-hover && root.enabled ? Palette.foreground.transparentize(88%) : transparent;
     accessible-role: button;
+    accessible-checked: root.checked;
     accessible-label: root.label != "" ? root.label : root.text;
     accessible-action-default => { if (root.enabled) { root.clicked(); } }
     opacity: root.enabled ? 1 : 0.4;
@@ -190,6 +194,11 @@ export component ReviewWindow inherits Window {
     in property <string> page-label;
     in property <string> zoom-label;
     in property <string> scale-label;
+    // What the mouse snaps to now, such as "Endpoint".
+    in property <string> snap-label;
+    in property <bool> snap-on: true;
+    // One full page: the wheel zooms without Ctrl.
+    in property <bool> wheel-zooms;
     in property <string> status;
     in property <[[StandardListViewItem]]> rows;
     in property <int> selected-row: -1;
@@ -268,6 +277,10 @@ export component ReviewWindow inherits Window {
     callback remove-reply(int);
     callback select-all();
     callback dragged(length, length);
+    // The mouse moved, a button held or not, with Shift held or not.
+    callback moved-to(length, length, bool);
+    callback set-snap(bool);
+    callback set-wheel-zooms(bool);
     callback released(length, length);
     callback double-clicked();
     callback wheel(length, length, bool, length, length);
@@ -344,6 +357,14 @@ export component ReviewWindow inherits Window {
             title: "View";
             MenuItem { title: "Fit page"; enabled: root.has-document; activated => { root.fit(); } }
             MenuItem { title: "Fit width"; enabled: root.has-document; activated => { root.fit-width(); } }
+            MenuItem {
+                title: root.wheel-zooms ? "Leave one full page (wheel moves)" : "One full page (wheel zooms)";
+                activated => { root.set-wheel-zooms(!root.wheel-zooms); }
+            }
+            MenuItem {
+                title: root.snap-on ? "Turn snapping off (F3)" : "Turn snapping on (F3)";
+                activated => { root.set-snap(!root.snap-on); }
+            }
             MenuItem { title: "Zoom in"; enabled: root.has-document; activated => { root.zoom-in(); } }
             MenuItem { title: "Zoom out"; enabled: root.has-document; activated => { root.zoom-out(); } }
             MenuItem { title: "Zoom to markup"; enabled: root.has-selection; activated => { root.zoom-to-selected(); } }
@@ -382,6 +403,10 @@ export component ReviewWindow inherits Window {
             }
             if (event.text == Key.PageDown) {
                 root.next-page();
+                return accept;
+            }
+            if (event.text == Key.F3) {
+                root.set-snap(!root.snap-on);
                 return accept;
             }
             if (event.modifiers.control && (event.text == "a" || event.text == "A")) {
@@ -762,9 +787,11 @@ export component ReviewWindow inherits Window {
                                     event.modifiers.control, event.modifiers.shift);
                             } else if (event.kind == PointerEventKind.up) {
                                 root.released(self.mouse-x, self.mouse-y);
+                            } else if (event.kind == PointerEventKind.move) {
+                                root.moved-to(self.mouse-x, self.mouse-y, event.modifiers.shift);
                             }
                         }
-                        moved => { root.dragged(self.mouse-x, self.mouse-y); }
+
                         double-clicked => { root.double-clicked(); }
                         scroll-event(event) => {
                             root.wheel(event.delta-x, event.delta-y, event.modifiers.control,
@@ -1194,7 +1221,26 @@ export component ReviewWindow inherits Window {
                     BarButton { text: "+"; label: "Zoom in"; enabled: root.has-document; clicked => { root.zoom-in(); } }
                     BarButton { text: "Fit"; label: "Fit page"; enabled: root.has-document; clicked => { root.fit(); } }
                     BarButton { text: "Width"; label: "Fit width"; enabled: root.has-document; clicked => { root.fit-width(); } }
+                    BarButton {
+                        text: "One page";
+                        label: "One full page: the wheel zooms";
+                        checked: root.wheel-zooms;
+                        clicked => { root.set-wheel-zooms(!root.wheel-zooms); }
+                    }
                     Rectangle { width: 12px; }
+                    BarButton {
+                        text: "Snap";
+                        label: "Snap to the drawing (F3)";
+                        checked: root.snap-on;
+                        clicked => { root.set-snap(!root.snap-on); }
+                    }
+                    Text {
+                        text: root.snap-label;
+                        vertical-alignment: center;
+                        font-size: 11px;
+                        min-width: 70px;
+                        color: #d9730d;
+                    }
                     BarButton { text: "Undo"; enabled: root.can-undo; clicked => { root.undo(); } }
                     BarButton { text: "Redo"; enabled: root.can-redo; clicked => { root.redo(); } }
                     Rectangle { width: 12px; }

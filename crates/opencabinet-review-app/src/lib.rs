@@ -384,6 +384,38 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     });
     window.on_select_all(on(App::select_all));
     let a = Rc::clone(app);
+    window.on_moved_to(move |x, y, shift| {
+        let at = (f64::from(x), f64::from(y));
+        let keys = Keys {
+            shift,
+            ..Keys::default()
+        };
+        if a.viewer.borrow().dragging() {
+            a.change(|v| v.pointer_moved(at, keys));
+            return;
+        }
+        // Only hovering: no markup changes, so only what is drawn over
+        // the page and the snap's name are brought up to date.
+        let tracked = {
+            let mut viewer = a.viewer.borrow_mut();
+            let tracked = viewer.tracks_hover();
+            if tracked {
+                viewer.pointer_moved(at, keys);
+            }
+            tracked
+        };
+        if tracked {
+            a.refresh_overlay();
+            if let Some(window) = a.window.upgrade() {
+                window.set_snap_label(a.viewer.borrow().snap_label().into());
+            }
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_set_snap(move |on| a.change(|v| v.set_snap(on)));
+    let a = Rc::clone(app);
+    window.on_set_wheel_zooms(move |on| a.change(|v| v.set_wheel_zooms(on)));
+    let a = Rc::clone(app);
     window.on_pressed(move |x, y, button| {
         let button = u8::try_from(button).unwrap_or(1);
         a.change(|v| v.press((f64::from(x), f64::from(y)), button));
@@ -697,6 +729,9 @@ impl App {
         window.set_comparing(viewer.compared().is_some());
         window.set_zoom_label(viewer.zoom_label().into());
         window.set_scale_label(viewer.scale_label().into());
+        window.set_snap_label(viewer.snap_label().into());
+        window.set_snap_on(viewer.snapping());
+        window.set_wheel_zooms(viewer.wheel_zooms());
         window.set_status(viewer.status().into());
         window.set_tool(
             TOOLS
@@ -708,7 +743,7 @@ impl App {
         window.set_chosen_color(i32::try_from(viewer.color()).unwrap_or(0));
         window.set_units(i32::from(viewer.units == Units::Metric));
         window.set_calibrating(viewer.calibrating());
-        window.set_building(viewer.building());
+        window.set_building(viewer.building_by_points());
         let (undo, redo) = viewer.history();
         window.set_can_undo(undo);
         window.set_can_redo(redo);

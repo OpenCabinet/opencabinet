@@ -84,6 +84,20 @@ follow [Semantic Versioning](https://semver.org/).
     markup on the page. They move together, take a subject, status,
     color, width or fill together, and are deleted together, each change
     one step to undo.
+  - **Snap points:** while drawing, measuring or calibrating, the mouse
+    snaps to the drawing's own lines: their ends, middles, crossings, or
+    the nearest point on a line, and to other markups' points. A mark
+    shows what it snaps to, and the status bar names it. F3, the Snap
+    button or the View menu turn it on and off. The lines are read once
+    per page and filed in a grid, so dense sheets answer at once.
+  - **Click, then click:** a line, arrow, length, rectangle, cloud or
+    any other dragged markup can also be placed by a click at each end,
+    and a page calibrated the same way. Shift keeps a line at a multiple
+    of 45° and a box square. A polyline shows its next segment following
+    the mouse.
+  - **One full page:** a mode where the page fits the window and the
+    wheel zooms without Ctrl (Ctrl+wheel then moves the page). Review
+    remembers it, and snapping, for next time.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

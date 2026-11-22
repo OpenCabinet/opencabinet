@@ -23,6 +23,7 @@ pub mod outline;
 mod render;
 pub mod report;
 pub mod sample;
+pub mod snaps;
 mod text;
 
 use std::fmt;

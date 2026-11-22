@@ -5,7 +5,8 @@
 //! the subject "RFI" or a thick blue length.
 //!
 //! They are kept in `tools.json` in the user's settings folder, so they
-//! are there in every drawing.
+//! are there in every drawing. Beside them, `settings.json` keeps how the
+//! person likes to work: snapping, and whether the wheel zooms.
 
 use std::path::{Path, PathBuf};
 
@@ -27,6 +28,58 @@ pub struct SavedTool {
     pub fill: bool,
     /// The subject its markups take; empty for the kind's name.
     pub subject: String,
+}
+
+/// How the person likes to work, kept between runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Settings {
+    /// Whether points snap to the drawing.
+    pub snap: bool,
+    /// Whether the wheel zooms without Ctrl, the whole page in view.
+    pub wheel_zooms: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            snap: true,
+            wheel_zooms: false,
+        }
+    }
+}
+
+/// The settings kept beside the tools at `tools`; the defaults when there
+/// are none.
+#[must_use]
+pub fn load_settings(tools: &Path) -> Settings {
+    let defaults = Settings::default();
+    let Ok(text) = std::fs::read_to_string(tools.with_file_name("settings.json")) else {
+        return defaults;
+    };
+    let Ok(json) = serde_json::from_str::<Json>(&text) else {
+        return defaults;
+    };
+    let flag = |key: &str, default: bool| json.get(key).and_then(Json::as_bool).unwrap_or(default);
+    Settings {
+        snap: flag("snap", defaults.snap),
+        wheel_zooms: flag("wheelZooms", defaults.wheel_zooms),
+    }
+}
+
+/// Keeps `settings` beside the tools at `tools`.
+///
+/// # Errors
+/// When the file cannot be written.
+pub fn store_settings(tools: &Path, settings: Settings) -> std::io::Result<()> {
+    if let Some(folder) = tools.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    let text = serde_json::to_string_pretty(&json!({
+        "snap": settings.snap,
+        "wheelZooms": settings.wheel_zooms,
+    }))
+    .map_err(std::io::Error::other)?;
+    std::fs::write(tools.with_file_name("settings.json"), text)
 }
 
 /// Where the saved tools are kept: `%APPDATA%\OpenCabinet\Review` on
@@ -123,6 +176,13 @@ mod tests {
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(load(&path), []);
         assert_eq!(load(&folder.join("missing.json")), []);
+        assert_eq!(load_settings(&path), Settings::default());
+        let settings = Settings {
+            snap: false,
+            wheel_zooms: true,
+        };
+        store_settings(&path, settings).unwrap();
+        assert_eq!(load_settings(&path), settings);
         std::fs::remove_dir_all(&folder).unwrap();
     }
 }
