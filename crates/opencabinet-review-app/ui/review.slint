@@ -1,8 +1,15 @@
 // SPDX-FileCopyrightText: 2026 OpenCabinet contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+// OpenCabinet Review's window: menus on top; on the left, a rail that opens
+// one panel at a time (pages, bookmarks, find, measure, session); under the drawing,
+// the markup list; on the right, the tools and My tools; at the bottom, a
+// status bar with the page, the zoom and the scale. The drawing takes
+// everything else.
+
 import {
-    Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, StandardTableView, TextEdit,
+    Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, StandardListView,
+    StandardTableView, TextEdit,
 } from "std-widgets.slint";
 
 // A markup's outline over the page, in the view's pixels.
@@ -23,13 +30,109 @@ export struct Label {
     size: length,
 }
 
-// A tool button that stays pressed while its tool is in use.
-// A tool button: the tool in use is the highlighted one. It is not a
-// toggle, which would keep its own pressed state apart from the tool.
-component ToolButton inherits Button {
-    in property <int> index;
-    in property <int> current;
-    primary: self.index == self.current;
+// A tool: its name and its icon, SVG path commands on a 24 × 24 grid.
+export struct ToolInfo {
+    name: string,
+    icon: string,
+    filled: bool,
+}
+
+// A bookmark: what it says, how deep it is, whether it goes to a page.
+export struct BookmarkInfo {
+    title: string,
+    level: int,
+    has-page: bool,
+}
+
+// A saved tool in My tools: its name and color.
+export struct SavedInfo {
+    name: string,
+    color: color,
+}
+
+// The rails' colors, the same in light and dark themes.
+global Rail {
+    out property <color> background: Palette.alternate-background;
+    out property <color> active: Palette.accent-background;
+    out property <color> icon: Palette.foreground;
+}
+
+// A square button with an icon and a short name under it.
+component RailButton inherits Rectangle {
+    in property <string> icon;
+    in property <bool> filled;
+    in property <string> name;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: 52px;
+    height: 46px;
+    border-radius: 4px;
+    background: root.active ? Rail.active.transparentize(70%)
+        : touch.has-hover && root.enabled ? Palette.foreground.transparentize(90%) : transparent;
+    border-width: root.active ? 1px : 0px;
+    border-color: Rail.active;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    opacity: root.enabled ? 1 : 0.4;
+
+    Path {
+        x: (parent.width - 22px) / 2;
+        y: 4px;
+        width: 22px;
+        height: 22px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.icon;
+        stroke: root.active ? Rail.active : Rail.icon;
+        stroke-width: 1.6px;
+        fill: root.filled ? (root.active ? Rail.active : Rail.icon).transparentize(60%) : transparent;
+    }
+    Text {
+        y: 29px;
+        width: parent.width;
+        horizontal-alignment: center;
+        text: root.name;
+        font-size: 9px;
+        color: root.active ? Rail.active : Palette.foreground.transparentize(20%);
+        overflow: elide;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A small flat button for the status bar.
+component BarButton inherits Rectangle {
+    in property <string> text;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+    min-width: 26px;
+    height: 24px;
+    border-radius: 3px;
+    background: touch.has-hover && root.enabled ? Palette.foreground.transparentize(88%) : transparent;
+    accessible-role: button;
+    accessible-label: root.label != "" ? root.label : root.text;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    opacity: root.enabled ? 1 : 0.4;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        Text { text: root.text; vertical-alignment: center; font-size: 12px; }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A panel's title.
+component PanelTitle inherits Text {
+    font-size: 13px;
+    font-weight: 600;
 }
 
 export component ReviewWindow inherits Window {
@@ -38,10 +141,7 @@ export component ReviewWindow inherits Window {
     in property <image> page-image;
     in property <[Shape]> shapes;
     in property <[Label]> labels;
-    // The tools, in two columns: the first holds `tools-split` of them.
-    in property <[string]> tools-a;
-    in property <[string]> tools-b;
-    in property <int> tools-split: 10;
+    in property <[ToolInfo]> tools;
     in property <int> tool;
     in property <[color]> colors;
     in property <[string]> color-names;
@@ -73,11 +173,27 @@ export component ReviewWindow inherits Window {
     in property <string> found-label;
     in property <bool> comparing;
     in property <string> list-label;
-    in-out property <bool> show-pages: true;
     // Which file the thumbnails belong to.
     in-out property <int> document-number;
     in-out property <string> author;
     in property <int> units;
+    // The left panel open: -1 none, 0 pages, 1 bookmarks, 2 find, 3 measure,
+    // 4 session.
+    in-out property <int> panel: 0;
+    // Whether the markup list is open under the drawing.
+    in-out property <bool> list-open: true;
+    in property <[StandardListViewItem]> chat;
+    in property <[SavedInfo]> saved-tools;
+    in property <[BookmarkInfo]> bookmarks;
+    in property <int> saved-in-use: -1;
+    in property <bool> in-session;
+    in property <bool> hosting;
+    in property <string> session-state: "Not in a session";
+    in property <string> invite;
+    in property <string> firewall-advice;
+    in property <bool> firewall-blocks;
+    in property <[StandardListViewItem]> people;
+    in property <[StandardListViewItem]> activity;
 
     callback open();
     callback save();
@@ -126,36 +242,86 @@ export component ReviewWindow inherits Window {
     callback stop-compare();
     callback export-flattened();
     callback set-filter(int, string);
+    callback start-session();
+    callback join-session(string);
+    callback leave-session();
+    callback allow-firewall();
+    callback quit();
+    callback say(string);
+    callback save-tool();
+    callback use-saved(int);
+    callback remove-saved(int);
+    callback sort-list(int, bool);
+    callback go-to-bookmark(int);
+    callback export-summary();
 
     title: root.window-title;
-    preferred-width: 1280px;
-    preferred-height: 760px;
+    preferred-width: 1366px;
+    preferred-height: 768px;
     min-width: 960px;
     min-height: 560px;
     background: Palette.background;
 
+    function toggle(which: int) {
+        root.panel = root.panel == which ? -1 : which;
+    }
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem { title: "Open…"; shortcut: @keys(Control + O); activated => { root.open(); } }
+            MenuItem { title: "Save"; shortcut: @keys(Control + S); enabled: root.has-document; activated => { root.save(); } }
+            MenuItem { title: "Save as…"; enabled: root.has-document; activated => { root.save-as(); } }
+            MenuSeparator { }
+            MenuItem { title: "Export markup summary (PDF)…"; enabled: root.has-document; activated => { root.export-summary(); } }
+            MenuItem { title: "Export markup list (CSV)…"; enabled: root.has-document; activated => { root.export-list(); } }
+            MenuItem { title: "Export flattened PDF…"; enabled: root.has-document; activated => { root.export-flattened(); } }
+            MenuSeparator { }
+            MenuItem { title: "Compare with…"; enabled: root.has-document && !root.comparing; activated => { root.compare(); } }
+            MenuItem { title: "Stop comparing"; enabled: root.comparing; activated => { root.stop-compare(); } }
+            MenuSeparator { }
+            MenuItem { title: "Quit"; activated => { root.quit(); } }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem { title: "Undo"; shortcut: @keys(Control + Z); enabled: root.can-undo; activated => { root.undo(); } }
+            MenuItem { title: "Redo"; shortcut: @keys(Control + Y); enabled: root.can-redo; activated => { root.redo(); } }
+            MenuSeparator { }
+            MenuItem { title: "Copy"; shortcut: @keys(Control + C); enabled: root.has-selection; activated => { root.copy(); } }
+            MenuItem { title: "Paste"; shortcut: @keys(Control + V); enabled: root.has-document; activated => { root.paste(); } }
+            MenuItem { title: "Duplicate"; shortcut: @keys(Control + D); enabled: root.has-selection; activated => { root.duplicate(); } }
+            MenuItem { title: "Delete"; enabled: root.has-selection; activated => { root.delete-selected(); } }
+            MenuSeparator { }
+            MenuItem { title: "Save style in My tools"; enabled: root.has-selection; activated => { root.save-tool(); } }
+        }
+        Menu {
+            title: "View";
+            MenuItem { title: "Fit page"; enabled: root.has-document; activated => { root.fit(); } }
+            MenuItem { title: "Fit width"; enabled: root.has-document; activated => { root.fit-width(); } }
+            MenuItem { title: "Zoom in"; enabled: root.has-document; activated => { root.zoom-in(); } }
+            MenuItem { title: "Zoom out"; enabled: root.has-document; activated => { root.zoom-out(); } }
+            MenuItem { title: "Zoom to markup"; enabled: root.has-selection; activated => { root.zoom-to-selected(); } }
+            MenuSeparator { }
+            MenuItem { title: "Next page"; enabled: root.has-document; activated => { root.next-page(); } }
+            MenuItem { title: "Previous page"; enabled: root.has-document; activated => { root.previous-page(); } }
+            MenuSeparator { }
+            MenuItem { title: "Pages"; activated => { root.toggle(0); } }
+            MenuItem { title: "Bookmarks"; activated => { root.toggle(1); } }
+            MenuItem { title: "Markup list"; activated => { root.list-open = !root.list-open; } }
+            MenuItem { title: "Find"; shortcut: @keys(Control + F); activated => { root.panel = 2; } }
+            MenuItem { title: "Measure"; activated => { root.toggle(3); } }
+            MenuItem { title: "Session"; activated => { root.toggle(4); } }
+        }
+        Menu {
+            title: "Session";
+            MenuItem { title: "Start a session"; enabled: root.has-document && !root.in-session; activated => { root.panel = 4; root.start-session(); } }
+            MenuItem { title: "Join a session…"; enabled: !root.in-session; activated => { root.panel = 4; } }
+            MenuItem { title: "Leave the session"; enabled: root.in-session; activated => { root.leave-session(); } }
+        }
+    }
+
     keys := FocusScope {
         key-pressed(event) => {
-            if (event.modifiers.control && (event.text == "z" || event.text == "Z")) {
-                if (event.modifiers.shift) { root.redo(); } else { root.undo(); }
-                return accept;
-            }
-            if (event.modifiers.control && (event.text == "y" || event.text == "Y")) {
-                root.redo();
-                return accept;
-            }
-            if (event.modifiers.control && (event.text == "c" || event.text == "C")) {
-                root.copy();
-                return accept;
-            }
-            if (event.modifiers.control && (event.text == "v" || event.text == "V")) {
-                root.paste();
-                return accept;
-            }
-            if (event.modifiers.control && (event.text == "d" || event.text == "D")) {
-                root.duplicate();
-                return accept;
-            }
             if (event.text == Key.Delete || event.text == Key.Backspace) {
                 root.delete-selected();
                 return accept;
@@ -168,197 +334,345 @@ export component ReviewWindow inherits Window {
                 root.escape();
                 return accept;
             }
+            if (event.text == Key.PageDown) {
+                root.next-page();
+                return accept;
+            }
+            if (event.text == Key.PageUp) {
+                root.previous-page();
+                return accept;
+            }
             reject
         }
 
         VerticalLayout {
-            padding: 8px;
-            spacing: 8px;
+            spacing: 0px;
 
             HorizontalLayout {
-                spacing: 6px;
-                Text { text: "Find"; vertical-alignment: center; }
-                search := LineEdit {
-                    accessible-label: "Find text";
-                    width: 200px;
-                    enabled: root.has-document;
-                    placeholder-text: "Words on the drawing";
-                    accepted(text) => { root.find(text); }
-                }
-                Button { text: "◀"; accessible-label: "Previous match"; enabled: root.found-label != ""; clicked => { root.find-next(true); } }
-                Button { text: "▶"; accessible-label: "Next match"; enabled: root.found-label != ""; clicked => { root.find-next(false); } }
-                Text { text: root.found-label; vertical-alignment: center; min-width: 72px; }
-                Rectangle { width: 8px; }
-                if !root.comparing: Button {
-                    text: "Compare with…";
-                    enabled: root.has-document;
-                    clicked => { root.compare(); }
-                }
-                if root.comparing: Button {
-                    text: "Stop comparing";
-                    primary: true;
-                    clicked => { root.stop-compare(); }
-                }
-                Button {
-                    text: "Export flattened";
-                    enabled: root.has-document;
-                    clicked => { root.export-flattened(); }
-                }
-                Rectangle { horizontal-stretch: 1; }
-            }
-
-            HorizontalLayout {
-                spacing: 6px;
-                Button { text: "Open"; clicked => { root.open(); } }
-                Button { text: "Save"; enabled: root.has-document; clicked => { root.save(); } }
-                Button { text: "Save as"; enabled: root.has-document; clicked => { root.save-as(); } }
-                Button { text: "Export list"; enabled: root.has-document; clicked => { root.export-list(); } }
-                Rectangle { width: 8px; }
-                Button { text: "Undo"; enabled: root.can-undo; clicked => { root.undo(); } }
-                Button { text: "Redo"; enabled: root.can-redo; clicked => { root.redo(); } }
-                Rectangle { width: 8px; }
-                Button { text: "◀"; accessible-label: "Previous page"; enabled: root.has-document; clicked => { root.previous-page(); } }
-                Text { text: root.page-label; vertical-alignment: center; min-width: 92px; horizontal-alignment: center; }
-                Button { text: "▶"; accessible-label: "Next page"; enabled: root.has-document; clicked => { root.next-page(); } }
-                Rectangle { width: 8px; }
-                Button { text: "−"; accessible-label: "Zoom out"; enabled: root.has-document; clicked => { root.zoom-out(); } }
-                Text { text: root.zoom-label; vertical-alignment: center; min-width: 52px; horizontal-alignment: center; }
-                Button { text: "+"; accessible-label: "Zoom in"; enabled: root.has-document; clicked => { root.zoom-in(); } }
-                Button { text: "Fit"; enabled: root.has-document; clicked => { root.fit(); } }
-                Button { text: "Width"; accessible-label: "Fit width"; enabled: root.has-document; clicked => { root.fit-width(); } }
-                Button {
-                    text: "Pages";
-                    checkable: true;
-                    checked: root.show-pages;
-                    enabled: root.has-document;
-                    clicked => { root.show-pages = !root.show-pages; }
-                }
-                Rectangle { horizontal-stretch: 1; }
-                ComboBox {
-                    accessible-label: "Units";
-                    model: ["Imperial", "Metric"];
-                    current-index: root.units;
-                    selected => { root.choose-units(self.current-index); }
-                }
-                Text { text: "Name"; vertical-alignment: center; }
-                LineEdit {
-                    accessible-label: "Your name";
-                    width: 120px;
-                    text <=> root.author;
-                    edited(text) => { root.author-edited(text); }
-                }
-            }
-
-            HorizontalLayout {
-                spacing: 8px;
                 vertical-stretch: 1;
+                spacing: 0px;
 
-                VerticalLayout {
-                    width: 212px;
-                    spacing: 4px;
-                    HorizontalLayout {
-                        spacing: 4px;
-                        VerticalLayout {
-                            spacing: 2px;
-                            for name[i] in root.tools-a: ToolButton {
-                                text: name;
-                                index: i;
-                                current: root.tool;
-                                enabled: root.has-document;
-                                clicked => { root.choose-tool(i); }
-                            }
-                            Rectangle { vertical-stretch: 1; }
-                        }
-                        VerticalLayout {
-                            spacing: 2px;
-                            for name[i] in root.tools-b: ToolButton {
-                                text: name;
-                                index: i + root.tools-split;
-                                current: root.tool;
-                                enabled: root.has-document;
-                                clicked => { root.choose-tool(i + root.tools-split); }
-                            }
-                            Rectangle { vertical-stretch: 1; }
-                        }
-                    }
-                    if root.building: Button {
-                        text: "Finish (Enter)";
-                        primary: true;
-                        clicked => { root.finish(); }
-                    }
-                    Text { text: "Color"; font-size: 12px; }
-                    HorizontalLayout {
-                        spacing: 4px;
-                        for swatch[i] in root.colors: Rectangle {
-                            width: 26px;
-                            height: 26px;
-                            border-radius: 13px;
-                            background: swatch;
-                            border-width: i == root.chosen-color ? 3px : 1px;
-                            border-color: i == root.chosen-color ? Palette.accent-background : Palette.border;
-                            accessible-role: button;
-                            accessible-label: root.color-names[i];
-                            accessible-action-default => { root.choose-color(i); }
-                            TouchArea { clicked => { root.choose-color(i); } }
-                        }
-                    }
-                    Text { text: "Line"; font-size: 12px; }
-                    ComboBox {
-                        accessible-label: "Line width";
-                        model: root.widths;
-                        current-index: root.width-index;
-                        selected => { root.choose-width(self.current-index); }
-                    }
-                    CheckBox {
-                        text: "Fill shapes";
-                        checked: root.fill-shapes;
-                        toggled => { root.set-fill(self.checked); }
-                    }
-                    if root.stamping: Text { text: "Stamp"; font-size: 12px; }
-                    if root.stamping: ComboBox {
-                        accessible-label: "Stamp";
-                        model: root.stamps;
-                        current-index: root.stamp;
-                        selected => { root.choose-stamp(self.current-index); }
-                    }
-                }
-
-                if root.has-document && root.show-pages: ScrollView {
-                    width: 136px;
+                // The left rail: one panel at a time.
+                Rectangle {
+                    width: 60px;
+                    background: Rail.background;
                     VerticalLayout {
-                        spacing: 6px;
                         padding: 4px;
-                        for thumbnail[i] in root.thumbnails: Rectangle {
-                            height: 104px;
-                            border-width: i == root.page-index ? 2px : 1px;
-                            border-color: i == root.page-index ? Palette.accent-background : Palette.border;
-                            accessible-role: button;
-                            accessible-label: "Page " + (i + 1);
-                            accessible-action-default => { root.go-to-page(i); }
-                            Image {
-                                x: 4px;
-                                y: 4px;
-                                width: parent.width - 8px;
-                                height: 80px;
-                                source: thumbnail;
-                                image-fit: contain;
-                            }
-                            Text {
-                                y: 86px;
-                                width: parent.width;
-                                horizontal-alignment: center;
-                                text: i + 1;
-                                font-size: 11px;
-                            }
-                            TouchArea { clicked => { root.go-to-page(i); } }
+                        spacing: 2px;
+                        alignment: start;
+                        RailButton {
+                            name: "Pages";
+                            icon: "M 4 3 L 14 3 L 14 13 L 4 13 Z M 10 11 L 20 11 L 20 21 L 10 21 Z";
+                            active: root.panel == 0;
+                            clicked => { root.toggle(0); }
+                        }
+                        RailButton {
+                            name: "Bookmarks";
+                            icon: "M 6 3 L 18 3 L 18 21 L 12 16 L 6 21 Z";
+                            active: root.panel == 1;
+                            clicked => { root.toggle(1); }
+                        }
+                        RailButton {
+                            name: "Markups";
+                            icon: "M 4 5 L 6 5 M 9 5 L 20 5 M 4 10 L 6 10 M 9 10 L 20 10 M 4 15 L 6 15 M 9 15 L 20 15 M 4 20 L 6 20 M 9 20 L 16 20";
+                            active: root.list-open;
+                            clicked => { root.list-open = !root.list-open; }
+                        }
+                        RailButton {
+                            name: "Find";
+                            icon: "M 10 4 A 6 6 0 1 0 10 16 A 6 6 0 1 0 10 4 Z M 14.5 14.5 L 20 20";
+                            active: root.panel == 2;
+                            clicked => { root.toggle(2); }
+                        }
+                        RailButton {
+                            name: "Measure";
+                            icon: "M 3 15 L 15 3 L 21 9 L 9 21 Z M 7 11 L 9 13 M 10 8 L 12 10 M 13 5 L 15 7";
+                            active: root.panel == 3;
+                            clicked => { root.toggle(3); }
+                        }
+                        RailButton {
+                            name: "Session";
+                            icon: "M 8 9 A 3 3 0 1 0 8 3 A 3 3 0 1 0 8 9 Z M 2 20 C 2 14 14 14 14 20 M 17 10 A 2.5 2.5 0 1 0 17 5 A 2.5 2.5 0 1 0 17 10 Z M 15 13 C 19 13 22 15 22 19";
+                            active: root.panel == 4;
+                            clicked => { root.toggle(4); }
                         }
                     }
                 }
 
+                // The open panel.
+                if root.panel >= 0: Rectangle {
+                    width: 300px;
+                    background: Palette.background;
+                    border-width: 1px;
+                    border-color: Palette.border;
+
+                    if root.panel == 0: VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        PanelTitle { text: "Pages"; }
+                        if !root.has-document: Text { text: "No PDF open."; }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                spacing: 6px;
+                                padding: 4px;
+                                for thumbnail[i] in root.thumbnails: Rectangle {
+                                    height: 150px;
+                                    border-width: i == root.page-index ? 2px : 1px;
+                                    border-color: i == root.page-index ? Palette.accent-background : Palette.border;
+                                    accessible-role: button;
+                                    accessible-label: "Page " + (i + 1);
+                                    accessible-action-default => { root.go-to-page(i); }
+                                    Image {
+                                        x: 6px;
+                                        y: 6px;
+                                        width: parent.width - 12px;
+                                        height: 120px;
+                                        source: thumbnail;
+                                        image-fit: contain;
+                                    }
+                                    Text {
+                                        y: 130px;
+                                        width: parent.width;
+                                        horizontal-alignment: center;
+                                        text: i + 1;
+                                        font-size: 11px;
+                                    }
+                                    TouchArea { clicked => { root.go-to-page(i); } }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.panel == 1: VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        PanelTitle { text: "Bookmarks"; }
+                        if root.bookmarks.length == 0: Text {
+                            text: root.has-document ? "This PDF has no bookmarks." : "No PDF open.";
+                            wrap: word-wrap;
+                            font-size: 11px;
+                        }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                for mark[i] in root.bookmarks: Rectangle {
+                                    height: 24px;
+                                    border-radius: 3px;
+                                    background: mark-touch.has-hover && mark.has-page ? Palette.foreground.transparentize(90%) : transparent;
+                                    accessible-role: button;
+                                    accessible-label: mark.title;
+                                    accessible-action-default => { root.go-to-bookmark(i); }
+                                    Text {
+                                        x: 6px + min(mark.level, 8) * 14px;
+                                        width: parent.width - self.x - 6px;
+                                        height: parent.height;
+                                        text: mark.title;
+                                        font-size: 12px;
+                                        font-weight: mark.level == 0 ? 600 : 400;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        color: mark.has-page ? Palette.foreground : Palette.foreground.transparentize(40%);
+                                    }
+                                    mark-touch := TouchArea { clicked => { root.go-to-bookmark(i); } }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.panel == 2: VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        PanelTitle { text: "Find"; }
+                        search := LineEdit {
+                            accessible-label: "Find text";
+                            enabled: root.has-document;
+                            placeholder-text: "Words on the drawing";
+                            accepted(text) => { root.find(text); }
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Button { text: "Find"; enabled: root.has-document; clicked => { root.find(search.text); } }
+                            Button { text: "◀"; accessible-label: "Previous match"; enabled: root.found-label != ""; clicked => { root.find-next(true); } }
+                            Button { text: "▶"; accessible-label: "Next match"; enabled: root.found-label != ""; clicked => { root.find-next(false); } }
+                            Text { text: root.found-label; vertical-alignment: center; }
+                        }
+                        Rectangle { height: 12px; }
+                        PanelTitle { text: "Compare"; }
+                        Text {
+                            text: "Lay another PDF over this one: red is only in this drawing, blue only in the other.";
+                            wrap: word-wrap;
+                            font-size: 11px;
+                        }
+                        if !root.comparing: Button {
+                            text: "Compare with…";
+                            enabled: root.has-document;
+                            clicked => { root.compare(); }
+                        }
+                        if root.comparing: Button {
+                            text: "Stop comparing";
+                            primary: true;
+                            clicked => { root.stop-compare(); }
+                        }
+                    }
+
+                    if root.panel == 3: VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        PanelTitle { text: "Measure"; }
+                        Text { text: root.scale-label; }
+                        Text { text: "Scale of this page"; font-size: 11px; }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            ComboBox {
+                                accessible-label: "Scale";
+                                horizontal-stretch: 1;
+                                enabled: root.has-document;
+                                model: root.scales;
+                                selected => { root.choose-scale(self.current-index, every.checked); }
+                            }
+                            every := CheckBox { text: "All pages"; }
+                        }
+                        Button {
+                            text: "Use this page's scale on every page";
+                            enabled: root.has-document;
+                            clicked => { root.scale-every-page(); }
+                        }
+                        Text {
+                            text: "Or pick Calibrate among the tools and drag along a dimension you know.";
+                            wrap: word-wrap;
+                            font-size: 11px;
+                        }
+                        if root.calibrating: VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Real length of the line"; }
+                            length := LineEdit {
+                                accessible-label: "Real length of the line";
+                                placeholder-text: root.units == 0 ? "12'" : "3600 mm";
+                                accepted(text) => { root.calibrate(text); }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Button { text: "Set scale"; clicked => { root.calibrate(length.text); } }
+                                Button { text: "Cancel"; clicked => { root.cancel(); } }
+                            }
+                        }
+                        Text { text: "Units"; font-size: 11px; }
+                        ComboBox {
+                            accessible-label: "Units";
+                            model: ["Feet and inches", "Millimeters"];
+                            current-index: root.units;
+                            selected => { root.choose-units(self.current-index); }
+                        }
+                    }
+
+                    if root.panel == 4: VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        PanelTitle { text: "Session"; }
+                        Text { text: root.session-state; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text { text: "Your name"; vertical-alignment: center; font-size: 11px; }
+                            LineEdit {
+                                accessible-label: "Your name";
+                                text <=> root.author;
+                                edited(text) => { root.author-edited(text); }
+                            }
+                        }
+                        if !root.in-session: Button {
+                            text: "Start a session with this drawing";
+                            enabled: root.has-document;
+                            clicked => { root.start-session(); }
+                        }
+                        if !root.in-session: HorizontalLayout {
+                            spacing: 4px;
+                            code := LineEdit {
+                                accessible-label: "Invitation";
+                                placeholder-text: "Paste an invitation";
+                            }
+                            Button { text: "Join"; clicked => { root.join-session(code.text); } }
+                        }
+                        if root.hosting: VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Send this invitation to who joins:"; font-size: 11px; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                invite-field := LineEdit {
+                                    accessible-label: "Invitation to send";
+                                    read-only: true;
+                                    text: root.invite;
+                                }
+                                Button {
+                                    text: "Copy";
+                                    clicked => {
+                                        invite-field.select-all();
+                                        invite-field.copy();
+                                    }
+                                }
+                            }
+                            if root.firewall-advice != "": Text {
+                                text: root.firewall-advice;
+                                wrap: word-wrap;
+                                font-size: 11px;
+                                color: #c77700;
+                            }
+                            if root.firewall-blocks: Button {
+                                text: "Allow Review through the firewall…";
+                                clicked => { root.allow-firewall(); }
+                            }
+                        }
+                        if root.in-session: Button {
+                            text: "Leave the session";
+                            clicked => { root.leave-session(); }
+                        }
+                        Text { text: "People"; font-size: 11px; }
+                        StandardListView {
+                            height: 64px;
+                            model: root.people;
+                        }
+                        Text { text: "Activity"; font-size: 11px; }
+                        StandardListView {
+                            vertical-stretch: 1;
+                            model: root.activity;
+                        }
+                        if root.in-session: Text { text: "Chat"; font-size: 11px; }
+                        if root.in-session: StandardListView {
+                            vertical-stretch: 1;
+                            model: root.chat;
+                        }
+                        if root.in-session: HorizontalLayout {
+                            spacing: 4px;
+                            message := LineEdit {
+                                accessible-label: "Chat message";
+                                placeholder-text: "Write to everyone";
+                                accepted(text) => {
+                                    root.say(text);
+                                    self.text = "";
+                                }
+                            }
+                            Button {
+                                text: "Send";
+                                clicked => {
+                                    root.say(message.text);
+                                    message.text = "";
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The drawing, and the markup list under it.
+                VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 0px;
                 body := Rectangle {
-                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
                     clip: true;
-                    background: #808080;
+                    background: #6e6e6e;
                     init => { root.resized(self.width, self.height); }
                     changed width => { root.resized(self.width, self.height); }
                     changed height => { root.resized(self.width, self.height); }
@@ -407,130 +721,367 @@ export component ReviewWindow inherits Window {
                             accept
                         }
                     }
-                    if !root.has-document: Text {
-                        text: "Open a PDF drawing to mark it up.";
-                        color: white;
-                        font-size: 16px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: parent.width;
-                        height: parent.height;
+                    if !root.has-document: VerticalLayout {
+                        alignment: center;
+                        spacing: 12px;
+                        Text {
+                            text: "Open a PDF drawing to mark it up, or join a session.";
+                            color: white;
+                            font-size: 16px;
+                            horizontal-alignment: center;
+                        }
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 8px;
+                            Button { text: "Open…"; primary: true; clicked => { root.open(); } }
+                            Button { text: "Join a session"; clicked => { root.panel = 4; } }
+                        }
+                    }
+                    if root.building: Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: 10px;
+                        width: finish-row.preferred-width + 16px;
+                        height: 36px;
+                        border-radius: 6px;
+                        background: Palette.background.with-alpha(0.92);
+                        finish-row := HorizontalLayout {
+                            padding: 6px;
+                            spacing: 6px;
+                            Text { text: "Click the next point"; vertical-alignment: center; }
+                            Button { text: "Finish (Enter)"; primary: true; clicked => { root.finish(); } }
+                        }
                     }
                 }
 
-                VerticalLayout {
-                    width: 340px;
-                    spacing: 6px;
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text { text: "Markups"; font-weight: 600; vertical-alignment: center; }
-                        Text {
-                            text: root.list-label;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            color: Palette.foreground.transparentize(30%);
-                        }
-                    }
-                    HorizontalLayout {
+                if root.list-open: Rectangle {
+                    height: 250px;
+                    background: Palette.background;
+                    border-width: 1px;
+                    border-color: Palette.border;
+                    VerticalLayout {
+                        padding: 6px;
                         spacing: 4px;
-                        status-filter := ComboBox {
-                            accessible-label: "Show markups with status";
-                            model: ["All", "Open", "Accepted", "Rejected", "Completed"];
-                            selected => { root.set-filter(self.current-index, words.text); }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            PanelTitle { text: "Markup list"; vertical-alignment: center; }
+                            Text {
+                                text: root.list-label;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                color: Palette.foreground.transparentize(30%);
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            status-filter := ComboBox {
+                                width: 120px;
+                                accessible-label: "Show markups with status";
+                                model: ["All", "Open", "Accepted", "Rejected", "Completed"];
+                                selected => { root.set-filter(self.current-index, words.text); }
+                            }
+                            words := LineEdit {
+                                width: 160px;
+                                accessible-label: "Show markups with words";
+                                placeholder-text: "Filter";
+                                edited(text) => { root.set-filter(status-filter.current-index, text); }
+                            }
+                            Button { text: "Summary PDF…"; enabled: root.has-document; clicked => { root.export-summary(); } }
+                            Button { text: "CSV…"; enabled: root.has-document; clicked => { root.export-list(); } }
+                            BarButton { text: "✕"; label: "Close the markup list"; clicked => { root.list-open = false; } }
                         }
-                        words := LineEdit {
-                            accessible-label: "Show markups with words";
-                            placeholder-text: "Filter";
-                            edited(text) => { root.set-filter(status-filter.current-index, text); }
-                        }
-                    }
-                    StandardTableView {
-                        vertical-stretch: 1;
-                        columns: [
-                            { title: "Page", min-width: 36px, width: 40px },
-                            { title: "Subject", width: 76px },
-                            { title: "Status", width: 64px },
-                            { title: "Author", width: 60px },
-                            { title: "Text or value", width: 100px },
-                        ];
-                        rows: root.rows;
-                        current-row: root.selected-row;
-                        current-row-changed(row) => { root.row-selected(row); }
-                    }
-                    if root.has-selection: VerticalLayout {
-                        spacing: 4px;
                         HorizontalLayout {
                             spacing: 6px;
-                            VerticalLayout {
-                                spacing: 2px;
-                                Text { text: "Subject"; font-size: 12px; }
-                                LineEdit {
-                                    accessible-label: "Markup subject";
-                                    text <=> root.selected-subject;
-                                    edited(text) => { root.subject-edited(text); }
+                            StandardTableView {
+                                horizontal-stretch: 1;
+                                columns: [
+                                    { title: "Subject", width: 130px },
+                                    { title: "Page", width: 84px },
+                                    { title: "Comments", width: 300px, horizontal-stretch: 1 },
+                                    { title: "Author", width: 100px },
+                                    { title: "Date", width: 120px },
+                                    { title: "Status", width: 90px },
+                                    { title: "Color", width: 70px },
+                                ];
+                                rows: root.rows;
+                                current-row: root.selected-row;
+                                current-row-changed(row) => { root.row-selected(row); }
+                                sort-ascending(column) => { root.sort-list(column, false); }
+                                sort-descending(column) => { root.sort-list(column, true); }
+                            }
+                            if root.has-selection: VerticalLayout {
+                                width: 280px;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: "Subject"; font-size: 11px; }
+                                        LineEdit {
+                                            accessible-label: "Markup subject";
+                                            text <=> root.selected-subject;
+                                            edited(text) => { root.subject-edited(text); }
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: "Status"; font-size: 11px; }
+                                        ComboBox {
+                                            width: 110px;
+                                            accessible-label: "Markup status";
+                                            model: root.statuses;
+                                            current-index: root.selected-status;
+                                            selected => { root.choose-status(self.current-index); }
+                                        }
+                                    }
+                                }
+                                TextEdit {
+                                    accessible-label: "Markup text";
+                                    min-height: 40px;
+                                    vertical-stretch: 1;
+                                    text <=> root.selected-text;
+                                    edited(text) => { root.text-edited(text); }
+                                }
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    BarButton { text: "Zoom to"; clicked => { root.zoom-to-selected(); } }
+                                    BarButton { text: "Duplicate"; clicked => { root.duplicate(); } }
+                                    BarButton { text: "Delete"; clicked => { root.delete-selected(); } }
+                                    BarButton { text: "Save tool"; label: "Save style in My tools"; clicked => { root.save-tool(); } }
                                 }
                             }
-                            VerticalLayout {
-                                spacing: 2px;
-                                Text { text: "Status"; font-size: 12px; }
-                                ComboBox {
-                                    accessible-label: "Markup status";
-                                    model: root.statuses;
-                                    current-index: root.selected-status;
-                                    selected => { root.choose-status(self.current-index); }
+                        }
+                    }
+                }
+                }
+
+                // The tools. Two columns of 52 px, the gaps and the scroll
+                // bar: the rail is as wide as that needs.
+                Rectangle {
+                    width: 140px;
+                    background: Rail.background;
+                    tools-scroll := ScrollView {
+                        VerticalLayout {
+                            width: tools-scroll.visible-width;
+                            padding: 4px;
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    alignment: start;
+                                    for tool[i] in root.tools: Rectangle {
+                                        width: 52px;
+                                        height: mod(i, 2) == 0 ? 46px : 0px;
+                                        visible: mod(i, 2) == 0;
+                                        RailButton {
+                                            name: tool.name;
+                                            icon: tool.icon;
+                                            filled: tool.filled;
+                                            active: i == root.tool;
+                                            enabled: root.has-document;
+                                            clicked => { root.choose-tool(i); }
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    alignment: start;
+                                    for tool[i] in root.tools: Rectangle {
+                                        width: 52px;
+                                        height: mod(i, 2) == 1 ? 46px : 0px;
+                                        visible: mod(i, 2) == 1;
+                                        RailButton {
+                                            name: tool.name;
+                                            icon: tool.icon;
+                                            filled: tool.filled;
+                                            active: i == root.tool;
+                                            enabled: root.has-document;
+                                            clicked => { root.choose-tool(i); }
+                                        }
+                                    }
                                 }
                             }
-                        }
-                        Text { text: "Text"; font-size: 12px; }
-                        TextEdit {
-                            accessible-label: "Markup text";
-                            height: 72px;
-                            text <=> root.selected-text;
-                            edited(text) => { root.text-edited(text); }
-                        }
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Button { text: "Zoom to"; clicked => { root.zoom-to-selected(); } }
-                            Button { text: "Duplicate"; clicked => { root.duplicate(); } }
-                            Button { text: "Delete"; clicked => { root.delete-selected(); } }
+                            Rectangle { height: 1px; background: Palette.border; }
+                            Text { text: "Color"; font-size: 10px; horizontal-alignment: center; }
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                for swatch[i] in root.colors: Rectangle {
+                                    visible: i < 3;
+                                    width: i < 3 ? 22px : 0px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: swatch;
+                                    border-width: i == root.chosen-color ? 3px : 1px;
+                                    border-color: i == root.chosen-color ? Palette.accent-background : Palette.border;
+                                    accessible-role: button;
+                                    accessible-label: root.color-names[i];
+                                    accessible-action-default => { root.choose-color(i); }
+                                    TouchArea { clicked => { root.choose-color(i); } }
+                                }
+                            }
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                for swatch[i] in root.colors: Rectangle {
+                                    visible: i >= 3;
+                                    width: i >= 3 ? 22px : 0px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: swatch;
+                                    border-width: i == root.chosen-color ? 3px : 1px;
+                                    border-color: i == root.chosen-color ? Palette.accent-background : Palette.border;
+                                    accessible-role: button;
+                                    accessible-label: root.color-names[i];
+                                    accessible-action-default => { root.choose-color(i); }
+                                    TouchArea { clicked => { root.choose-color(i); } }
+                                }
+                            }
+                            Text { text: "Line"; font-size: 10px; horizontal-alignment: center; }
+                            // Three line samples, the one in use framed.
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                for name[i] in root.widths: Rectangle {
+                                    width: 32px;
+                                    height: 24px;
+                                    border-radius: 3px;
+                                    border-width: i == root.width-index ? 2px : 1px;
+                                    border-color: i == root.width-index ? Palette.accent-background : Palette.border;
+                                    accessible-role: button;
+                                    accessible-label: name + " line";
+                                    accessible-action-default => { root.choose-width(i); }
+                                    Rectangle {
+                                        width: 20px;
+                                        height: i == 0 ? 1px : i == 1 ? 2px : 4px;
+                                        background: Palette.foreground;
+                                    }
+                                    TouchArea { clicked => { root.choose-width(i); } }
+                                }
+                            }
+                            CheckBox {
+                                text: "Fill";
+                                checked: root.fill-shapes;
+                                toggled => { root.set-fill(self.checked); }
+                            }
+                            if root.stamping: Text { text: "Stamp"; font-size: 10px; horizontal-alignment: center; }
+                            for words[i] in root.stamping ? root.stamps : []: Rectangle {
+                                height: 22px;
+                                border-radius: 3px;
+                                background: i == root.stamp ? Rail.active.transparentize(70%)
+                                    : stamp-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                                accessible-role: button;
+                                accessible-label: "Stamp " + words;
+                                accessible-action-default => { root.choose-stamp(i); }
+                                Text {
+                                    x: 6px;
+                                    width: parent.width - 12px;
+                                    height: parent.height;
+                                    text: words;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                stamp-touch := TouchArea { clicked => { root.choose-stamp(i); } }
+                            }
+                            Rectangle { height: 1px; background: Palette.border; }
+                            Text { text: "My tools"; font-size: 10px; horizontal-alignment: center; }
+                            for saved[i] in root.saved-tools: Rectangle {
+                                height: 26px;
+                                border-radius: 4px;
+                                background: i == root.saved-in-use ? Rail.active.transparentize(70%)
+                                    : use-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                                accessible-role: button;
+                                accessible-label: "Draw with " + saved.name;
+                                accessible-action-default => { root.use-saved(i); }
+                                use-touch := TouchArea {
+                                    enabled: root.has-document;
+                                    clicked => { root.use-saved(i); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    spacing: 4px;
+                                    Rectangle {
+                                        width: 12px;
+                                        height: 12px;
+                                        y: 7px;
+                                        border-radius: 6px;
+                                        background: saved.color;
+                                    }
+                                    Text {
+                                        text: saved.name;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                    BarButton {
+                                        text: "✕";
+                                        label: "Take " + saved.name + " out of My tools";
+                                        clicked => { root.remove-saved(i); }
+                                    }
+                                }
+                            }
+                            if root.saved-tools.length == 0: Text {
+                                text: "Select a markup and save its style here.";
+                                wrap: word-wrap;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                color: Palette.foreground.transparentize(30%);
+                            }
+                            Button {
+                                text: "Save selected";
+                                enabled: root.has-selection;
+                                clicked => { root.save-tool(); }
+                            }
                         }
                     }
-                    if root.calibrating: VerticalLayout {
-                        spacing: 4px;
-                        Text { text: "Real length of the line"; }
-                        length := LineEdit {
-                            accessible-label: "Real length of the line";
-                            placeholder-text: root.units == 0 ? "12'" : "3600 mm";
-                            accepted(text) => { root.calibrate(text); }
-                        }
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Button { text: "Set scale"; clicked => { root.calibrate(length.text); } }
-                            Button { text: "Cancel"; clicked => { root.cancel(); } }
-                        }
-                    }
-                    if root.has-document: HorizontalLayout {
-                        spacing: 4px;
-                        scale-choice := ComboBox {
-                            accessible-label: "Scale";
-                            horizontal-stretch: 1;
-                            model: root.scales;
-                            selected => { root.choose-scale(self.current-index, every.checked); }
-                        }
-                        every := CheckBox { text: "All pages"; }
-                    }
-                    if root.has-document: Button {
-                        text: "Use this page's scale on every page";
-                        clicked => { root.scale-every-page(); }
-                    }
-                    Text { text: root.scale-label; color: Palette.foreground.transparentize(30%); }
                 }
             }
 
-            Text {
-                text: root.status;
-                color: Palette.foreground.transparentize(25%);
-                font-size: 12px;
+            // The status bar.
+            Rectangle {
+                height: 30px;
+                background: Rail.background;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 4px;
+                    Text {
+                        text: root.status;
+                        vertical-alignment: center;
+                        font-size: 11px;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        color: Palette.foreground.transparentize(20%);
+                    }
+                    BarButton { text: "⏮"; label: "First page"; enabled: root.has-document; clicked => { root.go-to-page(0); } }
+                    BarButton { text: "◀"; label: "Previous page"; enabled: root.has-document; clicked => { root.previous-page(); } }
+                    Text { text: root.page-label; vertical-alignment: center; font-size: 12px; min-width: 90px; horizontal-alignment: center; }
+                    BarButton { text: "▶"; label: "Next page"; enabled: root.has-document; clicked => { root.next-page(); } }
+                    Rectangle { width: 12px; }
+                    BarButton { text: "−"; label: "Zoom out"; enabled: root.has-document; clicked => { root.zoom-out(); } }
+                    Text { text: root.zoom-label; vertical-alignment: center; font-size: 12px; min-width: 48px; horizontal-alignment: center; }
+                    BarButton { text: "+"; label: "Zoom in"; enabled: root.has-document; clicked => { root.zoom-in(); } }
+                    BarButton { text: "Fit"; label: "Fit page"; enabled: root.has-document; clicked => { root.fit(); } }
+                    BarButton { text: "Width"; label: "Fit width"; enabled: root.has-document; clicked => { root.fit-width(); } }
+                    Rectangle { width: 12px; }
+                    BarButton { text: "Undo"; enabled: root.can-undo; clicked => { root.undo(); } }
+                    BarButton { text: "Redo"; enabled: root.can-redo; clicked => { root.redo(); } }
+                    Rectangle { width: 12px; }
+                    Text {
+                        text: root.scale-label;
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        min-width: 120px;
+                        horizontal-alignment: right;
+                    }
+                    if root.in-session: Text {
+                        text: "● Live";
+                        color: #2e9d4f;
+                        vertical-alignment: center;
+                        font-size: 12px;
+                    }
+                }
             }
         }
     }

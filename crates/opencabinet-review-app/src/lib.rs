@@ -8,11 +8,13 @@
 //! the markups are drawn over it by the window, so drawing or moving one
 //! never redraws the page.
 
+pub mod chest;
 pub mod dialogs;
+pub mod icons;
 pub mod viewer;
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use opencabinet_model::Units;
@@ -33,7 +35,7 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::{Label, ReviewWindow, Shape};
+pub use ui::{BookmarkInfo, Label, ReviewWindow, SavedInfo, Shape, ToolInfo};
 
 /// The most pages drawn as thumbnails.
 const MAX_THUMBNAILS: usize = 500;
@@ -71,7 +73,7 @@ pub const NAME_AND_VERSION: &str = concat!("OpenCabinet Review ", env!("CARGO_PK
 /// # Errors
 /// When the platform cannot create a window.
 pub fn create(path: Option<&Path>) -> Result<ReviewWindow, slint::PlatformError> {
-    create_with(Rc::new(SystemDialogs), path)
+    build(Rc::new(SystemDialogs), path, chest::default_path())
 }
 
 struct App {
@@ -81,6 +83,9 @@ struct App {
     /// What the page image shows, so it is drawn again only when that
     /// changes.
     drawn: RefCell<Option<(View, usize, u64)>>,
+    /// Takes in others' changes in a review session, every few tenths of
+    /// a second.
+    timer: slint::Timer,
     /// Bumped whenever another document opens, which may share a view.
     generation: RefCell<usize>,
 }
@@ -94,6 +99,15 @@ pub fn create_with(
     dialogs: Rc<dyn Dialogs>,
     path: Option<&Path>,
 ) -> Result<ReviewWindow, slint::PlatformError> {
+    build(dialogs, path, None)
+}
+
+/// The window, keeping My tools at `saved` when given.
+fn build(
+    dialogs: Rc<dyn Dialogs>,
+    path: Option<&Path>,
+    saved: Option<PathBuf>,
+) -> Result<ReviewWindow, slint::PlatformError> {
     let window = ReviewWindow::new()?;
     let app = Rc::new(App {
         viewer: RefCell::new(Viewer::default()),
@@ -101,13 +115,31 @@ pub fn create_with(
         window: window.as_weak(),
         drawn: RefCell::new(None),
         generation: RefCell::new(0),
+        timer: slint::Timer::default(),
     });
+    let polling = Rc::downgrade(&app);
+    app.timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(250),
+        move || {
+            if let Some(app) = polling.upgrade() {
+                app.poll();
+            }
+        },
+    );
 
-    let tools: Vec<SharedString> = TOOLS.iter().map(|t| t.label().into()).collect();
-    let split = tools.len().div_ceil(2);
-    window.set_tools_split(i32::try_from(split).unwrap_or(0));
-    window.set_tools_a(strings(&tools[..split]));
-    window.set_tools_b(strings(&tools[split..]));
+    let tools: Vec<ToolInfo> = TOOLS
+        .iter()
+        .map(|&t| {
+            let (icon, filled) = icons::icon(t);
+            ToolInfo {
+                name: t.label().into(),
+                icon: icon.into(),
+                filled,
+            }
+        })
+        .collect();
+    window.set_tools(ModelRc::new(VecModel::from(tools)));
     let widths: Vec<SharedString> = WIDTHS.iter().map(|&(name, _)| name.into()).collect();
     window.set_widths(strings(&widths));
     let words: Vec<SharedString> = stamps::TEMPLATES.iter().map(|t| t.words.into()).collect();
@@ -121,6 +153,9 @@ pub fn create_with(
     let names: Vec<SharedString> = COLORS.iter().map(|&(name, _)| name.into()).collect();
     window.set_color_names(ModelRc::new(VecModel::from(names)));
     window.set_author(app.viewer.borrow().author.as_str().into());
+    if let Some(saved) = saved {
+        app.viewer.borrow_mut().keep_saved_tools_at(saved);
+    }
 
     connect(&window, &app);
     match path {
@@ -164,13 +199,83 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     window.on_double_clicked(on(|app| app.change(Viewer::double_click)));
     window.on_cancel(on(|app| app.change(Viewer::cancel)));
     window.on_escape(on(|app| app.change(Viewer::escape)));
+    let weak = window.as_weak();
+    window.on_quit(move || {
+        if let Some(window) = weak.upgrade() {
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+        }
+    });
     window.on_stop_compare(on(|app| {
         app.change(Viewer::stop_compare);
         *app.generation.borrow_mut() += 1;
         app.refresh();
     }));
     window.on_compare(on(App::compare));
+    window.on_start_session(on(|app| {
+        let result = app.viewer.borrow_mut().start_session();
+        app.refresh();
+        if let Err(message) = result {
+            app.status(&message);
+        }
+    }));
+    window.on_leave_session(on(|app| app.change(Viewer::leave_session)));
+    window.on_allow_firewall(on(|app| app.change(Viewer::allow_firewall)));
+    let a = Rc::clone(app);
+    window.on_join_session(move |invite| {
+        let result = a.viewer.borrow_mut().join_session(&invite);
+        *a.generation.borrow_mut() += 1;
+        a.draw_thumbnails();
+        a.refresh();
+        if let Err(message) = result {
+            a.status(&message);
+        }
+    });
     window.on_export_flattened(on(App::export_flattened));
+    window.on_export_summary(on(App::export_summary));
+    let a = Rc::clone(app);
+    window.on_go_to_bookmark(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.go_to_bookmark(i));
+        }
+    });
+    window.on_save_tool(on(|app| {
+        let result = app.viewer.borrow_mut().save_selected_tool();
+        app.refresh();
+        if let Err(message) = result {
+            app.status(&message);
+        }
+    }));
+    let a = Rc::clone(app);
+    window.on_use_saved(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.use_saved_tool(i));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_remove_saved(move |i| {
+        let Ok(i) = usize::try_from(i) else {
+            return;
+        };
+        let result = a.viewer.borrow_mut().remove_saved_tool(i);
+        a.refresh();
+        if let Err(message) = result {
+            a.status(&message);
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_sort_list(move |column, down| {
+        if let Ok(column) = usize::try_from(column) {
+            a.change(|v| v.sort_by(Some((column, down))));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_say(move |text| {
+        if a.viewer.borrow_mut().say(&text) {
+            a.refresh_session();
+        }
+    });
     window.on_delete_selected(on(|app| app.change(Viewer::delete_selected)));
 
     let a = Rc::clone(app);
@@ -231,7 +336,11 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     });
     let a = Rc::clone(app);
     window.on_subject_edited(move |text| {
-        a.viewer.borrow_mut().set_subject(&text);
+        {
+            let mut viewer = a.viewer.borrow_mut();
+            viewer.set_subject(&text);
+            viewer.publish();
+        }
         a.refresh_list();
         if let Some(window) = a.window.upgrade() {
             a.refresh_page(&window);
@@ -279,7 +388,11 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     });
     let a = Rc::clone(app);
     window.on_text_edited(move |text| {
-        a.viewer.borrow_mut().set_text(&text);
+        {
+            let mut viewer = a.viewer.borrow_mut();
+            viewer.set_text(&text);
+            viewer.publish();
+        }
         // Not the whole window: the field being typed in keeps its text.
         a.refresh_list();
         if let Some(window) = a.window.upgrade() {
@@ -308,8 +421,52 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
 
 impl App {
     fn change(&self, f: impl FnOnce(&mut Viewer)) {
-        f(&mut self.viewer.borrow_mut());
+        {
+            let mut viewer = self.viewer.borrow_mut();
+            f(&mut viewer);
+            viewer.publish();
+        }
         self.refresh();
+    }
+
+    /// Takes in others' changes in a review session.
+    fn poll(&self) {
+        let pulled = self.viewer.borrow_mut().pull();
+        if pulled {
+            self.refresh();
+        } else if self.viewer.borrow().in_session() {
+            self.refresh_session();
+        }
+    }
+
+    /// Shows the session's state, people and activity.
+    fn refresh_session(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let viewer = self.viewer.borrow();
+        window.set_in_session(viewer.in_session());
+        window.set_hosting(viewer.invite().is_some());
+        window.set_invite(
+            viewer
+                .invite()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .into(),
+        );
+        window.set_session_state(viewer.session_state().into());
+        let items = |lines: Vec<String>| {
+            let items: Vec<StandardListViewItem> = lines
+                .iter()
+                .map(|l| StandardListViewItem::from(l.as_str()))
+                .collect();
+            ModelRc::new(VecModel::from(items))
+        };
+        window.set_people(items(viewer.people()));
+        window.set_activity(items(viewer.activity()));
+        window.set_chat(items(viewer.chat()));
+        window.set_firewall_advice(viewer.firewall_advice().into());
+        window.set_firewall_blocks(viewer.firewall_blocks());
     }
 
     fn choose_and_open(&self) {
@@ -368,6 +525,29 @@ impl App {
         }
     }
 
+    fn export_summary(&self) {
+        let suggested = self
+            .viewer
+            .borrow()
+            .path()
+            .and_then(Path::file_stem)
+            .map_or_else(
+                || "drawing".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+        let Some(path) = self
+            .dialogs
+            .save_path(&format!("{suggested} (markup summary).pdf"), FileKind::Pdf)
+        else {
+            return;
+        };
+        let result = self.viewer.borrow_mut().export_summary(&path);
+        self.refresh();
+        if let Err(message) = result {
+            self.status(&message);
+        }
+    }
+
     fn export_flattened(&self) {
         let suggested = self
             .viewer
@@ -420,6 +600,19 @@ impl App {
         let Some(window) = self.window.upgrade() else {
             return;
         };
+        // The bookmarks change with the document too.
+        let marks: Vec<BookmarkInfo> = self
+            .viewer
+            .borrow()
+            .bookmarks()
+            .iter()
+            .map(|b| BookmarkInfo {
+                title: b.title.as_str().into(),
+                level: i32::try_from(b.level).unwrap_or(0),
+                has_page: b.page.is_some(),
+            })
+            .collect();
+        window.set_bookmarks(ModelRc::new(VecModel::from(marks)));
         let Some(document) = self.viewer.borrow().review().map(|r| r.document().clone()) else {
             window.set_thumbnails(ModelRc::default());
             return;
@@ -495,6 +688,21 @@ impl App {
         window.set_fill_shapes(viewer.fill());
         window.set_stamp(i32::try_from(viewer.stamp()).unwrap_or(0));
         window.set_stamping(viewer.tool() == Tool::Draw(Kind::Stamp));
+        let saved: Vec<SavedInfo> = viewer
+            .saved_tools()
+            .iter()
+            .map(|t| SavedInfo {
+                name: t.name.as_str().into(),
+                color: color(t.color),
+            })
+            .collect();
+        window.set_saved_tools(ModelRc::new(VecModel::from(saved)));
+        window.set_saved_in_use(
+            viewer
+                .saved_in_use()
+                .and_then(|i| i32::try_from(i).ok())
+                .unwrap_or(-1),
+        );
         let selected = viewer.selected();
         window.set_has_selection(selected.is_some());
         window.set_selected_text(selected.map(|m| m.text.as_str()).unwrap_or_default().into());
@@ -511,6 +719,7 @@ impl App {
                 .unwrap_or(0),
         );
         drop(viewer);
+        self.refresh_session();
         self.refresh_list();
         self.refresh_page(&window);
         self.refresh_overlay();

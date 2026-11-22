@@ -163,3 +163,84 @@ pub fn foreign_markups() -> Vec<u8> {
     document.save_to(&mut bytes).unwrap();
     bytes
 }
+
+/// Three sheets with bookmarks, each pointing at its page a different way:
+/// straight at the page, through an action, and by a name.
+///
+/// ```text
+/// Plans            (no page)
+///   A-101 Floor plan       → page 1, straight
+///   A-102 Elevación norte  → page 2, through an action
+/// Details          → page 3, by name
+/// ```
+///
+/// # Panics
+/// Never: it reads and writes only what it builds.
+#[must_use]
+pub fn bookmarked() -> Vec<u8> {
+    let mut document = lopdf::Document::load_mem(&sheets(3, 1224.0, 792.0, 3)).unwrap();
+    let pages: Vec<lopdf::ObjectId> = document.get_pages().into_values().collect();
+    let outlines = document.new_object_id();
+    let plans = document.new_object_id();
+    let first = document.new_object_id();
+    let second = document.new_object_id();
+    let details = document.new_object_id();
+    let text = |t: &str| Object::string_literal(crate::text::encode(t));
+    let fit = |page: lopdf::ObjectId| Object::Array(vec![page.into(), "Fit".into()]);
+    document.objects.insert(
+        first,
+        dictionary! {
+            "Title" => text("A-101 Floor plan"), "Parent" => plans, "Next" => second,
+            "Dest" => fit(pages[0]),
+        }
+        .into(),
+    );
+    document.objects.insert(
+        second,
+        dictionary! {
+            "Title" => text("A-102 Elevación norte"), "Parent" => plans, "Prev" => first,
+            "A" => dictionary! { "S" => "GoTo", "D" => fit(pages[1]) },
+        }
+        .into(),
+    );
+    document.objects.insert(
+        plans,
+        dictionary! {
+            "Title" => text("Plans"), "Parent" => outlines, "Next" => details,
+            "First" => first, "Last" => second, "Count" => 2,
+        }
+        .into(),
+    );
+    document.objects.insert(
+        details,
+        dictionary! {
+            "Title" => text("Details"), "Parent" => outlines, "Prev" => plans,
+            "Dest" => Object::string_literal("sheet-3"),
+        }
+        .into(),
+    );
+    document.objects.insert(
+        outlines,
+        dictionary! { "Type" => "Outlines", "First" => plans, "Last" => details, "Count" => 2 }
+            .into(),
+    );
+    let names = document.add_object(dictionary! {
+        "Names" => vec![Object::string_literal("sheet-3"), fit(pages[2])],
+    });
+    let root = document
+        .trailer
+        .get(b"Root")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let catalog = document
+        .get_object_mut(root)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap();
+    catalog.set("Outlines", outlines);
+    catalog.set("Names", dictionary! { "Dests" => names });
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    bytes
+}

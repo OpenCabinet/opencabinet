@@ -44,6 +44,33 @@ follow [Semantic Versioning](https://semver.org/).
     author or text.
   - Escape stops a tool and goes back to Select; the tool in use is the
     one highlighted.
+  - **A window built around the drawing:** menus on top, a rail on the
+    left that opens one panel at a time (pages, bookmarks, find and
+    compare, measure, session), the markup list under the drawing, the tools on
+    the right as icons of our own, and a status bar with pages, zoom and
+    scale.
+  - **The markup list under the drawing:** subject, page, comments,
+    author, date, status and color, sorted by any column's header, with
+    the selected markup's subject, status and text beside it.
+  - **Bookmarks:** the PDF's own bookmarks, the sheet index many sets
+    carry, in a panel; a click shows the sheet.
+  - **Markup summary:** the list as shown, filtered and sorted, written
+    as a PDF report with each markup's color, ready to send.
+  - **My tools:** a markup's style (kind, color, width, fill and
+    subject) saved to draw with again in any drawing.
+  - **Review sessions on the local network:** start one with the PDF
+    open and send the invitation; whoever joins gets the drawing and
+    everyone's markups, and every markup, change and delete reaches
+    everyone within a moment. The connection is encrypted with TLS
+    against the host's own certificate, whose fingerprint the invitation
+    carries, and only who has the invitation's secret gets in. The
+    session panel lists who is in, what each did, and a chat. The
+    invitation carries every address of the host's computer and whoever
+    joins tries them all; the host listens on port 47100 when it is free.
+    The host is told when the Windows firewall or a public network keeps
+    people out, and can let Review through with Windows' own permission
+    prompt; installed for everyone, the installer can add that rule. Not yet: a
+    new host when the host leaves, and sessions across the internet.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

@@ -335,6 +335,39 @@ impl Review {
         self.measured(markup, units)
     }
 
+    /// The pages' scales.
+    #[must_use]
+    pub fn scales(&self) -> &BTreeMap<usize, Scale> {
+        &self.state.scales
+    }
+
+    /// Takes the markups and scales a review session holds, as others
+    /// left them; whether anything changed. A markup read from the PDF
+    /// that is no longer there is removed when saving. What could be
+    /// undone before is forgotten: it was undone against another state.
+    pub fn take_shared(&mut self, markups: Vec<Markup>, scales: BTreeMap<usize, Scale>) -> bool {
+        if markups == self.state.markups && scales == self.state.scales {
+            return false;
+        }
+        for gone in self
+            .state
+            .markups
+            .iter()
+            .filter(|m| !markups.iter().any(|n| n.id == m.id))
+            .filter_map(|m| m.origin)
+        {
+            if !self.state.removed.contains(&gone) {
+                self.state.removed.push(gone);
+            }
+        }
+        self.state.markups = markups;
+        self.state.scales = scales;
+        self.undo.clear();
+        self.redo.clear();
+        self.typing = None;
+        true
+    }
+
     /// The scale a markup measures with: its own, or its page's.
     #[must_use]
     pub fn scale_of(&self, markup: &Markup) -> Option<Scale> {
