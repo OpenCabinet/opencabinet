@@ -71,6 +71,19 @@ follow [Semantic Versioning](https://semver.org/).
     people out, and can let Review through with Windows' own permission
     prompt; installed for everyone, the installer can add that rule. Not yet: a
     new host when the host leaves, and sessions across the internet.
+  - **Replies:** each markup carries a conversation. Replies are read
+    from and written to the PDF as standard replies, so other PDF viewers
+    list them under the markup; answering another program's markup leaves
+    it exactly as it was. The list counts them, the CSV has them, and in
+    a session replies given at once by two people are both kept. Who wrote
+    a reply can take it back.
+  - **Grips:** the markup selected shows grips on its corners, ends and
+    points; dragging one reshapes it.
+  - **Several markups at once:** Ctrl+click adds or takes one out, a box
+    dragged with Shift picks those inside it, and Ctrl+A picks every
+    markup on the page. They move together, take a subject, status,
+    color, width or fill together, and are deleted together, each change
+    one step to undo.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and
@@ -78,7 +91,7 @@ follow [Semantic Versioning](https://semver.org/).
     shown and edited; one left alone is kept exactly as it was, one moved
     keeps its own look, and keys Review does not know are never dropped.
   - **Markup list** to CSV with page, type, subject, status, author, date,
-    text and measurement.
+    text, measurement and replies.
   - Not yet: review sessions, comparing revisions, text search, OCR and
     sheet sets.
 - **Joinery:** construction standards can join the case with dowels,

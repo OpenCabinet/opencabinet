@@ -27,6 +27,8 @@ use opencabinet_model::{Id, Length, Units};
 use opencabinet_pdf::annotations::{self, Change, Markups, ObjectRef};
 use opencabinet_pdf::{Document, Error, Point};
 
+pub use opencabinet_pdf::annotations::Reply;
+
 pub use markup::{
     COUNT_RADIUS, Caption, Color, FILL_OPACITY, FONT_SIZE, Gesture, Kind, Markup, NOTE_SIZE,
     Segment, Status, text_width,
@@ -249,15 +251,67 @@ impl Review {
         id
     }
 
-    /// Removes the markup with `id`.
+    /// Removes the markup with `id`, and its replies.
     pub fn remove(&mut self, id: &str) {
-        let Some(at) = self.state.markups.iter().position(|m| m.id == id) else {
+        self.remove_all(&[id.to_owned()]);
+    }
+
+    /// Removes the markups with `ids`, and their replies, as one step.
+    pub fn remove_all(&mut self, ids: &[String]) {
+        if !self.state.markups.iter().any(|m| ids.contains(&m.id)) {
             return;
-        };
+        }
         self.checkpoint();
-        let markup = self.state.markups.remove(at);
-        if let Some(origin) = markup.origin {
-            self.state.removed.push(origin);
+        let (gone, kept): (Vec<Markup>, Vec<Markup>) = std::mem::take(&mut self.state.markups)
+            .into_iter()
+            .partition(|m| ids.contains(&m.id));
+        self.state.markups = kept;
+        for markup in gone {
+            let origins = markup
+                .origin
+                .into_iter()
+                .chain(markup.replies.iter().filter_map(|r| r.origin));
+            self.state.removed.extend(origins);
+        }
+    }
+
+    /// Adds a reply by `author` to the markup with `id`; whether there
+    /// was such a markup and something to say. The markup itself does
+    /// not change, so another program's markup keeps its own look.
+    pub fn reply(&mut self, id: &str, text: &str, author: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() || !self.state.markups.iter().any(|m| m.id == id) {
+            return false;
+        }
+        self.checkpoint();
+        if let Some(markup) = self.state.markups.iter_mut().find(|m| m.id == id) {
+            markup.replies.push(Reply {
+                name: Id::new().to_string(),
+                author: author.to_owned(),
+                contents: text.to_owned(),
+                modified: now(),
+                origin: None,
+            });
+        }
+        true
+    }
+
+    /// Removes reply `index` of the markup with `id`.
+    pub fn remove_reply(&mut self, id: &str, index: usize) {
+        let exists = self
+            .state
+            .markups
+            .iter()
+            .any(|m| m.id == id && index < m.replies.len());
+        if !exists {
+            return;
+        }
+        self.checkpoint();
+        if let Some(markup) = self.state.markups.iter_mut().find(|m| m.id == id) {
+            let reply = markup.replies.remove(index);
+            if let Some(origin) = reply.origin {
+                self.state.removed.push(origin);
+            }
         }
     }
 
@@ -349,13 +403,17 @@ impl Review {
         if markups == self.state.markups && scales == self.state.scales {
             return false;
         }
-        for gone in self
-            .state
-            .markups
-            .iter()
-            .filter(|m| !markups.iter().any(|n| n.id == m.id))
-            .filter_map(|m| m.origin)
-        {
+        let replies_of = |markup: &Markup| -> BTreeSet<ObjectRef> {
+            markup.replies.iter().filter_map(|r| r.origin).collect()
+        };
+        let mut gone: Vec<ObjectRef> = Vec::new();
+        for old in &self.state.markups {
+            match markups.iter().find(|n| n.id == old.id) {
+                None => gone.extend(old.origin.into_iter().chain(replies_of(old))),
+                Some(new) => gone.extend(replies_of(old).difference(&replies_of(new))),
+            }
+        }
+        for gone in gone {
             if !self.state.removed.contains(&gone) {
                 self.state.removed.push(gone);
             }
@@ -477,6 +535,12 @@ impl Review {
         if rescaled {
             return Change::Rewritten;
         }
+        // Replies are written on their own: answering a markup does not
+        // change it.
+        let markup = &Markup {
+            replies: read.replies.clone(),
+            ..markup.clone()
+        };
         if markup == read {
             return Change::Unchanged;
         }
@@ -504,7 +568,8 @@ impl Review {
     /// The markup list for spreadsheets: one row per markup.
     #[must_use]
     pub fn csv(&self, units: Units) -> String {
-        let mut out = String::from("Page,Type,Subject,Status,Author,Modified,Text,Measurement\r\n");
+        let mut out =
+            String::from("Page,Type,Subject,Status,Author,Modified,Text,Measurement,Replies\r\n");
         for markup in &self.state.markups {
             let fields = [
                 (markup.page + 1).to_string(),
@@ -515,6 +580,12 @@ impl Review {
                 pdf_date_text(&markup.modified),
                 markup.text.clone(),
                 self.measured(markup, units).unwrap_or_default(),
+                markup
+                    .replies
+                    .iter()
+                    .map(|r| format!("{}: {}", r.author, r.contents))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             ];
             let row: Vec<String> = fields.iter().map(|f| csv_field(f)).collect();
             let _ = write!(out, "{}\r\n", row.join(","));

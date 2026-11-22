@@ -86,8 +86,13 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     window.invoke_dragged(300.0, 250.0);
     window.invoke_released(400.0, 300.0);
     assert_eq!(window.get_rows().row_count(), 1);
-    assert_eq!(window.get_shapes().row_count(), 1);
+    // The cloud, and the grips on its corners.
+    assert_eq!(window.get_shapes().row_count(), 5);
     assert!(window.get_has_selection());
+    assert_eq!(window.get_selected_count(), 1);
+    window.invoke_reply("Is this the new opening?".into());
+    assert_eq!(window.get_replies().row_count(), 1);
+    assert!(window.get_replies().row_data(0).unwrap().mine);
     window.invoke_choose_tool(tool("Text"));
     window.invoke_pressed(450.0, 200.0, 0);
     window.invoke_released(450.0, 200.0);

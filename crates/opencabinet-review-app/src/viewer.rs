@@ -92,6 +92,17 @@ pub const WIDTHS: [(&str, f64); 3] = [("Thin", 1.0), ("Medium", 2.0), ("Thick", 
 
 /// How close a click must be to pick a markup, in screen pixels.
 const PICK: f64 = 6.0;
+/// A grip's half side, in pixels.
+const GRIP: f64 = 4.0;
+
+/// The keys held when a mouse button goes down.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Keys {
+    /// Control: adds a markup to the selection, or takes it out.
+    pub control: bool,
+    /// Shift: drags a box that selects the markups inside it.
+    pub shift: bool,
+}
 /// A drag shorter than this, in screen pixels, is a click.
 const CLICK: f64 = 4.0;
 /// The size of a text box or callout box made with a click, in points.
@@ -140,8 +151,17 @@ enum Drag {
         start: (f64, f64),
     },
     Move {
-        id: String,
+        ids: Vec<String>,
         last: Point,
+    },
+    Grip {
+        id: String,
+        index: usize,
+    },
+    /// A box that selects what is inside it.
+    Area {
+        start: Point,
+        end: Point,
     },
     Calibrate {
         a: Point,
@@ -172,6 +192,8 @@ pub struct Viewer {
     /// A markup drawn point by point: its points, and where the mouse is.
     building: Option<(Kind, Vec<Point>, Option<Point>)>,
     selected: Option<String>,
+    /// Selected with it, by Control or a box.
+    also: Vec<String>,
     calibrating: Option<(Point, Point)>,
     /// What was copied, to paste.
     clipboard: Option<Markup>,
@@ -221,6 +243,7 @@ impl Default for Viewer {
             drag: None,
             building: None,
             selected: None,
+            also: Vec::new(),
             calibrating: None,
             clipboard: None,
             filter_status: None,
@@ -525,7 +548,7 @@ impl Viewer {
         self.drag = None;
         self.status = match tool {
             Tool::Select => {
-                "Click a markup to select it; drag to move it or the page. Ctrl+wheel zooms.".into()
+                "Click a markup to select it, Ctrl+click for several, Shift+drag for a box; drag to move. Ctrl+wheel zooms.".into()
             }
             Tool::Draw(Kind::Pen) => "Drag to draw.".into(),
             Tool::Draw(Kind::Text) => {
@@ -619,10 +642,72 @@ impl Viewer {
         }
     }
 
-    fn change_selected(&mut self, change: impl FnOnce(&mut Markup)) {
-        if let (Some(id), Some(review)) = (self.selected.clone(), self.review.as_mut()) {
-            review.change(&id, change);
+    /// Changes every selected markup through `change`, as one step.
+    fn change_selected(&mut self, change: impl Fn(&mut Markup)) {
+        let ids = self.chosen();
+        let Some(review) = self.review.as_mut() else {
+            return;
+        };
+        if ids.is_empty() {
+            return;
         }
+        review.checkpoint();
+        for id in &ids {
+            review.change_quietly(id, &change);
+        }
+    }
+
+    /// Every selected markup's id: the one shown on the right first.
+    #[must_use]
+    pub fn chosen(&self) -> Vec<String> {
+        let Some(first) = self.selected.clone() else {
+            return Vec::new();
+        };
+        let exists = |id: &String| self.review.as_ref().is_some_and(|r| r.markup(id).is_some());
+        let mut ids = vec![first];
+        for id in &self.also {
+            if !ids.contains(id) && exists(id) {
+                ids.push(id.clone());
+            }
+        }
+        ids
+    }
+
+    /// Selects only the markup `id`, or nothing.
+    fn select_only(&mut self, id: Option<String>) {
+        self.selected = id;
+        self.also.clear();
+    }
+
+    /// Adds `id` to the selection, or takes it out when it is in.
+    fn toggle_selected(&mut self, id: String) {
+        let mut ids = self.chosen();
+        if let Some(at) = ids.iter().position(|i| *i == id) {
+            ids.remove(at);
+        } else {
+            ids.push(id);
+        }
+        let mut ids = ids.into_iter();
+        self.selected = ids.next();
+        self.also = ids.collect();
+    }
+
+    /// The grip of the selected markup at `point`, if it is the only one
+    /// selected.
+    fn grip_at(&self, point: Point) -> Option<(String, usize)> {
+        if !self.also.is_empty() {
+            return None;
+        }
+        let markup = self.selected()?;
+        if markup.page != self.page {
+            return None;
+        }
+        let reach = (GRIP + 2.0) / self.zoom;
+        markup
+            .grips()
+            .iter()
+            .position(|g| (g.x - point.x).abs() <= reach && (g.y - point.y).abs() <= reach)
+            .map(|index| (markup.id.clone(), index))
     }
 
     /// A new markup of `kind` through `points`, in the style in use.
@@ -674,6 +759,11 @@ impl Viewer {
 
     /// A mouse button went down: 0 left, 1 right, 2 middle.
     pub fn press(&mut self, at: (f64, f64), button: u8) {
+        self.press_with(at, button, Keys::default());
+    }
+
+    /// A mouse button went down with `keys` held.
+    pub fn press_with(&mut self, at: (f64, f64), button: u8, keys: Keys) {
         let Some(point) = self.to_pdf(at) else {
             return;
         };
@@ -694,21 +784,59 @@ impl Viewer {
         }
         self.drag = Some(match self.tool {
             Tool::Select => {
+                if !keys.control
+                    && !keys.shift
+                    && let Some((id, index)) = self.grip_at(point)
+                {
+                    if let Some(review) = self.review.as_mut() {
+                        review.checkpoint();
+                    }
+                    self.drag = Some(Drag::Grip { id, index });
+                    return;
+                }
                 let tolerance = PICK / self.zoom;
                 let hit = self
                     .review
                     .as_ref()
                     .and_then(|r| r.hit(self.page, point, tolerance))
                     .map(|m| m.id.clone());
-                self.selected.clone_from(&hit);
                 match hit {
+                    Some(id) if keys.control => {
+                        self.toggle_selected(id);
+                        return;
+                    }
                     Some(id) => {
+                        if !self.chosen().contains(&id) {
+                            self.select_only(Some(id));
+                        }
+                        let ids: Vec<String> = self
+                            .chosen()
+                            .into_iter()
+                            .filter(|i| {
+                                self.review
+                                    .as_ref()
+                                    .and_then(|r| r.markup(i))
+                                    .is_some_and(|m| m.page == self.page)
+                            })
+                            .collect();
                         if let Some(review) = self.review.as_mut() {
                             review.checkpoint();
                         }
-                        Drag::Move { id, last: point }
+                        Drag::Move { ids, last: point }
                     }
-                    None => Drag::Pan { last: at },
+                    None if keys.shift || keys.control => {
+                        if !keys.control {
+                            self.select_only(None);
+                        }
+                        Drag::Area {
+                            start: point,
+                            end: point,
+                        }
+                    }
+                    None => {
+                        self.select_only(None);
+                        Drag::Pan { last: at }
+                    }
                 }
             }
             Tool::Draw(kind) => match kind.gesture() {
@@ -759,14 +887,23 @@ impl Viewer {
                     *last = point;
                 }
             }
-            Some(Drag::Move { id, last }) => {
+            Some(Drag::Move { ids, last }) => {
                 let (dx, dy) = (point.x - last.x, point.y - last.y);
                 *last = point;
-                let id = id.clone();
+                let ids = ids.clone();
                 if let Some(review) = self.review.as_mut() {
-                    review.change_quietly(&id, |m| m.shift(dx, dy));
+                    for id in &ids {
+                        review.change_quietly(id, |m| m.shift(dx, dy));
+                    }
                 }
             }
+            Some(Drag::Grip { id, index }) => {
+                let (id, index) = (id.clone(), *index);
+                if let Some(review) = self.review.as_mut() {
+                    review.change_quietly(&id, |m| m.move_grip(index, point));
+                }
+            }
+            Some(Drag::Area { end, .. }) => *end = point,
             Some(Drag::Calibrate { b, .. }) => *b = point,
             None => {}
         }
@@ -789,6 +926,40 @@ impl Viewer {
                     if matches!(kind, Kind::Text | Kind::Callout) {
                         self.status = "Type the text on the right.".into();
                     }
+                }
+            }
+            Some(Drag::Area { start, end }) => {
+                let (low, high) = (
+                    Point::new(start.x.min(end.x), start.y.min(end.y)),
+                    Point::new(start.x.max(end.x), start.y.max(end.y)),
+                );
+                let inside: Vec<String> = self
+                    .review
+                    .as_ref()
+                    .map(|r| {
+                        r.markups()
+                            .iter()
+                            .filter(|m| m.page == self.page)
+                            .filter(|m| {
+                                let (a, b) = m.bounds();
+                                a.x >= low.x && a.y >= low.y && b.x <= high.x && b.y <= high.y
+                            })
+                            .map(|m| m.id.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut ids = self.chosen();
+                for id in inside {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                let mut ids = ids.into_iter();
+                self.selected = ids.next();
+                self.also = ids.collect();
+                let count = self.chosen().len();
+                if count > 1 {
+                    self.status = format!("{count} markups selected.");
                 }
             }
             Some(Drag::Calibrate { a, b }) if a.distance(b) * self.zoom >= CLICK => {
@@ -908,6 +1079,8 @@ impl Viewer {
         markup.page = self.page;
         markup.origin = None;
         markup.scale = None;
+        // A copy starts its own conversation.
+        markup.replies.clear();
         // The next paste lands beside this one.
         if let Some(copy) = self.clipboard.as_mut() {
             copy.page = self.page;
@@ -967,7 +1140,7 @@ impl Viewer {
         if busy {
             self.choose_tool(Tool::Select);
         } else {
-            self.selected = None;
+            self.select_only(None);
         }
     }
 
@@ -1479,7 +1652,87 @@ impl Viewer {
         };
         let (id, page) = (markup.id.clone(), markup.page);
         self.go_to(page);
-        self.selected = Some(id);
+        self.select_only(Some(id));
+    }
+
+    /// Selects every markup on the page shown.
+    pub fn select_all(&mut self) {
+        let ids: Vec<String> = self
+            .review
+            .as_ref()
+            .map(|r| {
+                r.markups()
+                    .iter()
+                    .filter(|m| m.page == self.page)
+                    .map(|m| m.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut ids = ids.into_iter();
+        self.selected = ids.next();
+        self.also = ids.collect();
+        let count = self.chosen().len();
+        self.status = format!(
+            "{count} markup{} selected.",
+            if count == 1 { "" } else { "s" }
+        );
+    }
+
+    /// How many markups are selected.
+    #[must_use]
+    pub fn selected_count(&self) -> usize {
+        self.chosen().len()
+    }
+
+    /// The selected markup's replies: who and when, then what.
+    #[must_use]
+    pub fn replies(&self) -> Vec<(String, String, bool)> {
+        self.selected()
+            .map(|m| {
+                m.replies
+                    .iter()
+                    .map(|r| {
+                        let who = if r.author.is_empty() {
+                            "Someone"
+                        } else {
+                            &r.author
+                        };
+                        let when = pdf_date_text(&r.modified);
+                        let header = if when.is_empty() {
+                            who.to_owned()
+                        } else {
+                            format!("{who} · {when}")
+                        };
+                        (header, r.contents.clone(), r.author == self.author)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Answers the selected markup; whether there was something to say.
+    pub fn reply(&mut self, text: &str) -> bool {
+        let (Some(id), Some(review)) = (self.selected.clone(), self.review.as_mut()) else {
+            return false;
+        };
+        let author = self.author.clone();
+        review.reply(&id, text, &author)
+    }
+
+    /// Takes back reply `index` of the selected markup, when it is one of
+    /// this person's.
+    pub fn remove_reply(&mut self, index: usize) {
+        let mine = self
+            .selected()
+            .and_then(|m| m.replies.get(index))
+            .is_some_and(|r| r.author == self.author);
+        if !mine {
+            self.status = "Only who wrote a reply can take it back.".into();
+            return;
+        }
+        if let (Some(id), Some(review)) = (self.selected.clone(), self.review.as_mut()) {
+            review.remove_reply(&id, index);
+        }
     }
 
     /// The selected markup's place in the list.
@@ -1503,7 +1756,7 @@ impl Viewer {
             m.subject = if subject == m.kind.label() {
                 String::new()
             } else {
-                subject
+                subject.clone()
             };
         });
     }
@@ -1515,10 +1768,12 @@ impl Viewer {
         }
     }
 
-    /// Deletes the selected markup.
+    /// Deletes the selected markups, as one step.
     pub fn delete_selected(&mut self) {
-        if let (Some(id), Some(review)) = (self.selected.take(), self.review.as_mut()) {
-            review.remove(&id);
+        let ids = self.chosen();
+        self.select_only(None);
+        if let Some(review) = self.review.as_mut() {
+            review.remove_all(&ids);
         }
     }
 
@@ -1541,10 +1796,25 @@ impl Viewer {
             1 => (markup.page + 1).to_string(),
             2 => {
                 let text = markup.text.lines().collect::<Vec<_>>().join(" ");
-                match review.measured(markup, self.units) {
+                let text = match review.measured(markup, self.units) {
                     Some(value) if text.is_empty() => value,
                     Some(value) => format!("{value} · {text}"),
                     None => text,
+                };
+                match markup.replies.len() {
+                    0 => text,
+                    n => {
+                        let replies = if n == 1 {
+                            "1 reply".to_owned()
+                        } else {
+                            format!("{n} replies")
+                        };
+                        if text.is_empty() {
+                            replies
+                        } else {
+                            format!("{text} · {replies}")
+                        }
+                    }
                 }
             }
             3 => markup.author.clone(),
@@ -1715,8 +1985,9 @@ impl Viewer {
             }
         };
         let mut outlines = Vec::new();
+        let chosen = self.chosen();
         for markup in review.markups().iter().filter(|m| m.page == self.page) {
-            let selected = self.selected.as_deref() == Some(markup.id.as_str());
+            let selected = chosen.contains(&markup.id);
             if review.draws(markup) {
                 draw(markup, selected);
             } else if selected {
@@ -1744,6 +2015,7 @@ impl Viewer {
             draw(&self.new_markup(*kind, points), false);
         }
         shapes.extend(outlines);
+        self.handles(&page, &chosen, &mut shapes);
         // Where the search found the words on this page.
         for (index, found) in self.found.iter().enumerate() {
             if found.page != self.page {
@@ -1782,6 +2054,55 @@ impl Viewer {
             });
         }
         (shapes, labels)
+    }
+
+    /// The grips of the one markup selected, and the box being dragged
+    /// to select.
+    fn handles(&self, page: &Page, chosen: &[String], shapes: &mut Vec<Shape>) {
+        // The grips of the one markup selected.
+        if let Some(markup) = self
+            .selected()
+            .filter(|m| m.page == self.page && chosen.len() == 1)
+        {
+            for grip in markup.grips() {
+                let (x, y) = self.to_screen(page, grip);
+                shapes.push(Shape {
+                    commands: format!(
+                        "M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} Z",
+                        x - GRIP,
+                        y - GRIP,
+                        x + GRIP,
+                        y - GRIP,
+                        x + GRIP,
+                        y + GRIP,
+                        x - GRIP,
+                        y + GRIP
+                    ),
+                    stroke: Some([0.0, 0.45, 0.9]),
+                    fill: Some(([1.0, 1.0, 1.0], 1.0)),
+                    width: 1.5,
+                    selected: false,
+                });
+            }
+        }
+        if let Some(Drag::Area { start, end }) = &self.drag {
+            shapes.push(Shape {
+                commands: self.commands(
+                    page,
+                    &[
+                        Segment::Move(*start),
+                        Segment::Line(Point::new(end.x, start.y)),
+                        Segment::Line(*end),
+                        Segment::Line(Point::new(start.x, end.y)),
+                        Segment::Close,
+                    ],
+                ),
+                stroke: Some([0.0, 0.45, 0.9]),
+                fill: Some(([0.0, 0.45, 0.9], 0.08)),
+                width: 1.0,
+                selected: false,
+            });
+        }
     }
 
     /// An outline in PDF space as SVG commands in screen pixels.
@@ -1980,6 +2301,125 @@ mod tests {
     }
 
     #[test]
+    fn a_grip_reshapes_the_selected_markup() {
+        let (mut viewer, dir) = viewer();
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (100.0, 100.0), (300.0, 200.0));
+        viewer.choose_tool(Tool::Select);
+        // The bottom right corner, dragged out.
+        drag(&mut viewer, (300.0, 200.0), (400.0, 260.0));
+        let markup = viewer.selected().unwrap().clone();
+        assert_eq!(
+            markup.bounds(),
+            (Point::new(100.0, 1468.0), Point::new(400.0, 1628.0))
+        );
+        // One step: undo puts it back.
+        viewer.undo();
+        assert_eq!(
+            viewer.selected().unwrap().bounds(),
+            (Point::new(100.0, 1528.0), Point::new(300.0, 1628.0))
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn several_markups_are_selected_moved_changed_and_deleted_together() {
+        let (mut viewer, dir) = viewer();
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (100.0, 100.0), (150.0, 150.0));
+        drag(&mut viewer, (300.0, 100.0), (350.0, 150.0));
+        drag(&mut viewer, (600.0, 100.0), (650.0, 150.0));
+        viewer.choose_tool(Tool::Select);
+        // A box around the first two, with Shift.
+        let shift = Keys {
+            shift: true,
+            ..Keys::default()
+        };
+        viewer.press_with((50.0, 50.0), 0, shift);
+        viewer.drag((200.0, 120.0));
+        viewer.release((400.0, 200.0));
+        assert_eq!(viewer.selected_count(), 2);
+        // Control adds the third.
+        let control = Keys {
+            control: true,
+            ..Keys::default()
+        };
+        viewer.press_with((625.0, 100.0), 0, control);
+        viewer.release((625.0, 100.0));
+        assert_eq!(viewer.selected_count(), 3);
+        // No grips with several selected.
+        let (shapes, _) = viewer.overlay();
+        assert_eq!(shapes.len(), 3);
+        // Dragging one moves them all.
+        drag(&mut viewer, (125.0, 100.0), (125.0, 140.0));
+        let tops: Vec<f64> = viewer
+            .review()
+            .unwrap()
+            .markups()
+            .iter()
+            .map(|m| m.bounds().1.y)
+            .collect();
+        assert_eq!(tops, [1588.0, 1588.0, 1588.0]);
+        // A status for all, as one step.
+        viewer.set_status(1);
+        assert!(
+            viewer
+                .review()
+                .unwrap()
+                .markups()
+                .iter()
+                .all(|m| m.status == Status::ALL[1])
+        );
+        viewer.undo();
+        assert!(
+            viewer
+                .review()
+                .unwrap()
+                .markups()
+                .iter()
+                .all(|m| m.status == Status::Open)
+        );
+        // Control on one selected takes it out.
+        viewer.press_with((625.0, 140.0), 0, control);
+        viewer.release((625.0, 140.0));
+        assert_eq!(viewer.selected_count(), 2);
+        viewer.delete_selected();
+        assert_eq!(viewer.rows().len(), 1);
+        viewer.undo();
+        assert_eq!(viewer.rows().len(), 3);
+        viewer.select_all();
+        assert_eq!(viewer.selected_count(), 3);
+        // A plain click on empty paper lets go of them.
+        click(&mut viewer, (900.0, 600.0));
+        assert_eq!(viewer.selected_count(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_selected_markup_is_answered_and_its_replies_listed() {
+        let (mut viewer, dir) = viewer();
+        viewer.author = "Andrés".into();
+        viewer.choose_tool(Tool::Draw(Kind::Cloud));
+        drag(&mut viewer, (100.0, 100.0), (300.0, 200.0));
+        assert!(!viewer.reply("  "));
+        assert!(viewer.reply("Check with the fabricator"));
+        let replies = viewer.replies();
+        assert_eq!(replies.len(), 1);
+        assert!(replies[0].0.starts_with("Andrés · 20"));
+        assert_eq!(replies[0].1, "Check with the fabricator");
+        assert!(replies[0].2);
+        assert_eq!(viewer.rows()[0][2], "1 reply");
+        // Someone else's reply stays.
+        viewer.author = "Sam".into();
+        viewer.remove_reply(0);
+        assert_eq!(viewer.replies().len(), 1);
+        viewer.author = "Andrés".into();
+        viewer.remove_reply(0);
+        assert_eq!(viewer.replies().len(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn a_drag_draws_a_cloud_where_the_mouse_went() {
         let (mut viewer, dir) = viewer();
         viewer.choose_tool(Tool::Draw(Kind::Cloud));
@@ -2002,9 +2442,11 @@ mod tests {
         click(&mut viewer, (500.0, 500.0));
         assert_eq!(viewer.rows().len(), 1);
         let (shapes, _) = viewer.overlay();
-        assert_eq!(shapes.len(), 1);
+        // The cloud, and a grip on each of its four corners.
+        assert_eq!(shapes.len(), 5);
         assert!(shapes[0].commands.starts_with("M 100.0 100.0 C"));
         assert!(shapes[0].selected);
+        assert!(shapes[1].commands.starts_with("M 96.0 96.0 L 104.0 96.0"));
         std::fs::remove_dir_all(dir).ok();
     }
 

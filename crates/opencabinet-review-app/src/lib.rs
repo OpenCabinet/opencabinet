@@ -25,7 +25,7 @@ use slint::{
 };
 
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
-use crate::viewer::{COLORS, TOOLS, Tool, Viewer, WIDTHS};
+use crate::viewer::{COLORS, Keys, TOOLS, Tool, Viewer, WIDTHS};
 use opencabinet_review::{Kind, Status, stamps};
 
 /// The code Slint generates from `ui/review.slint`, which follows Slint's
@@ -35,7 +35,7 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::{BookmarkInfo, Label, ReviewWindow, SavedInfo, Shape, ToolInfo};
+pub use ui::{BookmarkInfo, Label, ReplyInfo, ReviewWindow, SavedInfo, Shape, ToolInfo};
 
 /// The most pages drawn as thumbnails.
 const MAX_THUMBNAILS: usize = 500;
@@ -360,6 +360,30 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         });
     });
     let a = Rc::clone(app);
+    window.on_pressed_with(move |x, y, button, control, shift| {
+        let button = u8::try_from(button).unwrap_or(0);
+        a.change(|v| {
+            v.press_with(
+                (f64::from(x), f64::from(y)),
+                button,
+                Keys { control, shift },
+            );
+        });
+    });
+    let a = Rc::clone(app);
+    window.on_reply(move |text| {
+        a.change(|v| {
+            v.reply(&text);
+        });
+    });
+    let a = Rc::clone(app);
+    window.on_remove_reply(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.remove_reply(i));
+        }
+    });
+    window.on_select_all(on(App::select_all));
+    let a = Rc::clone(app);
     window.on_pressed(move |x, y, button| {
         let button = u8::try_from(button).unwrap_or(1);
         a.change(|v| v.press((f64::from(x), f64::from(y)), button));
@@ -523,6 +547,10 @@ impl App {
         if let Err(message) = result {
             self.status(&message);
         }
+    }
+
+    fn select_all(&self) {
+        self.change(Viewer::select_all);
     }
 
     fn export_summary(&self) {
@@ -705,6 +733,17 @@ impl App {
         );
         let selected = viewer.selected();
         window.set_has_selection(selected.is_some());
+        window.set_selected_count(i32::try_from(viewer.selected_count()).unwrap_or(i32::MAX));
+        let replies: Vec<ReplyInfo> = viewer
+            .replies()
+            .into_iter()
+            .map(|(header, text, mine)| ReplyInfo {
+                header: header.into(),
+                text: text.into(),
+                mine,
+            })
+            .collect();
+        window.set_replies(ModelRc::new(VecModel::from(replies)));
         window.set_selected_text(selected.map(|m| m.text.as_str()).unwrap_or_default().into());
         window.set_selected_subject(
             selected

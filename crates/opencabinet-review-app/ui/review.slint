@@ -37,6 +37,14 @@ export struct ToolInfo {
     filled: bool,
 }
 
+// A reply to the selected markup: who and when, what, and whether it is
+// this person's, who can take it back.
+export struct ReplyInfo {
+    header: string,
+    text: string,
+    mine: bool,
+}
+
 // A bookmark: what it says, how deep it is, whether it goes to a page.
 export struct BookmarkInfo {
     title: string,
@@ -129,6 +137,33 @@ component BarButton inherits Rectangle {
     }
 }
 
+// One of the editor's two pages.
+component TabButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: 22px;
+    min-width: 60px;
+    border-radius: 3px;
+    background: root.active ? Palette.accent-background.transparentize(80%)
+        : touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-item-selected: root.active;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: 11px;
+            font-weight: root.active ? 600 : 400;
+        }
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
 // A panel's title.
 component PanelTitle inherits Text {
     font-size: 13px;
@@ -159,6 +194,11 @@ export component ReviewWindow inherits Window {
     in property <[[StandardListViewItem]]> rows;
     in property <int> selected-row: -1;
     in property <bool> has-selection;
+    // How many markups are selected; the editor shows the first.
+    in property <int> selected-count;
+    in property <[ReplyInfo]> replies;
+    // The editor shows the comment (0) or the replies (1).
+    in-out property <int> editor-tab: 0;
     in-out property <string> selected-text;
     in-out property <string> selected-subject;
     in property <int> selected-status;
@@ -222,6 +262,11 @@ export component ReviewWindow inherits Window {
     callback author-edited(string);
     callback choose-units(int);
     callback pressed(length, length, int);
+    // A button went down with Control and Shift held or not.
+    callback pressed-with(length, length, int, bool, bool);
+    callback reply(string);
+    callback remove-reply(int);
+    callback select-all();
     callback dragged(length, length);
     callback released(length, length);
     callback double-clicked();
@@ -291,6 +336,7 @@ export component ReviewWindow inherits Window {
             MenuItem { title: "Paste"; shortcut: @keys(Control + V); enabled: root.has-document; activated => { root.paste(); } }
             MenuItem { title: "Duplicate"; shortcut: @keys(Control + D); enabled: root.has-selection; activated => { root.duplicate(); } }
             MenuItem { title: "Delete"; enabled: root.has-selection; activated => { root.delete-selected(); } }
+            MenuItem { title: "Select all on this page"; enabled: root.has-document; activated => { root.select-all(); } }
             MenuSeparator { }
             MenuItem { title: "Save style in My tools"; enabled: root.has-selection; activated => { root.save-tool(); } }
         }
@@ -336,6 +382,10 @@ export component ReviewWindow inherits Window {
             }
             if (event.text == Key.PageDown) {
                 root.next-page();
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "a" || event.text == "A")) {
+                root.select-all();
                 return accept;
             }
             if (event.text == Key.PageUp) {
@@ -706,9 +756,10 @@ export component ReviewWindow inherits Window {
                         pointer-event(event) => {
                             if (event.kind == PointerEventKind.down) {
                                 keys.focus();
-                                root.pressed(self.mouse-x, self.mouse-y,
+                                root.pressed-with(self.mouse-x, self.mouse-y,
                                     event.button == PointerEventButton.left ? 0
-                                        : event.button == PointerEventButton.right ? 1 : 2);
+                                        : event.button == PointerEventButton.right ? 1 : 2,
+                                    event.modifiers.control, event.modifiers.shift);
                             } else if (event.kind == PointerEventKind.up) {
                                 root.released(self.mouse-x, self.mouse-y);
                             }
@@ -772,20 +823,20 @@ export component ReviewWindow inherits Window {
                             }
                             Rectangle { horizontal-stretch: 1; }
                             status-filter := ComboBox {
-                                width: 120px;
+                                width: 110px;
                                 accessible-label: "Show markups with status";
                                 model: ["All", "Open", "Accepted", "Rejected", "Completed"];
                                 selected => { root.set-filter(self.current-index, words.text); }
                             }
                             words := LineEdit {
-                                width: 160px;
+                                width: 130px;
                                 accessible-label: "Show markups with words";
                                 placeholder-text: "Filter";
                                 edited(text) => { root.set-filter(status-filter.current-index, text); }
                             }
                             Button { text: "Summary PDF…"; enabled: root.has-document; clicked => { root.export-summary(); } }
                             Button { text: "CSV…"; enabled: root.has-document; clicked => { root.export-list(); } }
-                            BarButton { text: "✕"; label: "Close the markup list"; clicked => { root.list-open = false; } }
+                            BarButton { text: "×"; label: "Close the markup list"; clicked => { root.list-open = false; } }
                         }
                         HorizontalLayout {
                             spacing: 6px;
@@ -807,8 +858,14 @@ export component ReviewWindow inherits Window {
                                 sort-descending(column) => { root.sort-list(column, true); }
                             }
                             if root.has-selection: VerticalLayout {
-                                width: 280px;
+                                width: 300px;
                                 spacing: 4px;
+                                if root.selected-count > 1: Text {
+                                    text: root.selected-count + " markups selected: subject, status, color and width apply to all.";
+                                    wrap: word-wrap;
+                                    font-size: 11px;
+                                    color: Palette.foreground.transparentize(25%);
+                                }
                                 HorizontalLayout {
                                     spacing: 6px;
                                     VerticalLayout {
@@ -832,12 +889,85 @@ export component ReviewWindow inherits Window {
                                         }
                                     }
                                 }
-                                TextEdit {
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    alignment: start;
+                                    TabButton {
+                                        text: "Comment";
+                                        active: root.editor-tab == 0;
+                                        clicked => { root.editor-tab = 0; }
+                                    }
+                                    TabButton {
+                                        text: root.replies.length == 0 ? "Replies" : "Replies (" + root.replies.length + ")";
+                                        active: root.editor-tab == 1;
+                                        clicked => { root.editor-tab = 1; }
+                                    }
+                                }
+                                if root.editor-tab == 0: TextEdit {
                                     accessible-label: "Markup text";
                                     min-height: 40px;
                                     vertical-stretch: 1;
                                     text <=> root.selected-text;
                                     edited(text) => { root.text-edited(text); }
+                                }
+                                if root.editor-tab == 1: VerticalLayout {
+                                    vertical-stretch: 1;
+                                    spacing: 4px;
+                                    replies-scroll := ScrollView {
+                                        vertical-stretch: 1;
+                                        min-height: 40px;
+                                        VerticalLayout {
+                                            width: replies-scroll.visible-width;
+                                            alignment: start;
+                                            spacing: 6px;
+                                            padding-right: 4px;
+                                            if root.replies.length == 0: Text {
+                                                text: "No replies yet.";
+                                                font-size: 11px;
+                                                color: Palette.foreground.transparentize(40%);
+                                            }
+                                            for reply[i] in root.replies: HorizontalLayout {
+                                                spacing: 4px;
+                                                VerticalLayout {
+                                                    horizontal-stretch: 1;
+                                                    spacing: 1px;
+                                                    Text {
+                                                        text: reply.header;
+                                                        font-size: 10px;
+                                                        font-weight: 600;
+                                                        color: Palette.foreground.transparentize(25%);
+                                                        overflow: elide;
+                                                    }
+                                                    Text { text: reply.text; font-size: 12px; wrap: word-wrap; }
+                                                }
+                                                if reply.mine: BarButton {
+                                                    text: "×";
+                                                    label: "Take back this reply";
+                                                    clicked => { root.remove-reply(i); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        reply-words := LineEdit {
+                                            horizontal-stretch: 1;
+                                            accessible-label: "Reply";
+                                            placeholder-text: "Reply";
+                                            accepted(text) => {
+                                                root.reply(text);
+                                                self.text = "";
+                                            }
+                                        }
+                                        Button {
+                                            text: "Reply";
+                                            enabled: reply-words.text != "";
+                                            clicked => {
+                                                root.reply(reply-words.text);
+                                                reply-words.text = "";
+                                            }
+                                        }
+                                    }
                                 }
                                 HorizontalLayout {
                                     spacing: 4px;
@@ -1015,7 +1145,7 @@ export component ReviewWindow inherits Window {
                                         horizontal-stretch: 1;
                                     }
                                     BarButton {
-                                        text: "✕";
+                                        text: "×";
                                         label: "Take " + saved.name + " out of My tools";
                                         clicked => { root.remove-saved(i); }
                                     }

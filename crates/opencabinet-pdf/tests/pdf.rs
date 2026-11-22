@@ -204,6 +204,69 @@ fn another_programs_markups_are_kept_as_they_were() {
 }
 
 #[test]
+fn replies_are_read_with_their_markup_and_new_ones_appended() {
+    let original = sample::foreign_markups();
+    let read = annotations::read(&original).unwrap();
+    let cloud = &read.annotations[0];
+    assert_eq!(cloud.replies.len(), 1);
+    assert_eq!(cloud.replies[0].contents, "Done");
+    assert!(cloud.replies[0].origin.is_some());
+    assert_eq!(read.annotations[1].replies.len(), 0);
+
+    // A reply to the other program's cloud leaves the cloud as it was.
+    let id = cloud.origin.unwrap();
+    let before = object(&original, id);
+    let mut answered = read.clone();
+    answered.annotations[0].replies.push(annotations::Reply {
+        name: "r-1".into(),
+        author: "Andrés".into(),
+        contents: "Agreed, 36\" it is".into(),
+        modified: "D:20261122120000Z".into(),
+        origin: None,
+    });
+    let saved = annotations::save(&original, &answered).unwrap();
+    assert!(saved.starts_with(&original));
+    assert_eq!(object(&saved, id), before);
+    assert_eq!(page_annots(&saved), 6);
+    let again = annotations::read(&saved).unwrap();
+    let replies = &again.annotations[0].replies;
+    assert_eq!(replies.len(), 2);
+    assert_eq!(replies[1].contents, "Agreed, 36\" it is");
+    assert_eq!(replies[1].author, "Andrés");
+    let written = object(&saved, replies[1].origin.unwrap());
+    assert_eq!(written.get(b"IRT").unwrap().as_reference().unwrap(), id);
+    assert_eq!(written.get(b"RT").unwrap().as_name().unwrap(), b"R");
+    // Saved again unchanged: nothing more appended.
+    assert_eq!(annotations::save(&saved, &again).unwrap(), saved);
+
+    // A new markup's replies are written with it.
+    let mut new = square(0, "a");
+    new.replies.push(annotations::Reply {
+        name: "r-2".into(),
+        author: "Sam".into(),
+        contents: "Checked on site".into(),
+        modified: "D:20261122130000Z".into(),
+        origin: None,
+    });
+    let blank = sample::sheets(1, SHEET.0, SHEET.1, 0);
+    let markups = Markups {
+        annotations: vec![new],
+        ..Markups::default()
+    };
+    let saved = annotations::save(&blank, &markups).unwrap();
+    let read = annotations::read(&saved).unwrap();
+    assert_eq!(read.annotations.len(), 1);
+    assert_eq!(read.annotations[0].replies[0].contents, "Checked on site");
+
+    // Removing the markup takes its replies.
+    let mut removed = read.clone();
+    removed.removed.push(read.annotations[0].origin.unwrap());
+    removed.annotations.clear();
+    let saved = annotations::save(&saved, &removed).unwrap();
+    assert_eq!(page_annots(&saved), 0);
+}
+
+#[test]
 fn a_measurement_is_saved_with_a_standard_scale() {
     let original = sample::sheets(1, SHEET.0, SHEET.1, 0);
     let mut line = square(0, "m");

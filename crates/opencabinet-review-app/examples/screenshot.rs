@@ -66,6 +66,12 @@ fn main() {
         review.invoke_released(to.0, to.1);
     }
     review.invoke_choose_tool(0);
+    // REPLIES=1 shows the last markup's replies in the editor.
+    if std::env::var("REPLIES").is_ok() {
+        review.invoke_reply("Is the opening 36\" or 42\"?".into());
+        review.invoke_reply("42\", per the revised elevation.".into());
+        review.set_editor_tab(1);
+    }
     // The left panel to show: 0 pages, 1 bookmarks, 2 find, 3 measure, 4
     // session.
     let panel = std::env::var("PANEL")
