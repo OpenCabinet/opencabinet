@@ -235,6 +235,24 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     window.on_export_flattened(on(App::export_flattened));
     window.on_export_summary(on(App::export_summary));
     let a = Rc::clone(app);
+    window.on_page_clicked(move |i, control, shift| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.click_page(i, Keys { control, shift }));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_turn_pages(move |turn| a.try_change(|v| v.turn_pages(turn)));
+    let a = Rc::clone(app);
+    window.on_move_pages(move |by| a.try_change(|v| v.move_pages(by)));
+    window.on_delete_pages(on(|app| app.try_change(Viewer::delete_pages)));
+    window.on_insert_blank(on(|app| app.try_change(Viewer::insert_blank)));
+    window.on_insert_pages(on(|app| {
+        if let Some(path) = app.dialogs.open_path() {
+            app.try_change(|v| v.insert_file(&path));
+        }
+    }));
+    window.on_extract_pages(on(App::extract_pages));
+    let a = Rc::clone(app);
     window.on_go_to_bookmark(move |i| {
         if let Ok(i) = usize::try_from(i) {
             a.change(|v| v.go_to_bookmark(i));
@@ -477,12 +495,51 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
 
 impl App {
     fn change(&self, f: impl FnOnce(&mut Viewer)) {
-        {
+        let changed = {
             let mut viewer = self.viewer.borrow_mut();
+            let before = viewer.document_key();
             f(&mut viewer);
             viewer.publish();
+            viewer.document_key() != before
+        };
+        if changed {
+            // Other pages: other thumbnails, and the page drawn again.
+            *self.generation.borrow_mut() += 1;
+            self.draw_thumbnails();
         }
         self.refresh();
+    }
+
+    /// As [`App::change`], showing what went wrong, if anything.
+    fn try_change(&self, f: impl FnOnce(&mut Viewer) -> Result<(), String>) {
+        let mut result = Ok(());
+        self.change(|v| result = f(v));
+        if let Err(message) = result {
+            self.status(&message);
+        }
+    }
+
+    fn extract_pages(&self) {
+        let (stem, chosen) = {
+            let viewer = self.viewer.borrow();
+            let stem = viewer.path().and_then(Path::file_stem).map_or_else(
+                || "drawing".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            (stem, viewer.pages_chosen())
+        };
+        let pages = match chosen.as_slice() {
+            [one] => format!("page {}", one + 1),
+            [first, .., last] => format!("pages {}-{}", first + 1, last + 1),
+            [] => return,
+        };
+        let Some(path) = self
+            .dialogs
+            .save_path(&format!("{stem} ({pages}).pdf"), FileKind::Pdf)
+        else {
+            return;
+        };
+        self.try_change(|v| v.extract_pages(&path));
     }
 
     /// Takes in others' changes in a review session.
@@ -725,6 +782,14 @@ impl App {
         window.set_has_document(viewer.review().is_some());
         window.set_page_label(viewer.page_label().into());
         window.set_page_index(i32::try_from(viewer.page()).unwrap_or(0));
+        let count = viewer.review().map_or(0, |r| r.document().pages().len());
+        let chosen = viewer.pages_chosen();
+        let marks: Vec<bool> = (0..count.min(MAX_THUMBNAILS))
+            .map(|p| chosen.len() > 1 && chosen.contains(&p))
+            .collect();
+        window.set_pages_chosen(ModelRc::new(VecModel::from(marks)));
+        window.set_pages_label(viewer.pages_label().into());
+        window.set_can_change_pages(viewer.can_change_pages());
         window.set_found_label(viewer.found_label().into());
         window.set_comparing(viewer.compared().is_some());
         window.set_zoom_label(viewer.zoom_label().into());

@@ -378,3 +378,77 @@ fn a_flattened_copy_draws_the_markups_into_the_page() {
         .pixel(1100, 1728 - 1100);
     assert!(red[0] > 150 && red[1] < 90, "{red:?}");
 }
+
+#[test]
+fn pages_change_with_their_markups_and_the_change_is_undone() {
+    let original = sample::sheets(3, 2592.0, 1728.0, 2);
+    let mut review = Review::open(original.clone()).unwrap();
+    let id = review.add(
+        markup(1, Kind::Rectangle, &[(100.0, 100.0), (300.0, 200.0)]),
+        "Andrés",
+    );
+    review.set_scale(1, quarter_inch());
+    let units = Units::Imperial;
+
+    // The marked page goes first; the markup and the scale go with it.
+    assert_eq!(review.move_pages(&[1], 0, units).unwrap(), 0);
+    assert!(review.modified());
+    assert_eq!(review.markups().len(), 1);
+    assert_eq!(review.markups()[0].page, 0);
+    assert_eq!(review.markups()[0].id, id);
+    assert!(review.scale(0).is_some());
+    assert!(review.scale(1).is_none());
+
+    // Turned, it is as tall as it was wide.
+    review.turn_pages(&[0], 1, units).unwrap();
+    let page = review.document().pages()[0];
+    assert_eq!((page.width, page.height), (1728.0, 2592.0));
+
+    // A markup added after is undone first, then each change of pages.
+    review.add(
+        markup(2, Kind::Line, &[(10.0, 10.0), (90.0, 90.0)]),
+        "Andrés",
+    );
+    review.undo();
+    assert_eq!(review.markups().len(), 1);
+    review.undo();
+    assert_eq!(review.document().pages()[0].width, 2592.0);
+    review.undo();
+    assert_eq!(review.markups()[0].page, 1);
+    assert!(!review.can_undo() || review.markups().len() == 1);
+    review.redo();
+    assert_eq!(review.markups()[0].page, 0);
+
+    // A page from another PDF and a blank one are put in; one is removed.
+    let letter = sample::sheets(1, 612.0, 792.0, 0);
+    review.insert_pages(3, &letter, &[0], units).unwrap();
+    review.insert_blank(0, 0, units).unwrap();
+    let sizes: Vec<(f64, f64)> = review
+        .document()
+        .pages()
+        .iter()
+        .map(|p| (p.width, p.height))
+        .collect();
+    assert_eq!(sizes.len(), 5);
+    assert_eq!(sizes[0], (2592.0, 1728.0));
+    assert_eq!(sizes[4], (612.0, 792.0));
+    review.remove_pages(&[0], units).unwrap();
+    assert_eq!(review.document().pages().len(), 4);
+    assert!(review.remove_pages(&[0, 1, 2, 3], units).is_err());
+    assert_eq!(review.document().pages().len(), 4);
+
+    // The marked page alone, as a PDF of its own; the review stays.
+    let alone = Review::open(review.extract(&[0], units).unwrap()).unwrap();
+    assert_eq!(alone.document().pages().len(), 1);
+    assert_eq!(alone.markups().len(), 1);
+    assert_eq!(review.document().pages().len(), 4);
+
+    // Saved, it opens as it was left.
+    let saved = review.save(units).unwrap();
+    assert!(!review.modified());
+    assert!(saved.starts_with(&original));
+    let again = Review::open(saved).unwrap();
+    assert_eq!(again.document().pages().len(), 4);
+    assert_eq!(again.markups().len(), 1);
+    assert_eq!(again.markups()[0].page, 0);
+}

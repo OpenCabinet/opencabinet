@@ -404,3 +404,139 @@ fn a_summary_table_is_a_pdf_with_its_pages() {
     let first = opencabinet_pdf::find::find(&document, 0, "Markup summary").unwrap();
     assert_eq!(first.len(), 1);
 }
+
+/// What sheet number page `page` shows.
+fn sheet_number(document: &Document, page: usize) -> Option<String> {
+    (201..300).map(|n| format!("A-{n}")).find(|n| {
+        !opencabinet_pdf::find::find(document, page, n)
+            .unwrap()
+            .is_empty()
+    })
+}
+
+#[test]
+fn pages_are_turned_moved_added_and_extracted_with_their_markups() {
+    use opencabinet_pdf::pages::{From, Placed, arrange, extract};
+    let mut markups = Markups::default();
+    markups.annotations.push(square(1, "a"));
+    markups
+        .pages
+        .insert(1, BTreeMap::from([("ScaleNm".into(), "3657600000".into())]));
+    let original = annotations::save(&sample::sheets(3, SHEET.0, SHEET.1, 2), &markups).unwrap();
+    let letter = sample::sheets(1, 612.0, 792.0, 0);
+    let list = [
+        Placed {
+            from: From::Here(2),
+            turn: 1,
+        },
+        Placed::here(1),
+        Placed {
+            from: From::Other(0, 0),
+            turn: 0,
+        },
+        Placed {
+            from: From::Blank(612.0, 792.0),
+            turn: -1,
+        },
+    ];
+    let arranged = arrange(&original, &list, &[&letter]).unwrap();
+    assert!(arranged.starts_with(&original), "an incremental update");
+    let document = Document::open(arranged.clone()).unwrap();
+    let sizes: Vec<(f64, f64)> = document
+        .pages()
+        .iter()
+        .map(|p| (p.width, p.height))
+        .collect();
+    assert_eq!(
+        sizes,
+        [(SHEET.1, SHEET.0), SHEET, (612.0, 792.0), (792.0, 612.0)]
+    );
+    assert_eq!(sheet_number(&document, 0).as_deref(), Some("A-203"));
+    assert_eq!(sheet_number(&document, 1).as_deref(), Some("A-202"));
+    assert_eq!(sheet_number(&document, 2).as_deref(), Some("A-201"));
+    // The markup and the page's scale went with their page.
+    let read = annotations::read(&arranged).unwrap();
+    assert_eq!(read.annotations.len(), 1);
+    assert_eq!(read.annotations[0].page, 1);
+    assert_eq!(read.pages.keys().copied().collect::<Vec<_>>(), [1]);
+
+    // Page 2 of the new list, alone in a PDF of its own.
+    let alone = extract(&arranged, &[1]).unwrap();
+    let document = Document::open(alone.clone()).unwrap();
+    assert_eq!(document.pages().len(), 1);
+    assert_eq!(sheet_number(&document, 0).as_deref(), Some("A-202"));
+    assert_eq!(annotations::read(&alone).unwrap().annotations.len(), 1);
+    assert!(alone.len() < arranged.len() / 2, "the other pages left out");
+
+    // What cannot be done is refused.
+    assert!(arrange(&original, &[], &[]).is_err());
+    assert!(arrange(&original, &[Placed::here(0), Placed::here(0)], &[]).is_err());
+    assert!(arrange(&original, &[Placed::here(3)], &[]).is_err());
+}
+
+#[test]
+fn a_page_keeps_what_it_inherited_when_moved() {
+    use lopdf::dictionary;
+    use opencabinet_pdf::pages::{Placed, arrange};
+    // Two pages under a middle node that holds their size and rotation.
+    let mut document = lopdf::Document::with_version("1.7");
+    let root = document.new_object_id();
+    let middle = document.new_object_id();
+    let mut kids = Vec::new();
+    for _ in 0..2 {
+        let content = document.add_object(lopdf::Stream::new(
+            lopdf::Dictionary::new(),
+            b"0 0 0 RG 10 10 100 100 re S".to_vec(),
+        ));
+        kids.push(Object::Reference(document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => middle,
+            "Contents" => content,
+        })));
+    }
+    document.objects.insert(
+        middle,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Parent" => root,
+            "Kids" => kids,
+            "Count" => 2,
+            "MediaBox" => vec![0.into(), 0.into(), 300.into(), 200.into()],
+            "Rotate" => 90,
+            "Resources" => lopdf::Dictionary::new(),
+        }),
+    );
+    document.objects.insert(
+        root,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(middle)],
+            "Count" => 2,
+        }),
+    );
+    let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => root });
+    document.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    let before = Document::open(bytes.clone()).unwrap();
+    assert_eq!(
+        (before.pages()[0].width, before.pages()[0].height),
+        (200.0, 300.0)
+    );
+
+    let turned = arrange(
+        &bytes,
+        &[
+            Placed::here(1),
+            Placed {
+                turn: 1,
+                ..Placed::here(0)
+            },
+        ],
+        &[],
+    )
+    .unwrap();
+    let after = Document::open(turned).unwrap();
+    let sizes: Vec<(f64, f64)> = after.pages().iter().map(|p| (p.width, p.height)).collect();
+    assert_eq!(sizes, [(200.0, 300.0), (300.0, 200.0)]);
+}

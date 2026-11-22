@@ -236,6 +236,9 @@ pub struct Viewer {
     style: Option<SavedTool>,
     /// The open PDF's bookmarks.
     bookmarks: Vec<Bookmark>,
+    /// The pages chosen in the Pages panel, besides the one shown; empty
+    /// when only the page shown is.
+    chosen_pages: Vec<usize>,
     status: String,
 }
 
@@ -283,6 +286,7 @@ impl Default for Viewer {
             saved_path: None,
             style: None,
             bookmarks: Vec::new(),
+            chosen_pages: Vec::new(),
             status: "Open a PDF to start.".into(),
         }
     }
@@ -319,6 +323,7 @@ impl Viewer {
         self.found.clear();
         self.searched.clear();
         self.compare = None;
+        self.chosen_pages.clear();
         self.fit();
         Ok(())
     }
@@ -424,6 +429,9 @@ impl Viewer {
             .as_ref()
             .map_or(0, |r| r.document().pages().len());
         if page < count && page != self.page {
+            if !self.chosen_pages.contains(&page) {
+                self.chosen_pages.clear();
+            }
             self.page = page;
             self.snapped = None;
             self.drag = None;
@@ -1591,6 +1599,276 @@ impl Viewer {
         Ok(())
     }
 
+    /// Which document is open: it changes when the pages do, so the
+    /// thumbnails are drawn again.
+    #[must_use]
+    pub fn document_key(&self) -> usize {
+        self.review
+            .as_ref()
+            .map_or(0, |r| r.document().bytes().as_ptr() as usize)
+    }
+
+    /// The pages the page tools act on, first to last: those chosen in
+    /// the Pages panel, or the one shown.
+    #[must_use]
+    pub fn pages_chosen(&self) -> Vec<usize> {
+        if self.chosen_pages.is_empty() {
+            self.review
+                .as_ref()
+                .map_or_else(Vec::new, |_| vec![self.page])
+        } else {
+            self.chosen_pages.clone()
+        }
+    }
+
+    /// `Page 3` or `3 pages chosen`, for the Pages panel.
+    #[must_use]
+    pub fn pages_label(&self) -> String {
+        match self.pages_chosen().as_slice() {
+            [] => String::new(),
+            [one] => format!("Page {} chosen", one + 1),
+            many => format!("{} pages chosen", many.len()),
+        }
+    }
+
+    /// A thumbnail clicked: alone it shows its page; with Control it is
+    /// added to or taken from the pages chosen; with Shift every page from
+    /// the one shown to it is chosen.
+    pub fn click_page(&mut self, page: usize, keys: Keys) {
+        let count = self
+            .review
+            .as_ref()
+            .map_or(0, |r| r.document().pages().len());
+        if page >= count {
+            return;
+        }
+        if keys.control {
+            let mut chosen = self.pages_chosen();
+            if let Some(at) = chosen.iter().position(|&p| p == page) {
+                if chosen.len() > 1 {
+                    chosen.remove(at);
+                }
+            } else {
+                chosen.push(page);
+                chosen.sort_unstable();
+            }
+            self.chosen_pages = if chosen.len() > 1 { chosen } else { Vec::new() };
+        } else if keys.shift {
+            let (from, to) = (self.page.min(page), self.page.max(page));
+            self.chosen_pages = if from == to {
+                Vec::new()
+            } else {
+                (from..=to).collect()
+            };
+        } else {
+            self.chosen_pages.clear();
+            self.go_to(page);
+        }
+    }
+
+    /// Whether the page tools can be used: not in a session, where the
+    /// others' copies would no longer match.
+    #[must_use]
+    pub fn can_change_pages(&self) -> bool {
+        self.review.is_some() && self.session.is_none()
+    }
+
+    fn change_pages(
+        &mut self,
+        change: impl FnOnce(
+            &mut Review,
+            &[usize],
+            Units,
+        ) -> Result<(usize, Vec<usize>), opencabinet_pdf::Error>,
+    ) -> Result<(), String> {
+        if self.session.is_some() {
+            return Err("Leave the session to change pages: the others would no longer see the same drawing.".into());
+        }
+        let chosen = self.pages_chosen();
+        let units = self.units;
+        let review = self.review.as_mut().ok_or("There is no PDF open")?;
+        let (page, chosen) =
+            change(review, &chosen, units).map_err(|e| capitalize(&e.to_string()))?;
+        self.pages_changed(page, chosen);
+        Ok(())
+    }
+
+    /// After the pages changed: shows `page`, with `chosen` chosen, and
+    /// forgets what belonged to the pages as they were.
+    fn pages_changed(&mut self, page: usize, chosen: Vec<usize>) {
+        let count = self
+            .review
+            .as_ref()
+            .map_or(0, |r| r.document().pages().len());
+        self.page = page.min(count.saturating_sub(1));
+        self.chosen_pages = if chosen.len() > 1 {
+            chosen.into_iter().filter(|&p| p < count).collect()
+        } else {
+            Vec::new()
+        };
+        self.bookmarks = self
+            .review
+            .as_ref()
+            .and_then(|r| bookmarks(r.document().bytes()).ok())
+            .unwrap_or_default();
+        self.snaps = None;
+        self.snapped = None;
+        self.drag = None;
+        self.building = None;
+        self.calibrating = None;
+        self.calibrate_from = None;
+        self.found.clear();
+        self.searched.clear();
+        self.forget_missing();
+        self.fit();
+    }
+
+    /// Turns the chosen pages a quarter turn, clockwise when `turn` is
+    /// positive.
+    ///
+    /// # Errors
+    /// A message for the user when the pages cannot be changed.
+    pub fn turn_pages(&mut self, turn: i32) -> Result<(), String> {
+        let page = self.page;
+        self.change_pages(|review, chosen, units| {
+            review.turn_pages(chosen, turn, units)?;
+            Ok((page, chosen.to_vec()))
+        })?;
+        self.status = format!(
+            "Turned {} {}. Undo turns {} back.",
+            pages_named(&self.pages_chosen()),
+            if turn > 0 {
+                "clockwise"
+            } else {
+                "counterclockwise"
+            },
+            if self.pages_chosen().len() > 1 {
+                "them"
+            } else {
+                "it"
+            }
+        );
+        Ok(())
+    }
+
+    /// Moves the chosen pages one place toward the start (`by` negative)
+    /// or the end.
+    ///
+    /// # Errors
+    /// A message for the user when the pages cannot be changed.
+    pub fn move_pages(&mut self, by: i32) -> Result<(), String> {
+        let chosen = self.pages_chosen();
+        let Some(&first) = chosen.first() else {
+            return Err("There is no PDF open".into());
+        };
+        let count = self
+            .review
+            .as_ref()
+            .map_or(0, |r| r.document().pages().len());
+        let to = if by < 0 {
+            first.saturating_sub(1)
+        } else {
+            first + 1
+        };
+        if (by < 0 && first == 0) || (by > 0 && first + chosen.len() >= count) {
+            return Ok(());
+        }
+        let current = self.page;
+        self.change_pages(|review, chosen, units| {
+            let at = review.move_pages(chosen, to, units)?;
+            let moved: Vec<usize> = (at..at + chosen.len()).collect();
+            let shown = chosen
+                .iter()
+                .position(|&p| p == current)
+                .map_or(at, |i| at + i);
+            Ok((shown, moved))
+        })?;
+        self.status = format!("Moved {}.", pages_named(&self.pages_chosen()));
+        Ok(())
+    }
+
+    /// Removes the chosen pages, with their markups.
+    ///
+    /// # Errors
+    /// A message for the user when every page would go, or the pages
+    /// cannot be changed.
+    pub fn delete_pages(&mut self) -> Result<(), String> {
+        let chosen = self.pages_chosen();
+        let count = self
+            .review
+            .as_ref()
+            .map_or(0, |r| r.document().pages().len());
+        if chosen.len() >= count {
+            return Err("A PDF must keep at least one page.".into());
+        }
+        let named = pages_named(&chosen);
+        self.change_pages(|review, chosen, units| {
+            review.remove_pages(chosen, units)?;
+            Ok((chosen.first().copied().unwrap_or(0), Vec::new()))
+        })?;
+        let them = if chosen.len() > 1 { "them" } else { "it" };
+        self.status = format!("Removed {named}. Undo brings {them} back.");
+        Ok(())
+    }
+
+    /// Puts a blank page, as large as the one shown, after it.
+    ///
+    /// # Errors
+    /// A message for the user when the pages cannot be changed.
+    pub fn insert_blank(&mut self) -> Result<(), String> {
+        let page = self.page;
+        self.change_pages(|review, _, units| {
+            review.insert_blank(page + 1, page, units)?;
+            Ok((page + 1, Vec::new()))
+        })?;
+        self.status = format!("Put a blank page in as page {}.", self.page + 1);
+        Ok(())
+    }
+
+    /// Puts every page of the PDF at `path` after the page shown.
+    ///
+    /// # Errors
+    /// A message for the user when it cannot be read or the pages cannot
+    /// be changed.
+    pub fn insert_file(&mut self, path: &Path) -> Result<(), String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("Cannot read the file: {e}"))?;
+        let other = Document::open(bytes).map_err(|e| capitalize(&e.to_string()))?;
+        let count = other.pages().len();
+        let page = self.page;
+        self.change_pages(|review, _, units| {
+            let all: Vec<usize> = (0..count).collect();
+            review.insert_pages(page + 1, other.bytes(), &all, units)?;
+            Ok((page + 1, (page + 1..page + 1 + count).collect()))
+        })?;
+        self.status = format!(
+            "Put in {} from {}, after page {}.",
+            if count == 1 {
+                "1 page".to_owned()
+            } else {
+                format!("{count} pages")
+            },
+            file_name(path),
+            page + 1
+        );
+        Ok(())
+    }
+
+    /// Writes the chosen pages, with their markups, to a PDF of their own
+    /// at `path`. This PDF does not change.
+    ///
+    /// # Errors
+    /// A message for the user when it cannot be written.
+    pub fn extract_pages(&mut self, path: &Path) -> Result<(), String> {
+        let chosen = self.pages_chosen();
+        let review = self.review.as_ref().ok_or("There is no PDF open")?;
+        let bytes = review
+            .extract(&chosen, self.units)
+            .map_err(|e| capitalize(&e.to_string()))?;
+        std::fs::write(path, bytes).map_err(|e| format!("Cannot save: {e}"))?;
+        self.status = format!("Wrote {} to {}.", pages_named(&chosen), file_name(path));
+        Ok(())
+    }
+
     /// The open PDF's bookmarks.
     #[must_use]
     pub fn bookmarks(&self) -> &[Bookmark] {
@@ -1869,18 +2147,28 @@ impl Viewer {
 
     /// Undoes the last step.
     pub fn undo(&mut self) {
+        let before = self.document_key();
         if let Some(review) = self.review.as_mut() {
             review.undo();
         }
         self.forget_missing();
+        if self.document_key() != before {
+            self.status = "The pages are back as they were.".into();
+            self.pages_changed(self.page, Vec::new());
+        }
     }
 
     /// Redoes the last step undone.
     pub fn redo(&mut self) {
+        let before = self.document_key();
         if let Some(review) = self.review.as_mut() {
             review.redo();
         }
         self.forget_missing();
+        if self.document_key() != before {
+            self.status = "The pages are changed again.".into();
+            self.pages_changed(self.page, Vec::new());
+        }
     }
 
     /// Whether there is something to undo, and to redo.
@@ -2596,6 +2884,22 @@ fn marker((x, y): (f64, f64), kind: Snap) -> String {
     }
 }
 
+/// `page 3` or `pages 2, 3 and 7`.
+fn pages_named(pages: &[usize]) -> String {
+    match pages {
+        [] => "no page".into(),
+        [one] => format!("page {}", one + 1),
+        [rest @ .., last] => format!(
+            "pages {} and {}",
+            rest.iter()
+                .map(|p| (p + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            last + 1
+        ),
+    }
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
@@ -2645,6 +2949,71 @@ mod tests {
     fn click(viewer: &mut Viewer, at: (f64, f64)) {
         viewer.press(at, 0);
         viewer.release(at);
+    }
+
+    #[test]
+    fn pages_are_chosen_turned_moved_put_in_taken_out_and_undone() {
+        let (mut viewer, dir) = viewer();
+        let control = Keys {
+            control: true,
+            shift: false,
+        };
+        // A rectangle on page 2 goes wherever page 2 goes.
+        viewer.go_to(1);
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (100.0, 100.0), (300.0, 200.0));
+        assert_eq!(viewer.pages_chosen(), [1]);
+        viewer.click_page(0, control);
+        assert_eq!(viewer.pages_chosen(), [0, 1]);
+        assert_eq!(viewer.pages_label(), "2 pages chosen");
+        viewer.click_page(0, control);
+        assert_eq!(viewer.pages_chosen(), [1]);
+
+        viewer.move_pages(-1).unwrap();
+        assert_eq!(viewer.page(), 0);
+        assert_eq!(viewer.review().unwrap().markups()[0].page, 0);
+        viewer.turn_pages(1).unwrap();
+        let page = viewer.review().unwrap().document().pages()[0];
+        assert_eq!((page.width, page.height), (1728.0, 2592.0));
+        assert!(viewer.status().starts_with("Turned page 1 clockwise"));
+
+        viewer.insert_blank().unwrap();
+        assert_eq!(viewer.page(), 1);
+        let other = dir.join("letter.pdf");
+        std::fs::write(&other, opencabinet_pdf::sample::sheets(2, 612.0, 792.0, 0)).unwrap();
+        viewer.insert_file(&other).unwrap();
+        assert_eq!(viewer.review().unwrap().document().pages().len(), 5);
+        assert_eq!(viewer.pages_chosen(), [2, 3]);
+        viewer.delete_pages().unwrap();
+        assert_eq!(viewer.review().unwrap().document().pages().len(), 3);
+        assert!(viewer.modified());
+
+        // Page 1, marked, alone in a PDF of its own.
+        viewer.go_to(0);
+        let alone = dir.join("alone.pdf");
+        viewer.extract_pages(&alone).unwrap();
+        let review = Review::open(std::fs::read(&alone).unwrap()).unwrap();
+        assert_eq!(review.document().pages().len(), 1);
+        assert_eq!(review.markups().len(), 1);
+
+        // Every page cannot go; undo goes back step by step.
+        viewer.click_page(
+            2,
+            Keys {
+                control: false,
+                shift: true,
+            },
+        );
+        assert_eq!(viewer.pages_chosen(), [0, 1, 2]);
+        assert!(viewer.delete_pages().is_err());
+        for _ in 0..5 {
+            viewer.undo();
+        }
+        let review = viewer.review().unwrap();
+        assert_eq!(review.document().pages().len(), 2);
+        assert_eq!(review.markups()[0].page, 1);
+        viewer.redo();
+        assert_eq!(viewer.review().unwrap().markups()[0].page, 0);
     }
 
     #[test]
