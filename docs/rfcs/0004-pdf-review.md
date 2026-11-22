@@ -78,8 +78,8 @@ and roles.
 | --- | --- | --- |
 | `opencabinet-pdf` | Open PDFs, render pages and tiles, read text, read and write annotations with incremental saves; no UI | GPL-3.0-or-later |
 | `opencabinet-review` | The module: markup model, tools, measurement, stamps, markup list, undo | GPL-3.0-or-later |
-| `opencabinet-session` | The session document (a CRDT), its sync protocol and the activity log; no sockets | GPL-3.0-or-later |
-| `opencabinet-session-server` | The network side: the host built into the app, and the standalone server binary | AGPL-3.0-or-later |
+| `opencabinet-session` | The session document (a CRDT), its sync protocol, the activity log, and hosting from the desktop and joining | GPL-3.0-or-later |
+| `opencabinet-session-server` | The standalone server binary (server mode) | AGPL-3.0-or-later |
 | `opencabinet-review-app` | The Review desktop application binary | GPL-3.0-or-later |
 
 **Review is its own program.** It has its own executable and its own
@@ -93,11 +93,11 @@ They follow RFC-0002 §1: the core crates never depend on them, and
 protocol is specified in `docs/spec/` under CC BY 4.0, like the file
 format, so other programs can join sessions.
 
-The server crate is AGPL because it is a server service (ADR-0002). The
-Review app links it to host sessions, and AGPL-3.0 and GPL-3.0 may be
-combined (each license's section 13), so the Review app stays GPL-3.0 for
-everything except the server code, whose network clause applies when
-someone modifies it and offers it over a network.
+The server crate is AGPL because it is a server service (ADR-0002).
+Hosting from the desktop app is part of the desktop program, like the rest
+of Review, so it lives in `opencabinet-session` under the GPL: the app
+links no AGPL code, and only the standalone server carries the AGPL's
+network clause.
 
 ### 2. Rendering
 
@@ -174,6 +174,9 @@ stamp editor makes and edits templates; a placed stamp is saved as a
 
 - **The shared document.** Each session is one Automerge document
   (MIT): markups, replies, statuses, the list of participants and a chat.
+  A markup is stored whole under its id, so two people changing the same
+  markup at once end with one of their two versions everywhere; markups
+  never block or lose each other.
   Automerge is a CRDT: every participant keeps a full copy and edits it
   locally, and copies exchanged in any order converge to the same state.
   Two people editing the same markup at once never block each other.
@@ -182,9 +185,12 @@ stamp editor makes and edits templates; a placed stamp is saved as a
 - **The activity log.** Every change in Automerge carries the author's
   identity and a time. The activity panel reads that history, so the log
   is complete by construction and cannot drift from the markups.
-- **Transport.** WebSocket over TLS (RFC 6455) between each participant
-  and the host. The host relays changes; it does not need to understand
-  them to keep the session going.
+- **Transport.** TLS between each participant and the host, carrying
+  frames of a kind and a length: a hello with the invitation's secret and
+  the participant's name, the host's welcome with the PDF and the session,
+  then Automerge sync messages. The host relays changes; it does not need
+  to understand them to keep the session going. WebSocket framing (RFC
+  6455) comes with server mode, for proxies and browsers.
 - **Host in the app.** Start session runs the host in the desktop app.
   The invite carries the host's address, a secret and the fingerprint of
   its certificate, so participants can trust a self-signed certificate
