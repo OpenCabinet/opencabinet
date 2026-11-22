@@ -3,7 +3,8 @@
 
 //! Writes a sheet set with one markup of every kind, for independent PDF
 //! readers to check in CI: `cargo run -p opencabinet-review --example
-//! marked_pdf -- marked.pdf`. It prints how many markups it wrote.
+//! marked_pdf -- marked.pdf [flat.pdf]`. It prints how many markups it
+//! wrote; with a second path, it also writes a flattened copy there.
 
 use opencabinet_model::{Length, Units};
 use opencabinet_pdf::{Point, sample};
@@ -57,6 +58,12 @@ fn main() {
             ..Markup::default()
         };
         review.add(markup, "Andrés");
+    }
+    if let Some(flat) = std::env::args().nth(2) {
+        let bytes = review
+            .flattened(Units::Imperial)
+            .expect("the review flattens");
+        std::fs::write(flat, bytes).expect("the flattened copy is written");
     }
     let bytes = review.save(Units::Imperial).expect("the review saves");
     std::fs::write(&path, bytes).expect("the file is written");

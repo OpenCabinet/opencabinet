@@ -163,6 +163,14 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     window.on_scale_every_page(on(|app| app.change(Viewer::scale_every_page)));
     window.on_double_clicked(on(|app| app.change(Viewer::double_click)));
     window.on_cancel(on(|app| app.change(Viewer::cancel)));
+    window.on_escape(on(|app| app.change(Viewer::escape)));
+    window.on_stop_compare(on(|app| {
+        app.change(Viewer::stop_compare);
+        *app.generation.borrow_mut() += 1;
+        app.refresh();
+    }));
+    window.on_compare(on(App::compare));
+    window.on_export_flattened(on(App::export_flattened));
     window.on_delete_selected(on(|app| app.change(Viewer::delete_selected)));
 
     let a = Rc::clone(app);
@@ -176,6 +184,18 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         if let Ok(i) = usize::try_from(i) {
             a.change(|v| v.choose_color(i));
         }
+    });
+    let a = Rc::clone(app);
+    window.on_find(move |text| a.change(|v| v.find(&text)));
+    let a = Rc::clone(app);
+    window.on_find_next(move |back| a.change(|v| v.find_next(back)));
+    let a = Rc::clone(app);
+    window.on_set_filter(move |status, text| {
+        let status = usize::try_from(status)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| Status::ALL.get(i).copied());
+        a.change(|v| v.set_filter(status, &text));
     });
     let a = Rc::clone(app);
     window.on_choose_scale(move |i, every| {
@@ -336,6 +356,41 @@ impl App {
         }
     }
 
+    fn compare(&self) {
+        let Some(path) = self.dialogs.open_path() else {
+            return;
+        };
+        let result = self.viewer.borrow_mut().compare_with(&path);
+        *self.generation.borrow_mut() += 1;
+        self.refresh();
+        if let Err(message) = result {
+            self.status(&message);
+        }
+    }
+
+    fn export_flattened(&self) {
+        let suggested = self
+            .viewer
+            .borrow()
+            .path()
+            .and_then(Path::file_stem)
+            .map_or_else(
+                || "drawing".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+        let Some(path) = self
+            .dialogs
+            .save_path(&format!("{suggested} (flattened).pdf"), FileKind::Pdf)
+        else {
+            return;
+        };
+        let result = self.viewer.borrow_mut().export_flattened(&path);
+        self.refresh();
+        if let Err(message) = result {
+            self.status(&message);
+        }
+    }
+
     fn export_list(&self) {
         let suggested = self
             .viewer
@@ -417,6 +472,8 @@ impl App {
         window.set_has_document(viewer.review().is_some());
         window.set_page_label(viewer.page_label().into());
         window.set_page_index(i32::try_from(viewer.page()).unwrap_or(0));
+        window.set_found_label(viewer.found_label().into());
+        window.set_comparing(viewer.compared().is_some());
         window.set_zoom_label(viewer.zoom_label().into());
         window.set_scale_label(viewer.scale_label().into());
         window.set_status(viewer.status().into());
@@ -477,6 +534,7 @@ impl App {
             })
             .collect();
         window.set_rows(ModelRc::new(VecModel::from(rows)));
+        window.set_list_label(viewer.list_label().into());
         window.set_selected_row(
             viewer
                 .selected_row()
@@ -492,6 +550,7 @@ impl App {
         let Some(view) = viewer.view(scale) else {
             return;
         };
+        let compared = viewer.compared().cloned();
         let Some(review) = viewer.review_mut() else {
             return;
         };
@@ -506,7 +565,15 @@ impl App {
         if self.drawn.borrow().as_ref() == Some(&key) {
             return;
         }
-        match render(document, view) {
+        let drawn = match compared {
+            Some(other) => render(document, view).and_then(|mine| {
+                let page = view.page.min(other.pages().len().saturating_sub(1));
+                let theirs = render(&other, View { page, ..view })?;
+                opencabinet_pdf::overlay(&mine, &theirs)
+            }),
+            None => render(document, view),
+        };
+        match drawn {
             Ok(bitmap) => {
                 let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
                     &bitmap.pixels,

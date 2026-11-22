@@ -24,11 +24,12 @@ export struct Label {
 }
 
 // A tool button that stays pressed while its tool is in use.
+// A tool button: the tool in use is the highlighted one. It is not a
+// toggle, which would keep its own pressed state apart from the tool.
 component ToolButton inherits Button {
     in property <int> index;
     in property <int> current;
-    checkable: true;
-    checked: self.index == self.current;
+    primary: self.index == self.current;
 }
 
 export component ReviewWindow inherits Window {
@@ -69,6 +70,9 @@ export component ReviewWindow inherits Window {
     in property <[string]> scales;
     in property <[image]> thumbnails;
     in property <int> page-index;
+    in property <string> found-label;
+    in property <bool> comparing;
+    in property <string> list-label;
     in-out property <bool> show-pages: true;
     // Which file the thumbnails belong to.
     in-out property <int> document-number;
@@ -115,6 +119,13 @@ export component ReviewWindow inherits Window {
     callback calibrate(string);
     callback finish();
     callback cancel();
+    callback escape();
+    callback find(string);
+    callback find-next(bool);
+    callback compare();
+    callback stop-compare();
+    callback export-flattened();
+    callback set-filter(int, string);
 
     title: root.window-title;
     preferred-width: 1280px;
@@ -154,7 +165,7 @@ export component ReviewWindow inherits Window {
                 return accept;
             }
             if (event.text == Key.Escape) {
-                root.cancel();
+                root.escape();
                 return accept;
             }
             reject
@@ -163,6 +174,38 @@ export component ReviewWindow inherits Window {
         VerticalLayout {
             padding: 8px;
             spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Text { text: "Find"; vertical-alignment: center; }
+                search := LineEdit {
+                    accessible-label: "Find text";
+                    width: 200px;
+                    enabled: root.has-document;
+                    placeholder-text: "Words on the drawing";
+                    accepted(text) => { root.find(text); }
+                }
+                Button { text: "◀"; accessible-label: "Previous match"; enabled: root.found-label != ""; clicked => { root.find-next(true); } }
+                Button { text: "▶"; accessible-label: "Next match"; enabled: root.found-label != ""; clicked => { root.find-next(false); } }
+                Text { text: root.found-label; vertical-alignment: center; min-width: 72px; }
+                Rectangle { width: 8px; }
+                if !root.comparing: Button {
+                    text: "Compare with…";
+                    enabled: root.has-document;
+                    clicked => { root.compare(); }
+                }
+                if root.comparing: Button {
+                    text: "Stop comparing";
+                    primary: true;
+                    clicked => { root.stop-compare(); }
+                }
+                Button {
+                    text: "Export flattened";
+                    enabled: root.has-document;
+                    clicked => { root.export-flattened(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
 
             HorizontalLayout {
                 spacing: 6px;
@@ -378,7 +421,29 @@ export component ReviewWindow inherits Window {
                 VerticalLayout {
                     width: 340px;
                     spacing: 6px;
-                    Text { text: "Markups"; font-weight: 600; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: "Markups"; font-weight: 600; vertical-alignment: center; }
+                        Text {
+                            text: root.list-label;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            color: Palette.foreground.transparentize(30%);
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        status-filter := ComboBox {
+                            accessible-label: "Show markups with status";
+                            model: ["All", "Open", "Accepted", "Rejected", "Completed"];
+                            selected => { root.set-filter(self.current-index, words.text); }
+                        }
+                        words := LineEdit {
+                            accessible-label: "Show markups with words";
+                            placeholder-text: "Filter";
+                            edited(text) => { root.set-filter(status-filter.current-index, text); }
+                        }
+                    }
                     StandardTableView {
                         vertical-stretch: 1;
                         columns: [

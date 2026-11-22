@@ -104,7 +104,7 @@ jobs:
           # OpenCabinet Review's markups (RFC-0004): the sheets as written,
           # one incremental update after them, and one annotation per kind
           # of markup, as an independent reader sees them.
-          count=$(cargo run --locked -q -p opencabinet-review --example marked_pdf -- marked.pdf)
+          count=$(cargo run --locked -q -p opencabinet-review --example marked_pdf -- marked.pdf flat.pdf)
           qpdf --check marked.pdf
           test "$(grep -ac '%%EOF' marked.pdf)" -eq 2
           # qpdf's JSON lists the objects as they are after the update; the
@@ -123,6 +123,18 @@ jobs:
           PY
           )
           test "$annotations" -eq "$count" || { echo "expected $count annotations, found $annotations"; exit 1; }
+          # The flattened copy: valid, with the markups drawn into the
+          # page and none left as annotations.
+          qpdf --check flat.pdf
+          qpdf --json=2 --json-key=pages --json-key=qpdf flat.pdf > flat.json
+          left=$(python3 - <<'PY'
+          import json
+          data = json.load(open("flat.json"))
+          page = data["qpdf"][1]["obj:" + data["pages"][0]["object"]]["value"]
+          print(len(page.get("/Annots", [])))
+          PY
+          )
+          test "$left" -eq 0 || { echo "expected no annotations, found $left"; exit 1; }
       # The parts as DXF, audited by ezdxf (ADR-0015).
       - name: Check the DXF files with ezdxf
         if: runner.os == 'Linux'

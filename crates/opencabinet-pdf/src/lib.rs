@@ -17,6 +17,8 @@
 //! second.
 
 pub mod annotations;
+pub mod find;
+mod flatten;
 mod render;
 pub mod sample;
 mod text;
@@ -27,6 +29,7 @@ use std::sync::Arc;
 use hayro::hayro_interpret::util::TransformExt;
 use hayro::hayro_syntax::Pdf;
 
+pub use flatten::{flatten, overlay};
 pub use render::{Bitmap, View, render};
 
 /// A point, in whichever space the context says.
