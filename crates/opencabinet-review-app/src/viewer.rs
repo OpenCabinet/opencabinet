@@ -11,7 +11,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use opencabinet_model::{Length, Units};
-use opencabinet_pdf::{Page, Point, View};
+use opencabinet_pdf::find::{Found, find};
+use opencabinet_pdf::{Document, Page, Point, View};
 use opencabinet_review::{
     Color, FILL_OPACITY, Gesture, Kind, Markup, Review, Scale, Segment, Status, presets, stamps,
     text_width,
@@ -161,6 +162,16 @@ pub struct Viewer {
     calibrating: Option<(Point, Point)>,
     /// What was copied, to paste.
     clipboard: Option<Markup>,
+    /// The markup list shows only markups with this status, if any, and
+    /// whose subject, author or text has `filter_text`.
+    filter_status: Option<Status>,
+    filter_text: String,
+    /// Where the words searched for were found, and which is shown.
+    found: Vec<Found>,
+    found_index: usize,
+    searched: String,
+    /// Another drawing laid over this one, and its name.
+    compare: Option<(String, Document)>,
     status: String,
 }
 
@@ -188,6 +199,12 @@ impl Default for Viewer {
             selected: None,
             calibrating: None,
             clipboard: None,
+            filter_status: None,
+            filter_text: String::new(),
+            found: Vec::new(),
+            found_index: 0,
+            searched: String::new(),
+            compare: None,
             status: "Open a PDF to start.".into(),
         }
     }
@@ -213,6 +230,9 @@ impl Viewer {
         self.calibrating = None;
         self.drag = None;
         self.building = None;
+        self.found.clear();
+        self.searched.clear();
+        self.compare = None;
         self.fit();
         Ok(())
     }
@@ -870,6 +890,180 @@ impl Viewer {
         );
     }
 
+    /// Escape: stops what is under way and goes back to the select tool;
+    /// with nothing under way, lets go of the selection.
+    pub fn escape(&mut self) {
+        let busy = self.building.is_some()
+            || self.drag.is_some()
+            || self.calibrating.is_some()
+            || self.tool != Tool::Select;
+        self.drag = None;
+        self.building = None;
+        self.calibrating = None;
+        if busy {
+            self.choose_tool(Tool::Select);
+        } else {
+            self.selected = None;
+        }
+    }
+
+    /// Shows in the markup list only markups with `status` (all when
+    /// `None`) whose subject, author or text has `text`.
+    pub fn set_filter(&mut self, status: Option<Status>, text: &str) {
+        self.filter_status = status;
+        text.trim().to_lowercase().clone_into(&mut self.filter_text);
+    }
+
+    /// The markups the list shows, in its order.
+    fn listed(&self) -> Vec<&Markup> {
+        let Some(review) = self.review.as_ref() else {
+            return Vec::new();
+        };
+        review
+            .markups()
+            .iter()
+            .filter(|m| self.filter_status.is_none_or(|s| m.status == s))
+            .filter(|m| {
+                self.filter_text.is_empty()
+                    || [
+                        m.subject(),
+                        m.author.as_str(),
+                        m.text.as_str(),
+                        m.kind.label(),
+                    ]
+                    .iter()
+                    .any(|field| field.to_lowercase().contains(&self.filter_text))
+            })
+            .collect()
+    }
+
+    /// How many markups the list shows, of how many.
+    #[must_use]
+    pub fn list_label(&self) -> String {
+        let all = self.review.as_ref().map_or(0, |r| r.markups().len());
+        let shown = self.listed().len();
+        if shown == all {
+            format!("{all} markups")
+        } else {
+            format!("{shown} of {all} markups")
+        }
+    }
+
+    /// Finds `query` on every page and shows the first place; an empty
+    /// query clears the search.
+    pub fn find(&mut self, query: &str) {
+        self.found.clear();
+        self.found_index = 0;
+        query.trim().clone_into(&mut self.searched);
+        if self.searched.is_empty() {
+            return;
+        }
+        let Some(document) = self.review.as_ref().map(|r| r.document().clone()) else {
+            return;
+        };
+        for page in 0..document.pages().len() {
+            if let Ok(found) = find(&document, page, &self.searched) {
+                self.found.extend(found);
+            }
+        }
+        // From the page shown onwards.
+        self.found_index = self
+            .found
+            .iter()
+            .position(|f| f.page >= self.page)
+            .unwrap_or(0);
+        self.show_found();
+    }
+
+    /// Shows the next place found, or the one before with `back`.
+    pub fn find_next(&mut self, back: bool) {
+        let count = self.found.len();
+        if count == 0 {
+            return;
+        }
+        self.found_index = if back {
+            (self.found_index + count - 1) % count
+        } else {
+            (self.found_index + 1) % count
+        };
+        self.show_found();
+    }
+
+    fn show_found(&mut self) {
+        let Some(found) = self.found.get(self.found_index).cloned() else {
+            self.status = format!("\"{}\" is not in this PDF.", self.searched);
+            return;
+        };
+        self.go_to(found.page);
+        if let Some(page) = self.page_size() {
+            let [x0, y0, x1, y1] = found.rect;
+            let a = page.to_page.apply(Point::new(x0, y0));
+            let b = page.to_page.apply(Point::new(x1, y1));
+            let middle = (f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
+            // Close enough to read it, with what is around it.
+            let (w, h) = self.size;
+            self.zoom = (self.zoom.max(1.0)).clamp(ZOOM.0, ZOOM.1);
+            self.scroll = (
+                middle.0 * self.zoom - w / 2.0,
+                middle.1 * self.zoom - h / 2.0,
+            );
+            self.clamp_scroll();
+        }
+        self.status = format!("Found on page {}.", found.page + 1);
+    }
+
+    /// `3 of 12`, `No matches`, or nothing before a search.
+    #[must_use]
+    pub fn found_label(&self) -> String {
+        match (self.searched.is_empty(), self.found.len()) {
+            (true, _) => String::new(),
+            (false, 0) => "No matches".into(),
+            (false, count) => format!("{} of {count}", self.found_index + 1),
+        }
+    }
+
+    /// Lays the PDF at `path` over this one, to see what changed: what
+    /// only this one has in red, what only the other has in blue.
+    ///
+    /// # Errors
+    /// A message for the user when it cannot be read.
+    pub fn compare_with(&mut self, path: &Path) -> Result<(), String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("Cannot read the file: {e}"))?;
+        let document = Document::open(bytes).map_err(|e| capitalize(&e.to_string()))?;
+        let name = file_name(path);
+        self.status =
+            format!("Comparing with {name}: red is only in this drawing, blue only in {name}.");
+        self.compare = Some((name, document));
+        Ok(())
+    }
+
+    /// Stops comparing.
+    pub fn stop_compare(&mut self) {
+        if self.compare.take().is_some() {
+            self.status = "Comparison closed.".into();
+        }
+    }
+
+    /// The drawing laid over this one, if any.
+    #[must_use]
+    pub fn compared(&self) -> Option<&Document> {
+        self.compare.as_ref().map(|(_, document)| document)
+    }
+
+    /// Writes a copy with every markup drawn into the page to `path`.
+    ///
+    /// # Errors
+    /// A message for the user when it cannot be written.
+    pub fn export_flattened(&mut self, path: &Path) -> Result<(), String> {
+        let review = self.review.as_ref().ok_or("There is no PDF open")?;
+        let bytes = review
+            .flattened(self.units)
+            .map_err(|e| capitalize(&e.to_string()))?;
+        std::fs::write(path, bytes).map_err(|e| format!("Cannot save: {e}"))?;
+        self.status = format!("Wrote {}, with the markups drawn in.", file_name(path));
+        Ok(())
+    }
+
     /// Stops what is under way: a shape, a drag, a calibration, a
     /// selection.
     pub fn cancel(&mut self) {
@@ -932,7 +1126,7 @@ impl Viewer {
 
     /// Selects the markup listed at `row`, and shows its page.
     pub fn select_row(&mut self, row: usize) {
-        let Some(markup) = self.review.as_ref().and_then(|r| r.markups().get(row)) else {
+        let Some(markup) = self.listed().get(row).copied() else {
             return;
         };
         let (id, page) = (markup.id.clone(), markup.page);
@@ -944,11 +1138,7 @@ impl Viewer {
     #[must_use]
     pub fn selected_row(&self) -> Option<usize> {
         let id = self.selected.as_deref()?;
-        self.review
-            .as_ref()?
-            .markups()
-            .iter()
-            .position(|m| m.id == id)
+        self.listed().iter().position(|m| m.id == id)
     }
 
     /// Changes the selected markup's text.
@@ -991,9 +1181,8 @@ impl Viewer {
         let Some(review) = self.review.as_ref() else {
             return Vec::new();
         };
-        review
-            .markups()
-            .iter()
+        self.listed()
+            .into_iter()
             .map(|m| {
                 let text = m.text.lines().next().unwrap_or_default();
                 let what = match review.measured(m, self.units) {
@@ -1078,6 +1267,30 @@ impl Viewer {
             draw(&self.new_markup(*kind, points), false);
         }
         shapes.extend(outlines);
+        // Where the search found the words on this page.
+        for (index, found) in self.found.iter().enumerate() {
+            if found.page != self.page {
+                continue;
+            }
+            let [x0, y0, x1, y1] = found.rect;
+            let current = index == self.found_index;
+            shapes.push(Shape {
+                commands: self.commands(
+                    &page,
+                    &[
+                        Segment::Move(Point::new(x0, y0)),
+                        Segment::Line(Point::new(x1, y0)),
+                        Segment::Line(Point::new(x1, y1)),
+                        Segment::Line(Point::new(x0, y1)),
+                        Segment::Close,
+                    ],
+                ),
+                stroke: current.then_some([0.95, 0.5, 0.0]),
+                fill: Some(([1.0, 0.85, 0.0], 0.4)),
+                width: 2.0,
+                selected: false,
+            });
+        }
         let line = match &self.drag {
             Some(Drag::Calibrate { a, b }) => Some((*a, *b)),
             _ => self.calibrating,
@@ -1450,6 +1663,96 @@ mod tests {
         assert!((viewer.zoom - 1000.0 / 272.0).abs() < 1e-9);
         let middle = viewer.to_pdf((500.0, 350.0)).unwrap();
         assert!(middle.distance(Point::new(200.0, 1578.0)) < 1e-6);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn escape_goes_back_to_the_select_tool() {
+        let (mut viewer, dir) = viewer();
+        viewer.choose_tool(Tool::Draw(Kind::Area));
+        click(&mut viewer, (100.0, 100.0));
+        viewer.escape();
+        assert_eq!(viewer.tool(), Tool::Select);
+        assert!(!viewer.building());
+        assert_eq!(viewer.rows().len(), 0);
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (100.0, 100.0), (200.0, 200.0));
+        viewer.escape();
+        assert_eq!(viewer.tool(), Tool::Select);
+        assert!(viewer.selected().is_some());
+        // With nothing under way, it lets go of the selection.
+        viewer.escape();
+        assert!(viewer.selected().is_none());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_list_is_filtered_by_status_and_words() {
+        let (mut viewer, dir) = viewer();
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (100.0, 100.0), (200.0, 200.0));
+        viewer.set_text("Filler");
+        drag(&mut viewer, (300.0, 100.0), (400.0, 200.0));
+        viewer.set_text("Crown");
+        viewer.set_status(1);
+        viewer.set_filter(Some(Status::Accepted), "");
+        assert_eq!(viewer.rows().len(), 1);
+        assert_eq!(viewer.list_label(), "1 of 2 markups");
+        viewer.set_filter(None, "fill");
+        assert_eq!(viewer.rows()[0][4], "Filler");
+        viewer.select_row(0);
+        assert_eq!(viewer.selected().unwrap().text, "Filler");
+        viewer.set_filter(None, "");
+        assert_eq!(viewer.list_label(), "2 markups");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn words_are_found_page_by_page() {
+        let (mut viewer, dir) = viewer();
+        viewer.find("a-20");
+        assert_eq!(viewer.found_label(), "1 of 2");
+        assert_eq!(viewer.page(), 0);
+        let (shapes, _) = viewer.overlay();
+        assert_eq!(shapes.len(), 1);
+        viewer.find_next(false);
+        assert_eq!(viewer.found_label(), "2 of 2");
+        assert_eq!(viewer.page(), 1);
+        viewer.find_next(false);
+        assert_eq!(viewer.page(), 0);
+        viewer.find("not there");
+        assert_eq!(viewer.found_label(), "No matches");
+        viewer.find("");
+        assert_eq!(viewer.found_label(), "");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn another_drawing_is_laid_over_and_a_flat_copy_written() {
+        let (mut viewer, dir) = viewer();
+        let other = dir.join("other.pdf");
+        std::fs::write(
+            &other,
+            opencabinet_pdf::sample::sheets(1, 2592.0, 1728.0, 6),
+        )
+        .unwrap();
+        viewer.compare_with(&other).unwrap();
+        assert_eq!(viewer.compared().unwrap().pages().len(), 1);
+        viewer.stop_compare();
+        assert!(viewer.compared().is_none());
+
+        viewer.choose_tool(Tool::Draw(Kind::Cloud));
+        drag(&mut viewer, (100.0, 100.0), (300.0, 200.0));
+        let flat = dir.join("flat.pdf");
+        viewer.export_flattened(&flat).unwrap();
+        let bytes = std::fs::read(&flat).unwrap();
+        assert_eq!(
+            opencabinet_pdf::annotations::read(&bytes)
+                .unwrap()
+                .annotations
+                .len(),
+            0
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

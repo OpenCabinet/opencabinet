@@ -281,3 +281,30 @@ fn a_scale_needs_two_points_and_a_length() {
         "1000 mm"
     );
 }
+
+#[test]
+fn a_flattened_copy_draws_the_markups_into_the_page() {
+    let original = sample::foreign_markups();
+    let mut review = Review::open(original).unwrap();
+    review.add(
+        markup(0, Kind::Rectangle, &[(1000.0, 1000.0), (1200.0, 1100.0)]),
+        "Andrés",
+    );
+    let flat = review.flattened(Units::Imperial).unwrap();
+    assert!(review.modified(), "the review itself is not saved");
+    // No markups left to edit; the link stays.
+    assert_eq!(annotations::read(&flat).unwrap().annotations.len(), 0);
+    let document = opencabinet_pdf::Document::open(flat).unwrap();
+    // The rectangle's top edge, y = 1100 in PDF space, drawn red.
+    let view = opencabinet_pdf::View {
+        page: 0,
+        zoom: 1.0,
+        origin: Point::new(0.0, 0.0),
+        width: 1400,
+        height: 1728,
+    };
+    let red = opencabinet_pdf::render(&document, view)
+        .unwrap()
+        .pixel(1100, 1728 - 1100);
+    assert!(red[0] > 150 && red[1] < 90, "{red:?}");
+}

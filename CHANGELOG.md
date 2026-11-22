@@ -35,6 +35,15 @@ follow [Semantic Versioning](https://semver.org/).
     millimeters. Other programs' measurements keep their own scale.
   - **Copy, paste and duplicate** markups, on the same page or another,
     and zoom to the one selected.
+  - **Find** words on the drawing, page by page, each place highlighted.
+  - **Compare** two drawings: another PDF laid over this one, what only
+    this one has in red, what only the other has in blue.
+  - **Export flattened:** a copy with every markup drawn into the page,
+    to send where it must not be edited.
+  - **Markup list filters** by status and by words in the subject,
+    author or text.
+  - Escape stops a tool and goes back to Select; the tool in use is the
+    one highlighted.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

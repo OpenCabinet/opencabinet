@@ -47,6 +47,7 @@ fn tool(label: &str) -> i32 {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one scenario, step by step")]
 fn a_drawing_is_opened_marked_up_and_saved() {
     i_slint_backend_testing::init_integration_test_with_system_time();
     let dir =
@@ -132,6 +133,19 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     assert_eq!(window.get_rows().row_count(), 3);
     window.invoke_undo();
     assert_eq!(window.get_rows().row_count(), 2);
+
+    // Escape goes back to the select tool.
+    window.invoke_choose_tool(tool("Area"));
+    window.invoke_escape();
+    assert_eq!(window.get_tool(), tool("Select"));
+
+    // The sheet number is found; the list is filtered.
+    window.invoke_find("A-201".into());
+    assert_eq!(window.get_found_label(), "1 of 1");
+    window.invoke_set_filter(0, "filler".into());
+    assert_eq!(window.get_rows().row_count(), 1);
+    assert_eq!(window.get_list_label(), "1 of 2 markups");
+    window.invoke_set_filter(0, "".into());
 
     // A common scale for every page.
     let quarter = (0..window.get_scales().row_count())

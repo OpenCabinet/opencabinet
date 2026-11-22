@@ -371,6 +371,16 @@ impl Review {
         Ok(bytes)
     }
 
+    /// A copy of the PDF with every markup drawn into its page, to send
+    /// where it must not be edited. The review itself is not saved.
+    ///
+    /// # Errors
+    /// When the PDF cannot be written.
+    pub fn flattened(&self, units: Units) -> Result<Vec<u8>, Error> {
+        let bytes = annotations::save(self.original.bytes(), &self.to_save(units))?;
+        opencabinet_pdf::flatten(&bytes)
+    }
+
     fn to_save(&self, units: Units) -> Markups {
         let annotations = self
             .state
