@@ -17,6 +17,8 @@ pub enum FileKind {
     List,
     /// A sheet set.
     Set,
+    /// Tool sets to share.
+    Tools,
 }
 
 impl FileKind {
@@ -25,6 +27,7 @@ impl FileKind {
             Self::Pdf => ("PDF document", "pdf"),
             Self::List => ("Markup list for spreadsheets", "csv"),
             Self::Set => ("Sheet set", "ocset"),
+            Self::Tools => ("Tool sets", "octools"),
         }
     }
 }
@@ -45,6 +48,23 @@ pub trait Dialogs {
 
     /// Whether the user agrees to lose the changes that are not saved.
     fn discard_changes(&self) -> bool;
+
+    /// A file of `kind` to open, or `None` when the user cancels.
+    fn open_kind(&self, kind: FileKind) -> Option<PathBuf> {
+        let _ = kind;
+        None
+    }
+
+    /// A folder, or `None` when the user cancels.
+    fn folder_path(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Whether the user agrees to `question`, titled `title`.
+    fn confirm(&self, title: &str, question: &str) -> bool {
+        let _ = (title, question);
+        true
+    }
 }
 
 /// The operating system's own dialogs.
@@ -74,6 +94,7 @@ impl Dialogs for SystemDialogs {
             FileKind::Pdf => "Save PDF as",
             FileKind::List => "Export markup list",
             FileKind::Set => "Save sheet set as",
+            FileKind::Tools => "Export tool set",
         };
         let path = FileDialog::new()
             .set_title(title)
@@ -86,6 +107,28 @@ impl Dialogs for SystemDialogs {
         } else {
             path.with_extension(extension)
         })
+    }
+
+    fn open_kind(&self, kind: FileKind) -> Option<PathBuf> {
+        let (name, extension) = kind.filter();
+        FileDialog::new()
+            .set_title(format!("Open {name}"))
+            .add_filter(name, &[extension])
+            .pick_file()
+    }
+
+    fn folder_path(&self) -> Option<PathBuf> {
+        FileDialog::new().set_title("Choose a folder").pick_folder()
+    }
+
+    fn confirm(&self, title: &str, question: &str) -> bool {
+        MessageDialog::new()
+            .set_level(MessageLevel::Warning)
+            .set_title(title)
+            .set_description(question)
+            .set_buttons(MessageButtons::YesNo)
+            .show()
+            == MessageDialogResult::Yes
     }
 
     fn discard_changes(&self) -> bool {

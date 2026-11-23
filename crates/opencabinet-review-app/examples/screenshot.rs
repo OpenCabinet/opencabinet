@@ -120,8 +120,28 @@ fn main() {
 }
 
 /// Shows what the environment asks for: `REPLIES`, `SNAP`, `PAGES`,
-/// `TURN`, `QTY` or `FIND`.
+/// `TURN`, `QTY`, `FIND`, `SETS` or `EDITOR`.
 fn show_features(review: &opencabinet_review_app::ReviewWindow) {
+    // SETS=1 keeps two markups' styles in two tool sets.
+    if std::env::var("SETS").is_ok() {
+        review.invoke_row_selected(0);
+        review.invoke_save_tool();
+        review.invoke_add_set("Contractor review".into());
+        review.invoke_row_selected(1);
+        review.invoke_save_tool();
+        review.invoke_row_selected(2);
+        review.invoke_save_tool();
+    }
+    // EDITOR=1 designs a stamp in the editor's tab.
+    if std::env::var("EDITOR").is_ok() {
+        review.invoke_new_stamp();
+        review.invoke_editor_rename("Field check".into());
+        review.invoke_editor_line(0, "FIELD CHECKED".into(), 22, true);
+        review.invoke_editor_line(1, "JOB {ask:Job number} · {date}".into(), 9, false);
+        review.invoke_editor_add_line();
+        review.invoke_editor_line(2, "{name} · sheet {sheet}".into(), 8, false);
+        review.invoke_editor_color_to(2);
+    }
     // FIND=1 looks for a sheet number in every open drawing.
     if std::env::var("FIND").is_ok() {
         review.invoke_find_everywhere("A-20".into());

@@ -521,6 +521,7 @@ fn encode(markup: &Markup) -> Json {
         "modified": markup.modified,
         "scale": markup.scale.map(|s| (s.points, s.real.nm())),
         "origin": markup.origin,
+        "look": markup.look,
     })
 }
 
@@ -618,6 +619,7 @@ fn decode(id: &str, text: &str) -> Option<Markup> {
         scale,
         origin,
         replies: Vec::new(),
+        look: string("look"),
     })
 }
 

@@ -8,6 +8,36 @@ use std::fmt::Write as _;
 
 use lopdf::{Object, dictionary};
 
+/// A PDF of one blank page `width × height` points.
+#[must_use]
+pub fn blank(width: f64, height: f64) -> Vec<u8> {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width:.2} {height:.2}] /Resources << >> >>"
+        ),
+    ];
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    let mut table = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
+    for offset in offsets {
+        let _ = writeln!(table, "{offset:010} 00000 n ");
+    }
+    let _ = write!(
+        table,
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+        objects.len() + 1
+    );
+    pdf.extend_from_slice(table.as_bytes());
+    pdf
+}
+
 /// A PDF of `pages` sheets of `width × height` points, each with a border,
 /// a grid of `lines` lines across and as many down, and its sheet number
 /// in the corner.

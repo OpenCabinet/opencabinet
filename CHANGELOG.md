@@ -165,6 +165,24 @@ follow [Semantic Versioning](https://semver.org/).
     checks it from outside (a session started on it, joined, a markup
     crossing it), and keeps it as an artifact with its license, guide
     and a systemd service for Linux. `--version` says which it is.
+  - **Tool sets:** My tools became named sets of saved tools, in a Tool
+    sets panel on the left. Sets are added, renamed, folded, removed
+    (asking first when they hold tools) and exported or imported as a
+    `.octools` file to share with a team, with the stamps their tools
+    place; a tool moves from one set to another. My tools as it was
+    becomes the first set.
+  - **Stamps of your own, designed:** New stamp or Edit opens a stamp in a
+    tab of its own beside the drawings: its name, up to eight lines each
+    with its size and weight, how they are aligned, a rounded, square or
+    no border, its color and whether it is filled, with a preview drawn
+    exactly as it will be placed. Review's own stamps stay as they are;
+    Copy makes one's own from them. Each stamp is a `.ocstamp` file in a
+    stamps folder, which can be a shared office folder. A placed stamp
+    keeps its design in the PDF and looks the same in other viewers.
+  - **Stamp fields:** `{name}`, `{date}`, `{date:dd/MM/yyyy}`, `{time}`,
+    `{page}`, `{sheet}`, `{file}` are filled in when a stamp is placed;
+    `{ask:Job number}` is answered under the stamp list before placing.
+    A stamp clicked in place takes its own size.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

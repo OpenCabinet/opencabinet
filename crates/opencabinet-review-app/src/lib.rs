@@ -27,7 +27,349 @@ use slint::{
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
 use crate::viewer::{COLORS, Follow, Keys, TOOLS, Tool, Viewer, WIDTHS};
 use opencabinet_review::sets::{self, SheetSet};
+use opencabinet_review::stamps::{self, Design, Fields};
 use opencabinet_review::{Kind, Status};
+
+/// Shows the tool sets, the stamps' folder and the questions the stamp
+/// placed next asks.
+fn refresh_tool_sets(window: &ReviewWindow, viewer: &Viewer) {
+    let current = viewer.current_set();
+    let sets: Vec<ToolSetInfo> = viewer
+        .tool_sets()
+        .iter()
+        .enumerate()
+        .map(|(s, set)| {
+            let tools: Vec<SavedInfo> = set
+                .tools
+                .iter()
+                .map(|t| SavedInfo {
+                    name: t.name.as_str().into(),
+                    color: color(t.color),
+                })
+                .collect();
+            ToolSetInfo {
+                name: set.name.as_str().into(),
+                collapsed: set.collapsed,
+                current: s == current,
+                tools: ModelRc::new(VecModel::from(tools)),
+            }
+        })
+        .collect();
+    window.set_tool_sets(ModelRc::new(VecModel::from(sets)));
+    let (set, tool) = viewer.saved_in_use().map_or((-1, -1), |(s, t)| {
+        (
+            i32::try_from(s).unwrap_or(-1),
+            i32::try_from(t).unwrap_or(-1),
+        )
+    });
+    window.set_saved_set(set);
+    window.set_saved_in_use(tool);
+    window.set_stamps_folder(
+        viewer
+            .stamps_folder()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .into(),
+    );
+    let asks: Vec<AskInfo> = viewer
+        .stamp_asks()
+        .into_iter()
+        .map(|(question, answer)| AskInfo {
+            question: question.into(),
+            answer: answer.into(),
+        })
+        .collect();
+    let model = window.get_stamp_asks();
+    // Answers being typed are not set again under the cursor.
+    let same = model.row_count() == asks.len()
+        && asks
+            .iter()
+            .enumerate()
+            .all(|(i, a)| model.row_data(i).is_some_and(|r| r.question == a.question));
+    if !same {
+        window.set_stamp_asks(ModelRc::new(VecModel::from(asks)));
+    }
+}
+
+fn connect_tool_sets(window: &ReviewWindow, app: &Rc<App>) {
+    let a = Rc::clone(app);
+    window.on_choose_set(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.choose_set(i));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_toggle_set(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.change(|v| v.toggle_set(i));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_add_set(move |name| a.try_change(|v| v.add_set(&name)));
+    let a = Rc::clone(app);
+    window.on_rename_set(move |i, name| {
+        if let Ok(i) = usize::try_from(i) {
+            a.try_change(|v| v.rename_set(i, &name));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_remove_set(move |i| {
+        let Ok(i) = usize::try_from(i) else {
+            return;
+        };
+        let (name, count) = {
+            let viewer = a.viewer.borrow();
+            let set = viewer.tool_sets().get(i);
+            (
+                set.map(|s| s.name.clone()).unwrap_or_default(),
+                set.map_or(0, |s| s.tools.len()),
+            )
+        };
+        if count > 0
+            && !a.dialogs.confirm(
+                "Remove tool set",
+                &format!("Remove the tool set {name} and its {count} tools?"),
+            )
+        {
+            return;
+        }
+        a.try_change(|v| v.remove_set(i));
+    });
+    let a = Rc::clone(app);
+    window.on_move_tool(move |set, i| {
+        if let (Ok(set), Ok(i)) = (usize::try_from(set), usize::try_from(i)) {
+            a.try_change(|v| {
+                let to = (set + 1) % v.tool_sets().len().max(1);
+                v.move_tool(set, i, to)
+            });
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_export_set(move |i| {
+        let Ok(i) = usize::try_from(i) else {
+            return;
+        };
+        let name = a
+            .viewer
+            .borrow()
+            .tool_sets()
+            .get(i)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        if let Some(path) = a
+            .dialogs
+            .save_path(&format!("{name}.octools"), FileKind::Tools)
+        {
+            a.try_change(|v| v.export_set(i, &path));
+        }
+    });
+    window.on_import_sets(on_app(app, |app| {
+        if let Some(path) = app.dialogs.open_kind(FileKind::Tools) {
+            app.try_change(|v| v.import_sets(&path));
+        }
+    }));
+    window.on_choose_stamps_folder(on_app(app, |app| {
+        if let Some(folder) = app.dialogs.folder_path() {
+            app.try_change(|v| v.set_stamps_folder(&folder));
+        }
+    }));
+    let a = Rc::clone(app);
+    window.on_set_ask(move |question, answer| {
+        a.viewer.borrow_mut().set_ask(&question, &answer);
+    });
+}
+
+/// A callback that calls `f` with the window's app.
+fn on_app(app: &Rc<App>, f: fn(&App)) -> impl Fn() + 'static {
+    let app = Rc::clone(app);
+    move || f(&app)
+}
+
+fn connect_stamp_editor(window: &ReviewWindow, app: &Rc<App>) {
+    window.on_new_stamp(on_app(app, |app| {
+        let taken = app.viewer.borrow().stamp_names();
+        let mut design = Design::default();
+        let mut n = 1;
+        while taken.contains(&design.name) {
+            n += 1;
+            design.name = format!("New stamp {n}");
+        }
+        app.open_editor(design, None);
+    }));
+    let a = Rc::clone(app);
+    window.on_edit_stamp(move |i| {
+        let Ok(i) = usize::try_from(i) else {
+            return;
+        };
+        let Some(mut design) = a.viewer.borrow().designs().get(i).cloned() else {
+            return;
+        };
+        if i < Viewer::built_in_stamps() {
+            // Review's own stay as they are; this makes one's own from it.
+            design.name = format!("{} (mine)", design.name);
+            a.open_editor(design, None);
+        } else {
+            let was = design.name.clone();
+            a.open_editor(design, Some(was));
+        }
+    });
+    window.on_show_editor(on_app(app, |app| {
+        app.editor_shown.set(true);
+        app.refresh();
+    }));
+    window.on_editor_close(on_app(app, |app| {
+        *app.editor.borrow_mut() = None;
+        app.editor_shown.set(false);
+        app.refresh();
+    }));
+    window.on_editor_save(on_app(app, |app| {
+        let Some((design, was)) = app
+            .editor
+            .borrow()
+            .as_ref()
+            .map(|e| (e.design.clone(), e.was.clone()))
+        else {
+            return;
+        };
+        let result = app
+            .viewer
+            .borrow_mut()
+            .save_design(design.clone(), was.as_deref());
+        *app.editor_message.borrow_mut() = match result {
+            Ok(()) => {
+                if let Some(editor) = app.editor.borrow_mut().as_mut() {
+                    editor.was = Some(design.name.trim().to_owned());
+                }
+                format!("Saved. {} is in the stamp list.", design.name.trim())
+            }
+            Err(message) => message,
+        };
+        app.refresh();
+    }));
+    connect_editor_fields(window, app);
+}
+
+/// The stamp editor's fields: name, lines, alignment, border, color, fill.
+fn connect_editor_fields(window: &ReviewWindow, app: &Rc<App>) {
+    let a = Rc::clone(app);
+    window.on_editor_rename(move |name| a.edit_design(false, |d| d.name = name.to_string()));
+    let a = Rc::clone(app);
+    window.on_editor_line(move |i, text, size, bold| {
+        let Ok(i) = usize::try_from(i) else {
+            return;
+        };
+        a.edit_design(true, |d| {
+            if let Some(line) = d.lines.get_mut(i) {
+                line.text = text.chars().take(stamps::MAX_WORDS).collect();
+                line.size = f64::from(size).clamp(4.0, 96.0);
+                line.bold = bold;
+            }
+        });
+    });
+    window.on_editor_add_line(on_app(app, |app| {
+        app.edit_design(true, |d| {
+            if d.lines.len() < stamps::MAX_LINES {
+                d.lines.push(stamps::Line {
+                    text: String::new(),
+                    size: 10.0,
+                    bold: false,
+                });
+            }
+        });
+    }));
+    let a = Rc::clone(app);
+    window.on_editor_remove_line(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.edit_design(true, |d| {
+                if d.lines.len() > 1 && i < d.lines.len() {
+                    d.lines.remove(i);
+                }
+            });
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_editor_align_to(move |i| {
+        if let Some(&align) = usize::try_from(i)
+            .ok()
+            .and_then(|i| stamps::Align::ALL.get(i))
+        {
+            a.edit_design(true, |d| d.align = align);
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_editor_border_to(move |i| {
+        if let Some(&border) = usize::try_from(i)
+            .ok()
+            .and_then(|i| stamps::Border::ALL.get(i))
+        {
+            a.edit_design(true, |d| d.border = border);
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_editor_color_to(move |i| {
+        if let Some(&(_, rgb)) = usize::try_from(i).ok().and_then(|i| COLORS.get(i)) {
+            a.edit_design(true, |d| d.color = rgb);
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_editor_fill_to(move |fill| a.edit_design(true, |d| d.fill = fill));
+}
+
+/// A small picture of `design`, filled in with `fields`, drawn as Review
+/// draws a placed stamp.
+fn stamp_preview(design: &Design, fields: &Fields) -> Option<Image> {
+    let text = fields.fill(&design.text());
+    let (w, h) = design.size_with(&text);
+    let margin = 6.0;
+    let blank = opencabinet_pdf::sample::blank(w + margin * 2.0, h + margin * 2.0);
+    let mut review = opencabinet_review::Review::open(blank).ok()?;
+    review.add(
+        opencabinet_review::Markup {
+            kind: Kind::Stamp,
+            points: vec![
+                opencabinet_pdf::Point::new(margin, margin),
+                opencabinet_pdf::Point::new(margin + w, margin + h),
+            ],
+            color: design.color,
+            width: 1.5,
+            fill: design.fill,
+            text,
+            look: design.look(),
+            ..opencabinet_review::Markup::default()
+        },
+        &fields.name,
+    );
+    let document = opencabinet_pdf::Document::open(review.save(Units::Imperial).ok()?).ok()?;
+    let page = *document.pages().first()?;
+    let zoom = (900.0 / page.width).min(440.0 / page.height).min(4.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small picture's pixels"
+    )]
+    let (width, height) = (
+        (page.width * zoom).ceil().max(1.0) as u32,
+        (page.height * zoom).ceil().max(1.0) as u32,
+    );
+    let bitmap = render(
+        &document,
+        View {
+            page: 0,
+            zoom,
+            origin: opencabinet_pdf::Point::new(0.0, 0.0),
+            width,
+            height,
+            turn: 0,
+        },
+    )
+    .ok()?;
+    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+        &bitmap.pixels,
+        bitmap.width,
+        bitmap.height,
+    );
+    Some(Image::from_rgba8(buffer))
+}
 
 /// Shows what the measuring markups add up to.
 fn refresh_quantities(window: &ReviewWindow, viewer: &Viewer) {
@@ -51,8 +393,8 @@ mod ui {
 }
 
 pub use ui::{
-    BookmarkInfo, Label, QuantityInfo, ReplyInfo, ReviewWindow, SavedInfo, Shape, SheetInfo,
-    TabInfo, ToolInfo,
+    AskInfo, BookmarkInfo, EditorLine, Label, QuantityInfo, ReplyInfo, ReviewWindow, SavedInfo,
+    Shape, SheetInfo, TabInfo, ToolInfo, ToolSetInfo,
 };
 
 /// Opens `address`, a web or mail address a link goes to, in the
@@ -148,7 +490,18 @@ pub fn create_apart(paths: &[PathBuf]) -> Result<ReviewWindow, slint::PlatformEr
     build(Rc::new(SystemDialogs), paths, None)
 }
 
+/// The stamp being designed in the editor's tab, and the name it is kept
+/// under, if it was kept already.
+struct StampEditor {
+    design: Design,
+    was: Option<String>,
+}
+
 struct App {
+    /// The stamp editor, when open, and whether its tab is shown.
+    editor: RefCell<Option<StampEditor>>,
+    editor_shown: Cell<bool>,
+    editor_message: RefCell<String>,
     /// The tab shown.
     viewer: RefCell<Viewer>,
     /// Every tab, in order; the one shown is `None` here, as it is in
@@ -199,6 +552,9 @@ fn build(
     let window = ReviewWindow::new()?;
     let recent = saved.as_deref().map(chest::load_recent).unwrap_or_default();
     let app = Rc::new(App {
+        editor: RefCell::new(None),
+        editor_shown: Cell::new(false),
+        editor_message: RefCell::new(String::new()),
         viewer: RefCell::new(Viewer::default()),
         tabs: RefCell::new(vec![None]),
         active: Cell::new(0),
@@ -396,7 +752,10 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     let a = Rc::clone(app);
     window.on_choose_tab(move |i| {
         if let Ok(i) = usize::try_from(i) {
+            // A drawing's tab puts the stamp editor in the background.
+            a.editor_shown.set(false);
             a.switch_to(i);
+            a.refresh();
         }
     });
     let a = Rc::clone(app);
@@ -485,22 +844,19 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     }));
     let a = Rc::clone(app);
-    window.on_use_saved(move |i| {
-        if let Ok(i) = usize::try_from(i) {
-            a.change(|v| v.use_saved_tool(i));
+    window.on_use_saved(move |set, i| {
+        if let (Ok(set), Ok(i)) = (usize::try_from(set), usize::try_from(i)) {
+            a.change(|v| v.use_saved_tool(set, i));
         }
     });
     let a = Rc::clone(app);
-    window.on_remove_saved(move |i| {
-        let Ok(i) = usize::try_from(i) else {
-            return;
-        };
-        let result = a.viewer.borrow_mut().remove_saved_tool(i);
-        a.refresh();
-        if let Err(message) = result {
-            a.status(&message);
+    window.on_remove_saved(move |set, i| {
+        if let (Ok(set), Ok(i)) = (usize::try_from(set), usize::try_from(i)) {
+            a.try_change(|v| v.remove_saved_tool(set, i));
         }
     });
+    connect_tool_sets(window, app);
+    connect_stamp_editor(window, app);
     let a = Rc::clone(app);
     window.on_sort_list(move |column, down| {
         if let Ok(column) = usize::try_from(column) {
@@ -1261,6 +1617,94 @@ impl App {
         }
     }
 
+    /// Opens `design` in the stamp editor's tab, kept under `was` when it
+    /// was kept already.
+    fn open_editor(&self, design: Design, was: Option<String>) {
+        *self.editor.borrow_mut() = Some(StampEditor { design, was });
+        self.editor_message.borrow_mut().clear();
+        self.editor_shown.set(true);
+        self.refresh();
+        self.refresh_editor_preview();
+    }
+
+    /// Changes the stamp in the editor through `change`; draws its preview
+    /// again when `looks` says how it looks changed.
+    fn edit_design(&self, looks: bool, change: impl FnOnce(&mut Design)) {
+        if let Some(editor) = self.editor.borrow_mut().as_mut() {
+            change(&mut editor.design);
+        }
+        self.editor_message.borrow_mut().clear();
+        self.refresh_editor();
+        if looks {
+            self.refresh_editor_preview();
+        }
+    }
+
+    /// Shows the stamp editor's state.
+    fn refresh_editor(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let editor = self.editor.borrow();
+        window.set_editor_open(editor.is_some());
+        window.set_editor_shown(editor.is_some() && self.editor_shown.get());
+        window.set_editor_message(self.editor_message.borrow().as_str().into());
+        let Some(editor) = editor.as_ref() else {
+            return;
+        };
+        let design = &editor.design;
+        window.set_editor_name(design.name.as_str().into());
+        let lines: Vec<EditorLine> = design
+            .lines
+            .iter()
+            .map(|l| EditorLine {
+                text: l.text.as_str().into(),
+                #[expect(clippy::cast_possible_truncation, reason = "sizes from 4 to 96")]
+                size: l.size.round() as i32,
+                bold: l.bold,
+            })
+            .collect();
+        let model = window.get_editor_lines();
+        if model.row_count() == lines.len() {
+            // Row by row, so the line being typed in keeps its cursor.
+            for (i, line) in lines.into_iter().enumerate() {
+                if model.row_data(i).as_ref() != Some(&line) {
+                    model.set_row_data(i, line);
+                }
+            }
+        } else {
+            window.set_editor_lines(ModelRc::new(VecModel::from(lines)));
+        }
+        let align = stamps::Align::ALL.iter().position(|a| *a == design.align);
+        let border = stamps::Border::ALL.iter().position(|b| *b == design.border);
+        window.set_editor_align(align.and_then(|i| i32::try_from(i).ok()).unwrap_or(1));
+        window.set_editor_border(border.and_then(|i| i32::try_from(i).ok()).unwrap_or(2));
+        window.set_editor_color(
+            COLORS
+                .iter()
+                .position(|&(_, c)| {
+                    c.iter()
+                        .zip(design.color)
+                        .all(|(a, b)| (a - b).abs() < 1e-6)
+                })
+                .and_then(|i| i32::try_from(i).ok())
+                .unwrap_or(-1),
+        );
+        window.set_editor_fill(design.fill);
+    }
+
+    /// Draws the stamp in the editor again, filled in as if placed now.
+    fn refresh_editor_preview(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let Some(design) = self.editor.borrow().as_ref().map(|e| e.design.clone()) else {
+            return;
+        };
+        let fields = self.viewer.borrow().stamp_fields();
+        window.set_editor_preview(stamp_preview(&design, &fields).unwrap_or_default());
+    }
+
     /// Shows the sheet set.
     fn refresh_set(&self, window: &ReviewWindow, viewer: &Viewer) {
         let open = {
@@ -1340,6 +1784,9 @@ impl App {
         window.set_has_document(viewer.review().is_some());
         window.set_page_label(viewer.page_label().into());
         window.set_page_index(i32::try_from(viewer.page()).unwrap_or(0));
+        drop(viewer);
+        self.refresh_editor();
+        let viewer = self.viewer.borrow();
         self.refresh_tabs(&window, &viewer);
         let count = viewer.review().map_or(0, |r| r.document().pages().len());
         let chosen = viewer.pages_chosen();
@@ -1383,21 +1830,7 @@ impl App {
         window.set_stamps(strings(&stamps));
         window.set_built_in_stamps(i32::try_from(Viewer::built_in_stamps()).unwrap_or(0));
         window.set_stamping(viewer.tool() == Tool::Draw(Kind::Stamp));
-        let saved: Vec<SavedInfo> = viewer
-            .saved_tools()
-            .iter()
-            .map(|t| SavedInfo {
-                name: t.name.as_str().into(),
-                color: color(t.color),
-            })
-            .collect();
-        window.set_saved_tools(ModelRc::new(VecModel::from(saved)));
-        window.set_saved_in_use(
-            viewer
-                .saved_in_use()
-                .and_then(|i| i32::try_from(i).ok())
-                .unwrap_or(-1),
-        );
+        refresh_tool_sets(&window, &viewer);
         let selected = viewer.selected();
         window.set_has_selection(selected.is_some());
         window.set_selected_count(i32::try_from(viewer.selected_count()).unwrap_or(i32::MAX));
@@ -1532,6 +1965,7 @@ impl App {
                 text: l.text.into(),
                 color: color(l.color),
                 size: l.size as f32,
+                bold: l.bold,
             })
             .collect();
         window.set_shapes(ModelRc::new(VecModel::from(shapes)));

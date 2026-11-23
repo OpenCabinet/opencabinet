@@ -301,6 +301,10 @@ pub struct Markup {
     pub origin: Option<ObjectRef>,
     /// The replies to it, oldest first.
     pub replies: Vec<Reply>,
+    /// A stamp's design, all but its words (see
+    /// [`crate::stamps::Design::look`]); empty for other markups and for
+    /// stamps drawn the plain way.
+    pub look: String,
 }
 
 impl Default for Markup {
@@ -321,6 +325,7 @@ impl Default for Markup {
             scale: None,
             origin: None,
             replies: Vec::new(),
+            look: String::new(),
         }
     }
 }
@@ -362,6 +367,8 @@ pub struct Caption {
     pub size: f64,
     /// Whether `at` is the middle of the text rather than its start.
     pub centered: bool,
+    /// Whether it is bold.
+    pub bold: bool,
 }
 
 impl Markup {
@@ -561,6 +568,10 @@ impl Markup {
         let (low, high) = self.bounds();
         match self.kind {
             Kind::Rectangle | Kind::Highlight | Kind::Text | Kind::Link => rectangle(low, high),
+            Kind::Stamp if self.design().is_some() => match self.design().map(|d| d.border) {
+                Some(crate::stamps::Border::Rounded) => rounded(low, high),
+                _ => rectangle(low, high),
+            },
             Kind::Stamp => {
                 let inset = 3.0 + self.width;
                 let mut out = rectangle(low, high);
@@ -650,7 +661,11 @@ impl Markup {
     /// Whether its outline is stroked.
     #[must_use]
     pub fn stroked(&self) -> bool {
-        self.kind != Kind::Highlight && self.width > 0.0
+        self.kind != Kind::Highlight
+            && self.width > 0.0
+            && self
+                .design()
+                .is_none_or(|d| d.border != crate::stamps::Border::None)
     }
 
     /// The text it shows on the page, with `value` the measurement a
@@ -662,6 +677,7 @@ impl Markup {
             text: text.to_owned(),
             size,
             centered,
+            bold: false,
         };
         match self.kind {
             Kind::Text | Kind::Callout if self.text.is_empty() => Vec::new(),
@@ -727,8 +743,58 @@ impl Markup {
         }
     }
 
+    /// A stamp's design, when it has one of its own.
+    #[must_use]
+    pub fn design(&self) -> Option<crate::stamps::Design> {
+        if self.kind != Kind::Stamp || self.look.is_empty() {
+            return None;
+        }
+        crate::stamps::Design::from_look(&self.text, &self.look, self.color, self.fill)
+    }
+
+    /// A designed stamp's lines, each its size and weight, scaled together
+    /// to fit its box, lined up as its design says.
+    fn designed_captions(&self, design: &crate::stamps::Design) -> Vec<Caption> {
+        let (low, high) = self.bounds();
+        let (w, h) = (high.x - low.x, high.y - low.y);
+        let (nw, nh) = design.size_with(&self.text);
+        let factor = (w / nw).min(h / nh).max(0.05);
+        let padding = 8.0 * factor;
+        let total: f64 = design.lines.iter().map(|l| l.size * 1.25 * factor).sum();
+        // The lines as a block in the middle of the box, top to bottom.
+        let mut y = f64::midpoint(low.y, high.y) + total / 2.0;
+        design
+            .lines
+            .iter()
+            .map(|line| {
+                let size = line.size * factor;
+                y -= size * 1.25;
+                let (x, centered) = match design.align {
+                    crate::stamps::Align::Left => (low.x + padding, false),
+                    crate::stamps::Align::Center => (f64::midpoint(low.x, high.x), true),
+                    crate::stamps::Align::Right => (
+                        high.x
+                            - padding
+                            - text_width(&line.text, size) * if line.bold { 1.08 } else { 1.0 },
+                        false,
+                    ),
+                };
+                Caption {
+                    at: Point::new(x, y + size * 0.25),
+                    text: line.text.clone(),
+                    size,
+                    centered,
+                    bold: line.bold,
+                }
+            })
+            .collect()
+    }
+
     /// A stamp's words, as large as fit, and who stamped it when.
     fn stamp_captions(&self) -> Vec<Caption> {
+        if let Some(design) = self.design() {
+            return self.designed_captions(&design);
+        }
         let (low, high) = self.bounds();
         let (w, h) = (high.x - low.x, high.y - low.y);
         let words = if self.text.is_empty() {
@@ -755,12 +821,14 @@ impl Markup {
                 text: first_line.to_owned(),
                 size,
                 centered: true,
+                bold: false,
             },
             Caption {
                 at: Point::new(middle, low.y + h * 0.14),
                 text: by,
                 size: small,
                 centered: true,
+                bold: false,
             },
         ]
     }
@@ -871,6 +939,9 @@ impl Markup {
         if self.kind.measures() {
             own.insert("Text".into(), self.text.clone());
         }
+        if !self.look.is_empty() {
+            own.insert("Look".into(), self.look.clone());
+        }
         own
     }
 
@@ -954,6 +1025,12 @@ impl Markup {
             },
             origin: annotation.origin,
             replies: annotation.replies.clone(),
+            look: annotation
+                .own
+                .get("Look")
+                .filter(|_| kind == Kind::Stamp)
+                .cloned()
+                .unwrap_or_default(),
         })
     }
 
@@ -970,7 +1047,9 @@ impl Markup {
         ops.push_str(match (self.filled(), self.stroked()) {
             (true, true) => "B Q\n",
             (true, false) => "f Q\n",
-            _ => "S Q\n",
+            (false, true) => "S Q\n",
+            // A stamp without a border or fill: the box is not painted.
+            (false, false) => "n Q\n",
         });
         let mut bytes = ops.into_bytes();
         let captions = self.captions(value);
@@ -985,8 +1064,18 @@ impl Markup {
                 } else {
                     caption.at.x
                 };
+                // Bold: the letters filled and outlined in their color.
+                let weight = if caption.bold {
+                    format!("{r:.3} {g:.3} {b:.3} RG 2 Tr {:.2} w ", caption.size * 0.04)
+                } else {
+                    "0 Tr ".to_owned()
+                };
                 bytes.extend_from_slice(
-                    format!("BT /{FONT} {:.1} Tf {x:.2} {y:.2} Td ", caption.size).as_bytes(),
+                    format!(
+                        "BT {weight}/{FONT} {:.1} Tf {x:.2} {y:.2} Td ",
+                        caption.size
+                    )
+                    .as_bytes(),
                 );
                 bytes.extend_from_slice(&win_ansi_literal(line));
                 bytes.extend_from_slice(b" Tj ET\n");
@@ -1150,6 +1239,41 @@ fn rectangle(low: Point, high: Point) -> Vec<Segment> {
         Segment::Line(Point::new(high.x, low.y)),
         Segment::Line(high),
         Segment::Line(Point::new(low.x, high.y)),
+        Segment::Close,
+    ]
+}
+
+/// A rectangle with rounded corners, a fifth of its shorter side across.
+fn rounded(low: Point, high: Point) -> Vec<Segment> {
+    let r = ((high.x - low.x).min(high.y - low.y) * 0.2).max(0.0);
+    let k = r * (1.0 - 0.5523);
+    let p = Point::new;
+    vec![
+        Segment::Move(p(low.x + r, low.y)),
+        Segment::Line(p(high.x - r, low.y)),
+        Segment::Curve(
+            p(high.x - k, low.y),
+            p(high.x, low.y + k),
+            p(high.x, low.y + r),
+        ),
+        Segment::Line(p(high.x, high.y - r)),
+        Segment::Curve(
+            p(high.x, high.y - k),
+            p(high.x - k, high.y),
+            p(high.x - r, high.y),
+        ),
+        Segment::Line(p(low.x + r, high.y)),
+        Segment::Curve(
+            p(low.x + k, high.y),
+            p(low.x, high.y - k),
+            p(low.x, high.y - r),
+        ),
+        Segment::Line(p(low.x, low.y + r)),
+        Segment::Curve(
+            p(low.x, low.y + k),
+            p(low.x + k, low.y),
+            p(low.x + r, low.y),
+        ),
         Segment::Close,
     ]
 }

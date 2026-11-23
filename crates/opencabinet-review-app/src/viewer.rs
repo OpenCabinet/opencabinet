@@ -7,12 +7,13 @@
 //! Screen coordinates are the window's logical pixels inside the page
 //! view, from its top left corner.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use chrono::{Datelike, Timelike};
 use opencabinet_model::{Length, Units};
 use opencabinet_pdf::find::{Found, find};
 use opencabinet_pdf::labels::page_labels;
@@ -28,7 +29,9 @@ use opencabinet_review::{
 use opencabinet_session::firewall::{self, Firewall};
 use opencabinet_session::{Participant, Shared};
 
-use crate::chest::{self, SavedTool, Settings};
+use opencabinet_review::stamps::{Design, Fields};
+
+use crate::chest::{self, SavedTool, Settings, ToolSet};
 
 /// What the mouse does on the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +152,8 @@ pub struct Label {
     pub color: Color,
     /// Font size in pixels.
     pub size: f64,
+    /// Whether it is bold.
+    pub bold: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -237,7 +242,9 @@ pub struct Viewer {
     /// down.
     sort: Option<(usize, bool)>,
     /// My tools, where they are kept, and the one in use.
-    saved: Vec<SavedTool>,
+    sets: Vec<ToolSet>,
+    /// The set new tools are saved in.
+    current_set: usize,
     saved_path: Option<PathBuf>,
     style: Option<SavedTool>,
     /// The open PDF's bookmarks.
@@ -250,8 +257,10 @@ pub struct Viewer {
     turns: u8,
     /// The names the PDF gives its pages, if it gives any.
     labels: Vec<String>,
-    /// The person's own stamps: their words and color.
-    own_stamps: Vec<(String, Color)>,
+    /// The person's own stamps.
+    designs: Vec<Design>,
+    /// The answers to the stamps' questions.
+    asks: BTreeMap<String, String>,
     /// The links on a page, read when first needed.
     links: Option<(usize, Vec<Link>)>,
     /// A link followed that the window must open: another drawing or a
@@ -302,14 +311,20 @@ impl Default for Viewer {
             compare: None,
             session: None,
             sort: None,
-            saved: Vec::new(),
+            sets: vec![ToolSet {
+                name: "My tools".into(),
+                collapsed: false,
+                tools: Vec::new(),
+            }],
+            current_set: 0,
             saved_path: None,
             style: None,
             bookmarks: Vec::new(),
             chosen_pages: Vec::new(),
             turns: 0,
             labels: Vec::new(),
-            own_stamps: Vec::new(),
+            designs: Vec::new(),
+            asks: BTreeMap::new(),
             links: None,
             follow: None,
             only_listed: false,
@@ -338,9 +353,11 @@ impl Viewer {
         other.width = self.width;
         other.fill = self.fill;
         other.stamp = self.stamp;
-        other.own_stamps.clone_from(&self.own_stamps);
+        other.designs.clone_from(&self.designs);
+        other.asks.clone_from(&self.asks);
         other.settings = self.settings;
-        other.saved.clone_from(&self.saved);
+        other.sets.clone_from(&self.sets);
+        other.current_set = self.current_set;
         other.saved_path.clone_from(&self.saved_path);
         other.style.clone_from(&self.style);
         other.clipboard.clone_from(&self.clipboard);
@@ -858,7 +875,7 @@ impl Viewer {
         self.change_selected(|m| m.fill = fill);
     }
 
-    /// The stamp placed next, by its place in [`stamps::TEMPLATES`].
+    /// The stamp placed next, by its place in [`Viewer::stamp_names`].
     #[must_use]
     pub fn stamp(&self) -> usize {
         self.stamp
@@ -866,12 +883,18 @@ impl Viewer {
 
     /// Every stamp offered: Review's, then the person's own.
     #[must_use]
-    pub fn stamp_names(&self) -> Vec<String> {
+    pub fn designs(&self) -> Vec<Design> {
         stamps::TEMPLATES
             .iter()
-            .map(|t| t.words.to_owned())
-            .chain(self.own_stamps.iter().map(|(words, _)| words.clone()))
+            .map(Design::from_template)
+            .chain(self.designs.iter().cloned())
             .collect()
+    }
+
+    /// Every stamp's name, in the order they are offered.
+    #[must_use]
+    pub fn stamp_names(&self) -> Vec<String> {
+        self.designs().into_iter().map(|d| d.name).collect()
     }
 
     /// How many of the stamps offered are Review's own.
@@ -880,81 +903,190 @@ impl Viewer {
         stamps::TEMPLATES.len()
     }
 
-    /// The stamp placed next, its `{name}` and `{date}` filled in.
-    fn stamp_template(&self) -> OwnStamp {
-        let built_in = |i: usize| {
-            let t = stamps::TEMPLATES[i.min(stamps::TEMPLATES.len() - 1)];
-            (t.words.to_owned(), t.color)
-        };
-        let (words, color) = if let Some(own) = self.stamp.checked_sub(stamps::TEMPLATES.len()) {
-            self.own_stamps
-                .get(own)
+    /// The stamp placed next.
+    #[must_use]
+    pub fn current_design(&self) -> Design {
+        let all = self.designs();
+        all.get(self.stamp)
+            .cloned()
+            .unwrap_or_else(|| Design::from_template(&stamps::TEMPLATES[0]))
+    }
+
+    /// What fields are filled in with if a stamp is placed now.
+    #[must_use]
+    pub fn stamp_fields(&self) -> Fields {
+        let now = chrono::Local::now();
+        let file = self.path.as_deref().map(file_name).unwrap_or_default();
+        Fields {
+            name: self.name(),
+            when: (now.year(), now.month(), now.day(), now.hour(), now.minute()),
+            month_first: self.units == Units::Imperial,
+            page: self.page + 1,
+            sheet: self
+                .labels
+                .get(self.page)
+                .filter(|l| !l.is_empty())
                 .cloned()
-                .unwrap_or_else(|| built_in(0))
-        } else {
-            built_in(self.stamp)
-        };
-        let date = chrono::Local::now().date_naive();
-        let date = match self.units {
-            Units::Imperial => date.format("%m/%d/%Y").to_string(),
-            Units::Metric => date.format("%Y-%m-%d").to_string(),
-        };
-        OwnStamp {
-            words: stamps::fill_in(&words, &self.name(), &date),
-            color,
+                .unwrap_or_else(|| (self.page + 1).to_string()),
+            file,
+            asks: self.asks.clone(),
         }
     }
 
-    /// Adds a stamp of the person's own with `words`, in the color in use,
-    /// and picks it.
+    /// The questions the stamp placed next asks, and the answers so far.
+    #[must_use]
+    pub fn stamp_asks(&self) -> Vec<(String, String)> {
+        self.current_design()
+            .asks()
+            .into_iter()
+            .map(|q| {
+                let a = self.asks.get(&q).cloned().unwrap_or_default();
+                (q, a)
+            })
+            .collect()
+    }
+
+    /// Answers the question `question` of the stamps placed from now on.
+    pub fn set_ask(&mut self, question: &str, answer: &str) {
+        self.asks.insert(question.to_owned(), answer.to_owned());
+    }
+
+    /// Where the person's own stamps are kept, if anywhere.
+    #[must_use]
+    pub fn stamps_folder(&self) -> Option<PathBuf> {
+        self.saved_path.as_deref().map(chest::stamps_folder)
+    }
+
+    /// Keeps the person's stamps in `folder` from now on, such as a shared
+    /// office folder, and reads the stamps there.
     ///
     /// # Errors
-    /// When the words are empty, or the stamps cannot be kept.
+    /// When the choice cannot be kept.
+    pub fn set_stamps_folder(&mut self, folder: &Path) -> Result<(), String> {
+        let tools = self
+            .saved_path
+            .clone()
+            .ok_or("There is nowhere to keep it")?;
+        chest::store_stamps_folder(&tools, folder)
+            .map_err(|e| format!("Cannot keep the stamps folder: {e}"))?;
+        self.designs = chest::load_designs(folder);
+        self.stamp = 0;
+        self.status = format!(
+            "Stamps are kept in {} now: {} there.",
+            folder.display(),
+            self.designs.len()
+        );
+        Ok(())
+    }
+
+    /// Keeps `design` among the person's stamps, in place of the one
+    /// called `was` when it is being edited, and picks it.
+    ///
+    /// # Errors
+    /// When its name is empty or taken, or it cannot be kept.
+    pub fn save_design(&mut self, mut design: Design, was: Option<&str>) -> Result<(), String> {
+        design.name = design.name.trim().chars().take(stamps::MAX_WORDS).collect();
+        if design.name.is_empty() {
+            return Err("Give the stamp a name".into());
+        }
+        if design.lines.iter().all(|l| l.text.trim().is_empty()) {
+            return Err("Write the stamp's words first".into());
+        }
+        let taken = stamps::TEMPLATES.iter().any(|t| t.words == design.name)
+            || self
+                .designs
+                .iter()
+                .any(|d| d.name == design.name && Some(d.name.as_str()) != was);
+        if taken {
+            return Err(format!("There is a stamp called {} already", design.name));
+        }
+        if let Some(folder) = self.stamps_folder() {
+            if let Some(was) = was.filter(|w| *w != design.name) {
+                chest::remove_design(&folder, was)
+                    .map_err(|e| format!("Cannot rename the stamp: {e}"))?;
+            }
+            chest::store_design(&folder, &design)
+                .map_err(|e| format!("Cannot keep the stamp: {e}"))?;
+        }
+        if let Some(was) = was {
+            self.designs.retain(|d| d.name != was);
+            // Tools that placed it place it under its new name.
+            for tool in self.sets.iter_mut().flat_map(|s| s.tools.iter_mut()) {
+                if tool.stamp == was {
+                    tool.stamp.clone_from(&design.name);
+                }
+            }
+        }
+        let name = design.name.clone();
+        self.designs.push(design);
+        self.designs.sort_by_key(|d| d.name.to_lowercase());
+        self.stamp = self
+            .stamp_names()
+            .iter()
+            .position(|n| *n == name)
+            .unwrap_or(0);
+        self.keep_saved()?;
+        self.status = format!("Kept the stamp {name}.");
+        Ok(())
+    }
+
+    /// Adds a stamp of the person's own with `words`, one line in the
+    /// color in use, and picks it.
+    ///
+    /// # Errors
+    /// When the words are empty, or the stamp cannot be kept.
     pub fn add_stamp(&mut self, words: &str) -> Result<(), String> {
         let words: String = words.trim().chars().take(stamps::MAX_WORDS).collect();
         if words.is_empty() {
             return Err("Write the stamp's words first".into());
         }
-        let color = COLORS.get(self.color).map_or([0.8, 0.1, 0.1], |&(_, c)| c);
-        self.own_stamps.push((words.clone(), color));
-        self.stamp = stamps::TEMPLATES.len() + self.own_stamps.len() - 1;
-        self.keep_stamps()?;
-        self.status = format!("Added the stamp {words}.");
-        Ok(())
+        let design = Design {
+            name: words.clone(),
+            lines: vec![stamps::Line {
+                text: words,
+                size: 18.0,
+                bold: true,
+            }],
+            color: COLORS.get(self.color).map_or([0.8, 0.1, 0.1], |&(_, c)| c),
+            ..Design::default()
+        };
+        self.save_design(design, None)
     }
 
     /// Removes stamp `index` of those offered, when it is the person's own.
     ///
     /// # Errors
-    /// When the stamps cannot be kept.
+    /// When the change cannot be kept.
     pub fn remove_stamp(&mut self, index: usize) -> Result<(), String> {
         let Some(own) = index.checked_sub(stamps::TEMPLATES.len()) else {
             return Ok(());
         };
-        if own < self.own_stamps.len() {
-            self.own_stamps.remove(own);
+        if own < self.designs.len() {
+            let gone = self.designs.remove(own);
+            if let Some(folder) = self.stamps_folder() {
+                chest::remove_design(&folder, &gone.name)
+                    .map_err(|e| format!("Cannot remove the stamp: {e}"))?;
+            }
             if self.stamp >= index {
                 self.stamp = self.stamp.saturating_sub(1);
             }
-            self.keep_stamps()?;
+            self.status = format!("Removed the stamp {}.", gone.name);
         }
         Ok(())
     }
 
-    fn keep_stamps(&self) -> Result<(), String> {
-        match &self.saved_path {
-            Some(path) => chest::store_stamps(path, &self.own_stamps)
-                .map_err(|e| format!("Cannot keep the stamps: {e}")),
-            None => Ok(()),
-        }
-    }
-
     /// Picks the stamp placed next.
     pub fn choose_stamp(&mut self, stamp: usize) {
-        if stamp < stamps::TEMPLATES.len() + self.own_stamps.len() {
+        if stamp < stamps::TEMPLATES.len() + self.designs.len() {
             self.stamp = stamp;
             self.choose_tool(Tool::Draw(Kind::Stamp));
         }
+    }
+
+    /// The size a stamp placed with a click takes, in points.
+    fn stamp_size(&self) -> (f64, f64) {
+        let design = self.current_design();
+        design.size_with(&self.stamp_fields().fill(&design.text()))
     }
 
     /// Changes every selected markup through `change`, as one step.
@@ -1027,7 +1159,30 @@ impl Viewer {
 
     /// A new markup of `kind` through `points`, in the style in use.
     fn new_markup(&self, kind: Kind, points: Vec<Point>) -> Markup {
-        let template = self.stamp_template();
+        if kind == Kind::Stamp {
+            let design = self.current_design();
+            return Markup {
+                page: self.page,
+                kind,
+                points,
+                color: design.color,
+                width: self
+                    .style
+                    .as_ref()
+                    .filter(|s| s.kind == kind)
+                    .map_or(1.5, |s| s.width),
+                fill: design.fill,
+                text: self.stamp_fields().fill(&design.text()),
+                look: design.look(),
+                subject: self
+                    .style
+                    .as_ref()
+                    .filter(|s| s.kind == kind)
+                    .map(|s| s.subject.clone())
+                    .unwrap_or_default(),
+                ..Markup::default()
+            };
+        }
         if let Some(style) = self.style.as_ref().filter(|s| s.kind == kind) {
             return Markup {
                 page: self.page,
@@ -1037,11 +1192,6 @@ impl Viewer {
                 width: style.width,
                 fill: style.fill && kind.fillable(),
                 subject: style.subject.clone(),
-                text: if kind == Kind::Stamp {
-                    template.words.clone()
-                } else {
-                    String::new()
-                },
                 ..Markup::default()
             };
         }
@@ -1049,18 +1199,9 @@ impl Viewer {
             page: self.page,
             kind,
             points,
-            color: if kind == Kind::Stamp {
-                template.color
-            } else {
-                COLORS[self.color].1
-            },
+            color: COLORS[self.color].1,
             width: WIDTHS[self.width].1,
             fill: self.fill && kind.fillable(),
-            text: if kind == Kind::Stamp {
-                template.words
-            } else {
-                String::new()
-            },
             ..Markup::default()
         }
     }
@@ -1348,7 +1489,7 @@ impl Viewer {
                     self.building = Some((kind, vec![points[0]], self.cursor));
                     self.status =
                         "Click where it ends. Shift keeps it straight or square; Esc stops.".into();
-                } else if let Some(points) = drawn(kind, points, click) {
+                } else if let Some(points) = drawn(kind, points, click, self.stamp_size()) {
                     self.add(self.new_markup(kind, points));
                     if matches!(kind, Kind::Text | Kind::Callout) {
                         self.status = "Type the text on the right.".into();
@@ -1446,7 +1587,7 @@ impl Viewer {
         if a.distance(b) * self.zoom < CLICK {
             return;
         }
-        if let Some(points) = drawn(kind, vec![a, b], false) {
+        if let Some(points) = drawn(kind, vec![a, b], false, (0.0, 0.0)) {
             self.add(self.new_markup(kind, points));
             if kind == Kind::Callout {
                 self.status = "Type the text on the right.".into();
@@ -2887,54 +3028,115 @@ impl Viewer {
             .collect()
     }
 
-    /// Reads My tools from `path` and keeps them there from now on.
+    /// Reads the tool sets and stamps kept beside `path`, and keeps them
+    /// there from now on. Stamps made before stamps were files become
+    /// files.
     pub fn keep_saved_tools_at(&mut self, path: PathBuf) {
-        self.saved = chest::load(&path);
+        self.sets = chest::load_sets(&path);
         self.settings = chest::load_settings(&path);
-        self.own_stamps = chest::load_stamps(&path);
+        let folder = chest::stamps_folder(&path);
+        self.designs = chest::load_designs(&folder);
+        let old = chest::load_stamps(&path);
+        if self.designs.is_empty() && !old.is_empty() {
+            for (words, color) in old {
+                let design = Design {
+                    name: words.clone(),
+                    lines: vec![stamps::Line {
+                        text: words,
+                        size: 18.0,
+                        bold: true,
+                    }],
+                    color,
+                    ..Design::default()
+                };
+                if chest::store_design(&folder, &design).is_ok() {
+                    self.designs.push(design);
+                }
+            }
+        }
         self.saved_path = Some(path);
     }
 
-    /// My tools.
+    /// The tool sets.
     #[must_use]
-    pub fn saved_tools(&self) -> &[SavedTool] {
-        &self.saved
+    pub fn tool_sets(&self) -> &[ToolSet] {
+        &self.sets
     }
 
-    /// Saves the selected markup's style in My tools.
+    /// The set new tools are saved in.
+    #[must_use]
+    pub fn current_set(&self) -> usize {
+        self.current_set.min(self.sets.len().saturating_sub(1))
+    }
+
+    /// Saves new tools in set `index` from now on.
+    pub fn choose_set(&mut self, index: usize) {
+        if index < self.sets.len() {
+            self.current_set = index;
+        }
+    }
+
+    /// Saves the selected markup's style in the current tool set.
     ///
     /// # Errors
     /// A message for the user when nothing is selected or it cannot be
     /// kept.
     pub fn save_selected_tool(&mut self) -> Result<(), String> {
         let markup = self.selected().ok_or("Select a markup to save its style")?;
+        let stamp = if markup.kind == Kind::Stamp {
+            self.current_design().name
+        } else {
+            String::new()
+        };
         let tool = SavedTool {
-            name: markup.subject().to_owned(),
+            name: if stamp.is_empty() {
+                markup.subject().to_owned()
+            } else {
+                stamp.clone()
+            },
             kind: markup.kind,
             color: markup.color,
             width: markup.width,
             fill: markup.fill,
             subject: markup.subject.clone(),
+            stamp,
         };
+        if self.sets.is_empty() {
+            self.sets.push(ToolSet {
+                name: "My tools".into(),
+                collapsed: false,
+                tools: Vec::new(),
+            });
+        }
+        let at = self.current_set();
+        let set = &mut self.sets[at];
         let name = tool.name.clone();
-        match self
-            .saved
+        match set
+            .tools
             .iter_mut()
             .find(|t| t.name == tool.name && t.kind == tool.kind)
         {
             Some(same) => *same = tool,
-            None => self.saved.push(tool),
+            None => set.tools.push(tool),
         }
+        set.collapsed = false;
+        let set_name = set.name.clone();
         self.keep_saved()?;
-        self.status = format!("Saved \"{name}\" in My tools.");
+        self.status = format!("Saved \"{name}\" in {set_name}.");
         Ok(())
     }
 
-    /// Draws with My tools' `index`.
-    pub fn use_saved_tool(&mut self, index: usize) {
-        let Some(tool) = self.saved.get(index).cloned() else {
+    /// Draws with tool `index` of set `set`.
+    pub fn use_saved_tool(&mut self, set: usize, index: usize) {
+        let Some(tool) = self.sets.get(set).and_then(|s| s.tools.get(index)).cloned() else {
             return;
         };
+        self.current_set = set;
+        if tool.kind == Kind::Stamp
+            && let Some(at) = self.stamp_names().iter().position(|n| *n == tool.stamp)
+        {
+            self.stamp = at;
+        }
         self.choose_tool(Tool::Draw(tool.kind));
         if let Some(color) = COLORS
             .iter()
@@ -2949,17 +3151,21 @@ impl Viewer {
             self.width = width;
         }
         self.fill = tool.fill;
-        self.status = format!("Drawing with \"{}\" from My tools.", tool.name);
+        let set_name = self.sets[set].name.clone();
+        self.status = format!("Drawing with \"{}\" from {set_name}.", tool.name);
         self.style = Some(tool);
     }
 
-    /// Takes My tools' `index` out.
+    /// Takes tool `index` out of set `set`.
     ///
     /// # Errors
     /// A message for the user when the change cannot be kept.
-    pub fn remove_saved_tool(&mut self, index: usize) -> Result<(), String> {
-        if index < self.saved.len() {
-            let gone = self.saved.remove(index);
+    pub fn remove_saved_tool(&mut self, set: usize, index: usize) -> Result<(), String> {
+        let Some(tools) = self.sets.get_mut(set).map(|s| &mut s.tools) else {
+            return Ok(());
+        };
+        if index < tools.len() {
+            let gone = tools.remove(index);
             if self.style.as_ref() == Some(&gone) {
                 self.style = None;
             }
@@ -2968,18 +3174,166 @@ impl Viewer {
         Ok(())
     }
 
-    /// My tools' tool in use, if any.
+    /// Moves tool `index` of set `set` to the end of set `to`.
+    ///
+    /// # Errors
+    /// A message for the user when the change cannot be kept.
+    pub fn move_tool(&mut self, set: usize, index: usize, to: usize) -> Result<(), String> {
+        if set == to
+            || to >= self.sets.len()
+            || index >= self.sets.get(set).map_or(0, |s| s.tools.len())
+        {
+            return Ok(());
+        }
+        let tool = self.sets[set].tools.remove(index);
+        self.status = format!("Moved \"{}\" to {}.", tool.name, self.sets[to].name);
+        self.sets[to].tools.push(tool);
+        self.sets[to].collapsed = false;
+        self.keep_saved()
+    }
+
+    /// Adds an empty tool set called `name`, where new tools are saved.
+    ///
+    /// # Errors
+    /// When the name is empty or taken, or it cannot be kept.
+    pub fn add_set(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Give the tool set a name".into());
+        }
+        if self.sets.iter().any(|s| s.name == name) {
+            return Err(format!("There is a tool set called {name} already"));
+        }
+        self.sets.push(ToolSet {
+            name: name.to_owned(),
+            collapsed: false,
+            tools: Vec::new(),
+        });
+        self.current_set = self.sets.len() - 1;
+        self.status = format!("Added the tool set {name}; new tools are saved in it.");
+        self.keep_saved()
+    }
+
+    /// Renames set `index`.
+    ///
+    /// # Errors
+    /// When the name is empty or taken, or it cannot be kept.
+    pub fn rename_set(&mut self, index: usize, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() || index >= self.sets.len() {
+            return Ok(());
+        }
+        if self
+            .sets
+            .iter()
+            .enumerate()
+            .any(|(i, s)| i != index && s.name == name)
+        {
+            return Err(format!("There is a tool set called {name} already"));
+        }
+        name.clone_into(&mut self.sets[index].name);
+        self.keep_saved()
+    }
+
+    /// Removes set `index` with its tools; an empty one is left if it was
+    /// the last.
+    ///
+    /// # Errors
+    /// When the change cannot be kept.
+    pub fn remove_set(&mut self, index: usize) -> Result<(), String> {
+        if index >= self.sets.len() {
+            return Ok(());
+        }
+        let gone = self.sets.remove(index);
+        if self.sets.is_empty() {
+            self.sets.push(ToolSet {
+                name: "My tools".into(),
+                collapsed: false,
+                tools: Vec::new(),
+            });
+        }
+        if gone.tools.iter().any(|t| self.style.as_ref() == Some(t)) {
+            self.style = None;
+        }
+        self.current_set = self.current_set.min(self.sets.len() - 1);
+        self.status = format!("Removed the tool set {}.", gone.name);
+        self.keep_saved()
+    }
+
+    /// Folds set `index` away, or opens it.
+    pub fn toggle_set(&mut self, index: usize) {
+        if let Some(set) = self.sets.get_mut(index) {
+            set.collapsed = !set.collapsed;
+            let _ = self.keep_saved();
+        }
+    }
+
+    /// Writes set `index`, with the stamps it places, to `path` to share.
+    ///
+    /// # Errors
+    /// A message for the user when it cannot be written.
+    pub fn export_set(&mut self, index: usize, path: &Path) -> Result<(), String> {
+        let set = self.sets.get(index).ok_or("There is no such tool set")?;
+        chest::export_set(path, set, &self.designs).map_err(|e| format!("Cannot save: {e}"))?;
+        self.status = format!("Wrote the tool set {} to {}.", set.name, file_name(path));
+        Ok(())
+    }
+
+    /// Adds the tool sets and stamps in the shared file at `path`; a set
+    /// or stamp whose name is taken comes in as a copy.
+    ///
+    /// # Errors
+    /// A message for the user when it cannot be read or kept.
+    pub fn import_sets(&mut self, path: &Path) -> Result<(), String> {
+        let (sets, designs) = chest::import_sets(path)?;
+        let mut renamed: BTreeMap<String, String> = BTreeMap::new();
+        for mut design in designs {
+            let same = self.designs.iter().find(|d| d.name == design.name);
+            if same == Some(&design) {
+                continue;
+            }
+            if same.is_some() || stamps::TEMPLATES.iter().any(|t| t.words == design.name) {
+                let copy = format!("{} (imported)", design.name);
+                renamed.insert(design.name.clone(), copy.clone());
+                design.name = copy;
+            }
+            self.save_design(design, None)?;
+        }
+        let count = sets.len();
+        for mut set in sets {
+            while self.sets.iter().any(|s| s.name == set.name) {
+                set.name.push_str(" (imported)");
+            }
+            for tool in &mut set.tools {
+                if let Some(copy) = renamed.get(&tool.stamp) {
+                    tool.stamp.clone_from(copy);
+                }
+            }
+            self.sets.push(set);
+        }
+        self.keep_saved()?;
+        self.status = format!(
+            "Added {count} tool set{} from {}.",
+            if count == 1 { "" } else { "s" },
+            file_name(path)
+        );
+        Ok(())
+    }
+
+    /// The tool in use, from which set, if any.
     #[must_use]
-    pub fn saved_in_use(&self) -> Option<usize> {
+    pub fn saved_in_use(&self) -> Option<(usize, usize)> {
         let style = self.style.as_ref()?;
-        self.saved.iter().position(|t| t == style)
+        self.sets
+            .iter()
+            .enumerate()
+            .find_map(|(s, set)| set.tools.iter().position(|t| t == style).map(|i| (s, i)))
     }
 
     fn keep_saved(&self) -> Result<(), String> {
         match &self.saved_path {
-            Some(path) => {
-                chest::store(path, &self.saved).map_err(|e| format!("Cannot keep My tools: {e}"))
-            }
+            Some(path) => chest::store_sets(path, &self.sets)
+                .map_err(|e| format!("Cannot keep the tool sets: {e}")),
             None => Ok(()),
         }
     }
@@ -3017,6 +3371,7 @@ impl Viewer {
                     text: caption.text,
                     color: markup.color,
                     size,
+                    bold: caption.bold,
                 });
             }
         };
@@ -3043,7 +3398,7 @@ impl Viewer {
             }
         }
         if let Some(Drag::Draw { kind, points, .. }) = &self.drag
-            && let Some(points) = drawn(*kind, points.clone(), false)
+            && let Some(points) = drawn(*kind, points.clone(), false, (0.0, 0.0))
         {
             draw(&self.new_markup(*kind, points), false);
         }
@@ -3053,7 +3408,9 @@ impl Viewer {
                 points.extend(*cursor);
             }
             if kind.gesture() == Gesture::Drag {
-                if let Some(points) = drawn(*kind, points, false).filter(|p| p.len() >= 2) {
+                if let Some(points) =
+                    drawn(*kind, points, false, (0.0, 0.0)).filter(|p| p.len() >= 2)
+                {
                     draw(&self.new_markup(*kind, points), false);
                 }
             } else {
@@ -3257,16 +3614,13 @@ impl Drop for Viewer {
 
 /// The points of a markup of `kind` dragged through `points` (press, then
 /// where the mouse is); `None` when a click makes nothing.
-fn drawn(kind: Kind, mut points: Vec<Point>, click: bool) -> Option<Vec<Point>> {
+fn drawn(kind: Kind, mut points: Vec<Point>, click: bool, stamp: (f64, f64)) -> Option<Vec<Point>> {
     let a = *points.first()?;
     let b = *points.last()?;
     match kind {
         Kind::Text | Kind::Stamp if click => {
-            let size = if kind == Kind::Stamp {
-                stamps::SIZE
-            } else {
-                TEXT_BOX
-            };
+            // A stamp clicked in place takes its own size.
+            let size = if kind == Kind::Stamp { stamp } else { TEXT_BOX };
             Some(vec![
                 Point::new(a.x, a.y - size.1),
                 Point::new(a.x + size.0, a.y),
@@ -3368,12 +3722,6 @@ pub enum Follow {
     File(PathBuf, usize),
     /// A web or mail address.
     Web(String),
-}
-
-/// A stamp to place: its words, filled in, and its color.
-struct OwnStamp {
-    words: String,
-    color: Color,
 }
 
 /// `page 3` or `pages 2, 3 and 7`.
@@ -3784,6 +4132,7 @@ mod tests {
         click(&mut viewer, (300.0, 500.0));
         let placed = viewer.review().unwrap().markups().last().unwrap().clone();
         assert_eq!(placed.text, format!("SHOP CHECKED {today}"));
+        assert!(!placed.look.is_empty(), "drawn as designed");
         assert_eq!(placed.color, COLORS[2].1);
         viewer.remove_stamp(0).unwrap();
         assert_eq!(viewer.stamp_names().len(), own + 1, "Review's stay");
@@ -4108,7 +4457,15 @@ mod tests {
 
         viewer.choose_stamp(3);
         click(&mut viewer, (100.0, 400.0));
-        assert_eq!(viewer.selected().unwrap().text, "REJECTED");
+        // Review's stamps say who stamped and when under their words.
+        let words = viewer.selected().unwrap().text.clone();
+        assert!(
+            words.starts_with(
+                "REJECTED
+"
+            ),
+            "{words}"
+        );
         let (_, labels) = viewer.overlay();
         assert!(labels.iter().any(|l| l.text == "REJECTED"));
         assert_eq!(viewer.rows().len(), 4);
@@ -4394,10 +4751,11 @@ mod tests {
     }
 
     #[test]
-    fn my_tools_draw_with_a_saved_style_and_are_kept() {
+    fn tool_sets_keep_styles_and_are_shared() {
         let (mut viewer, dir) = viewer();
         let kept = dir.join("settings").join("tools.json");
         viewer.keep_saved_tools_at(kept.clone());
+        assert_eq!(viewer.tool_sets()[0].name, "My tools");
         assert!(viewer.save_selected_tool().is_err());
         viewer.choose_tool(Tool::Draw(Kind::Cloud));
         drag(&mut viewer, (100.0, 100.0), (200.0, 200.0));
@@ -4407,29 +4765,138 @@ mod tests {
         viewer.save_selected_tool().unwrap();
         // Saved again under the same name, it is replaced, not repeated.
         viewer.save_selected_tool().unwrap();
-        assert_eq!(viewer.saved_tools().len(), 1);
+        assert_eq!(viewer.tool_sets()[0].tools.len(), 1);
+
+        // A second set, where new tools go; the RFI cloud moves to it.
+        assert!(viewer.add_set("  ").is_err());
+        viewer.add_set("Contractor review").unwrap();
+        assert!(viewer.add_set("Contractor review").is_err());
+        assert_eq!(viewer.current_set(), 1);
+        viewer.move_tool(0, 0, 1).unwrap();
+        assert_eq!(viewer.tool_sets()[1].tools[0].name, "RFI");
 
         viewer.choose_tool(Tool::Select);
         viewer.choose_color(0);
-        viewer.use_saved_tool(0);
+        viewer.use_saved_tool(1, 0);
         assert_eq!(viewer.tool(), Tool::Draw(Kind::Cloud));
-        assert_eq!(viewer.saved_in_use(), Some(0));
+        assert_eq!(viewer.saved_in_use(), Some((1, 0)));
         drag(&mut viewer, (300.0, 300.0), (400.0, 400.0));
         let made = viewer.selected().unwrap();
         assert_eq!((made.subject.as_str(), made.color), ("RFI", COLORS[3].1));
         assert!((made.width - WIDTHS[2].1).abs() < f64::EPSILON);
-        // Another tool leaves it.
         viewer.choose_tool(Tool::Draw(Kind::Cloud));
         assert_eq!(viewer.saved_in_use(), None);
+        viewer.rename_set(1, "Contractor").unwrap();
+        viewer.toggle_set(1);
 
-        // Another window finds it, and removing it is kept too.
+        // Shared as a file, and read back by someone else as a copy.
+        let shared = dir.join("contractor.octools");
+        viewer.export_set(1, &shared).unwrap();
         let mut other = Viewer::default();
         other.keep_saved_tools_at(kept.clone());
-        assert_eq!(other.saved_tools()[0].name, "RFI");
-        other.remove_saved_tool(0).unwrap();
+        let names: Vec<&str> = other.tool_sets().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["My tools", "Contractor"]);
+        assert!(other.tool_sets()[1].collapsed, "folded, as left");
+        other.import_sets(&shared).unwrap();
+        assert_eq!(other.tool_sets()[2].name, "Contractor (imported)");
+        other.remove_set(2).unwrap();
+        other.remove_saved_tool(1, 0).unwrap();
         let mut third = Viewer::default();
         third.keep_saved_tools_at(kept);
-        assert_eq!(third.saved_tools(), []);
+        assert_eq!(third.tool_sets()[1].tools.len(), 0);
+        third.remove_set(0).unwrap();
+        third.remove_set(0).unwrap();
+        assert_eq!(third.tool_sets().len(), 1, "one set always stays");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn designed_stamps_are_kept_edited_asked_for_and_moved_from_before() {
+        let (mut viewer, dir) = viewer();
+        let kept = dir.join("settings").join("tools.json");
+        // Before stamps were files: My tools and one stamp of one's own.
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(
+            &kept,
+            r#"[{"name":"RFI","kind":"cloud","color":[1,0,0],"width":2,"fill":false,"subject":"RFI"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            kept.with_file_name("stamps.json"),
+            r#"[{"words":"SHOP OK","color":[0,0,1]}]"#,
+        )
+        .unwrap();
+        viewer.keep_saved_tools_at(kept.clone());
+        assert_eq!(viewer.tool_sets()[0].tools[0].name, "RFI");
+        let own = Viewer::built_in_stamps();
+        assert_eq!(viewer.stamp_names()[own], "SHOP OK");
+        assert!(
+            kept.with_file_name("Stamps")
+                .join("SHOP OK.ocstamp")
+                .exists()
+        );
+
+        // A stamp of one's own that asks for the job number.
+        let mut design = Design {
+            name: "Job check".into(),
+            ..Design::default()
+        };
+        design.lines[1].text = "JOB {ask:Job number} · {sheet}".into();
+        assert!(
+            viewer
+                .save_design(
+                    Design {
+                        name: "APPROVED".into(),
+                        ..design.clone()
+                    },
+                    None
+                )
+                .is_err()
+        );
+        viewer.save_design(design.clone(), None).unwrap();
+        assert_eq!(viewer.current_design().name, "Job check");
+        assert_eq!(
+            viewer.stamp_asks(),
+            [("Job number".to_owned(), String::new())]
+        );
+        viewer.set_ask("Job number", "26-114");
+        viewer.author = "Andrés".into();
+        viewer.choose_tool(Tool::Draw(Kind::Stamp));
+        viewer.settings.snap = false;
+        click(&mut viewer, (300.0, 300.0));
+        let placed = viewer.review().unwrap().markups().last().unwrap().clone();
+        assert_eq!(placed.text, "CHECKED\nJOB 26-114 · 1");
+        assert_eq!(placed.look, design.look());
+        let (w, h) = design.size_with(&placed.text);
+        let (low, high) = placed.bounds();
+        assert!(((high.x - low.x) - w).abs() < 1e-6 && ((high.y - low.y) - h).abs() < 1e-6);
+
+        // Saved as a tool, then renamed in the editor: the tool follows.
+        viewer.select_only(Some(placed.id.clone()));
+        viewer.save_selected_tool().unwrap();
+        assert_eq!(viewer.tool_sets()[0].tools[1].stamp, "Job check");
+        viewer
+            .save_design(
+                Design {
+                    name: "Job stamp".into(),
+                    ..design
+                },
+                Some("Job check"),
+            )
+            .unwrap();
+        assert!(!viewer.stamp_names().contains(&"Job check".to_owned()));
+        assert_eq!(viewer.tool_sets()[0].tools[1].stamp, "Job stamp");
+        let folder = kept.with_file_name("Stamps");
+        assert!(folder.join("Job stamp.ocstamp").exists());
+        assert!(!folder.join("Job check.ocstamp").exists());
+
+        // Another folder, such as a shared one, has its own stamps.
+        let shared = dir.join("office stamps");
+        viewer.set_stamps_folder(&shared).unwrap();
+        assert_eq!(viewer.stamp_names().len(), own);
+        let mut again = Viewer::default();
+        again.keep_saved_tools_at(kept);
+        assert_eq!(again.stamps_folder(), Some(shared));
         std::fs::remove_dir_all(dir).ok();
     }
 
