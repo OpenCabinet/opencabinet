@@ -98,6 +98,14 @@ follow [Semantic Versioning](https://semver.org/).
   - **One full page:** a mode where the page fits the window and the
     wheel zooms without Ctrl (Ctrl+wheel then moves the page). Review
     remembers it, and snapping, for next time.
+  - **Pages:** turn pages a quarter turn either way, move them up or
+    down, put in a blank page or every page of another PDF, delete
+    pages, and extract pages with their markups to a PDF of their own.
+    Ctrl or Shift + click on the thumbnails chooses several. The page
+    tools are in the Pages panel and a Pages menu; markups and page
+    scales go with their page, and Undo takes each change back. Saving
+    still appends one incremental update; pages cannot change during a
+    session.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

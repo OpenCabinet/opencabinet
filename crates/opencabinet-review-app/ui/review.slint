@@ -219,6 +219,10 @@ export component ReviewWindow inherits Window {
     in property <[string]> scales;
     in property <[image]> thumbnails;
     in property <int> page-index;
+    // The pages the page tools act on, by page.
+    in property <[bool]> pages-chosen;
+    in property <string> pages-label;
+    in property <bool> can-change-pages;
     in property <string> found-label;
     in property <bool> comparing;
     in property <string> list-label;
@@ -312,6 +316,13 @@ export component ReviewWindow inherits Window {
     callback sort-list(int, bool);
     callback go-to-bookmark(int);
     callback export-summary();
+    callback page-clicked(int, bool, bool);
+    callback turn-pages(int);
+    callback move-pages(int);
+    callback delete-pages();
+    callback insert-blank();
+    callback insert-pages();
+    callback extract-pages();
 
     title: root.window-title;
     preferred-width: 1366px;
@@ -352,6 +363,20 @@ export component ReviewWindow inherits Window {
             MenuItem { title: "Select all on this page"; enabled: root.has-document; activated => { root.select-all(); } }
             MenuSeparator { }
             MenuItem { title: "Save style in My tools"; enabled: root.has-selection; activated => { root.save-tool(); } }
+        }
+        Menu {
+            title: "Pages";
+            MenuItem { title: "Turn clockwise"; enabled: root.can-change-pages; activated => { root.turn-pages(1); } }
+            MenuItem { title: "Turn counterclockwise"; enabled: root.can-change-pages; activated => { root.turn-pages(-1); } }
+            MenuSeparator { }
+            MenuItem { title: "Move up"; enabled: root.can-change-pages; activated => { root.move-pages(-1); } }
+            MenuItem { title: "Move down"; enabled: root.can-change-pages; activated => { root.move-pages(1); } }
+            MenuSeparator { }
+            MenuItem { title: "Insert blank page"; enabled: root.can-change-pages; activated => { root.insert-blank(); } }
+            MenuItem { title: "Insert pages from a PDF…"; enabled: root.can-change-pages; activated => { root.insert-pages(); } }
+            MenuItem { title: "Extract pages to a PDF…"; enabled: root.has-document; activated => { root.extract-pages(); } }
+            MenuSeparator { }
+            MenuItem { title: "Delete pages"; enabled: root.can-change-pages; activated => { root.delete-pages(); } }
         }
         Menu {
             title: "View";
@@ -486,6 +511,36 @@ export component ReviewWindow inherits Window {
                         spacing: 6px;
                         PanelTitle { text: "Pages"; }
                         if !root.has-document: Text { text: "No PDF open."; }
+                        if root.has-document: VerticalLayout {
+                            spacing: 3px;
+                            Text {
+                                text: root.pages-label + ". Ctrl or Shift + click to choose more.";
+                                font-size: 10px;
+                                wrap: word-wrap;
+                                color: Palette.foreground.transparentize(25%);
+                            }
+                            HorizontalLayout {
+                                spacing: 2px;
+                                alignment: start;
+                                BarButton { text: "Turn left"; enabled: root.can-change-pages; clicked => { root.turn-pages(-1); } }
+                                BarButton { text: "Turn right"; enabled: root.can-change-pages; clicked => { root.turn-pages(1); } }
+                                BarButton { text: "Up"; label: "Move up"; enabled: root.can-change-pages; clicked => { root.move-pages(-1); } }
+                                BarButton { text: "Down"; label: "Move down"; enabled: root.can-change-pages; clicked => { root.move-pages(1); } }
+                            }
+                            HorizontalLayout {
+                                spacing: 2px;
+                                alignment: start;
+                                BarButton { text: "Blank"; label: "Insert blank page"; enabled: root.can-change-pages; clicked => { root.insert-blank(); } }
+                                BarButton { text: "Insert…"; label: "Insert pages from a PDF"; enabled: root.can-change-pages; clicked => { root.insert-pages(); } }
+                                BarButton { text: "Extract…"; label: "Extract pages to a PDF"; clicked => { root.extract-pages(); } }
+                                BarButton { text: "Delete"; label: "Delete pages"; enabled: root.can-change-pages; clicked => { root.delete-pages(); } }
+                            }
+                            if root.in-session: Text {
+                                text: "Pages cannot change during a session.";
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
                         ScrollView {
                             vertical-stretch: 1;
                             VerticalLayout {
@@ -493,11 +548,14 @@ export component ReviewWindow inherits Window {
                                 padding: 4px;
                                 for thumbnail[i] in root.thumbnails: Rectangle {
                                     height: 150px;
-                                    border-width: i == root.page-index ? 2px : 1px;
-                                    border-color: i == root.page-index ? Palette.accent-background : Palette.border;
+                                    border-width: i == root.page-index || root.pages-chosen[i] ? 2px : 1px;
+                                    border-color: i == root.page-index ? Palette.accent-background
+                                        : root.pages-chosen[i] ? Palette.accent-background.transparentize(40%) : Palette.border;
+                                    background: root.pages-chosen[i] ? Palette.accent-background.transparentize(85%) : transparent;
                                     accessible-role: button;
                                     accessible-label: "Page " + (i + 1);
-                                    accessible-action-default => { root.go-to-page(i); }
+                                    accessible-item-selected: root.pages-chosen[i];
+                                    accessible-action-default => { root.page-clicked(i, false, false); }
                                     Image {
                                         x: 6px;
                                         y: 6px;
@@ -513,7 +571,13 @@ export component ReviewWindow inherits Window {
                                         text: i + 1;
                                         font-size: 11px;
                                     }
-                                    TouchArea { clicked => { root.go-to-page(i); } }
+                                    TouchArea {
+                                        pointer-event(e) => {
+                                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                                                root.page-clicked(i, e.modifiers.control, e.modifiers.shift);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

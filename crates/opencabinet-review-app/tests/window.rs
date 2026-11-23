@@ -206,5 +206,26 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     assert_eq!(window.get_page_label(), "Page 2 of 2");
     assert_eq!(window.get_shapes().row_count(), 0);
 
+    // Both pages chosen in the Pages panel, turned, then the first taken
+    // out; the thumbnails follow, and undo brings it back.
+    assert!(window.get_can_change_pages());
+    window.invoke_page_clicked(0, true, false);
+    assert_eq!(window.get_pages_label(), "2 pages chosen");
+    assert_eq!(window.get_pages_chosen().row_data(0), Some(true));
+    window.invoke_turn_pages(1);
+    assert!(window.get_status().starts_with("Turned pages 1 and 2"));
+    assert!(window.get_window_title().starts_with("* "));
+    window.invoke_page_clicked(0, false, false);
+    assert_eq!(window.get_pages_label(), "Page 1 chosen");
+    window.invoke_delete_pages();
+    assert_eq!(window.get_page_label(), "Page 1 of 1");
+    assert_eq!(window.get_thumbnails().row_count(), 1);
+    window.invoke_undo();
+    assert_eq!(window.get_page_label(), "Page 1 of 2");
+    assert_eq!(window.get_thumbnails().row_count(), 2);
+    *answers.save.borrow_mut() = Some(dir.join("A-201 page 1.pdf"));
+    window.invoke_extract_pages();
+    assert!(dir.join("A-201 page 1.pdf").exists());
+
     std::fs::remove_dir_all(&dir).ok();
 }

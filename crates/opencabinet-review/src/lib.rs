@@ -25,6 +25,7 @@ use std::fmt::Write as _;
 
 use opencabinet_model::{Id, Length, Units};
 use opencabinet_pdf::annotations::{self, Change, Markups, ObjectRef};
+use opencabinet_pdf::pages::{self, From, Placed};
 use opencabinet_pdf::{Document, Error, Point};
 
 pub use opencabinet_pdf::annotations::Reply;
@@ -69,6 +70,12 @@ pub struct Review {
     typing: Option<String>,
     /// The state when last opened or saved.
     saved: State,
+    /// The review as it was before its pages last changed, to go back to,
+    /// and as it was after, to go forward to again.
+    before: Option<Box<Review>>,
+    after: Option<Box<Review>>,
+    /// Whether the pages changed since the file was opened or saved.
+    pages_changed: bool,
 }
 
 impl Review {
@@ -126,7 +133,131 @@ impl Review {
             undo: Vec::new(),
             redo: Vec::new(),
             typing: None,
+            before: None,
+            after: None,
+            pages_changed: false,
         })
+    }
+
+    /// Changes the pages to `list` (see [`pages::arrange`]), with the
+    /// markups as they are now. Undo goes back to the pages as they were.
+    ///
+    /// # Errors
+    /// When the pages cannot be changed; then nothing is.
+    pub fn arrange(
+        &mut self,
+        list: &[Placed],
+        others: &[&[u8]],
+        units: Units,
+    ) -> Result<(), Error> {
+        let with_markups = annotations::save(self.original.bytes(), &self.to_save(units))?;
+        let arranged = pages::arrange(&with_markups, list, others)?;
+        let mut next = Self::open(arranged)?;
+        next.pages_changed = true;
+        let mut before = std::mem::replace(self, next);
+        before.typing = None;
+        before.after = None;
+        self.before = Some(Box::new(before));
+        Ok(())
+    }
+
+    /// Turns `chosen` pages by `turn` quarter turns clockwise.
+    ///
+    /// # Errors
+    /// As [`Review::arrange`].
+    pub fn turn_pages(&mut self, chosen: &[usize], turn: i32, units: Units) -> Result<(), Error> {
+        let list: Vec<Placed> = (0..self.original.pages().len())
+            .map(|page| Placed {
+                from: From::Here(page),
+                turn: if chosen.contains(&page) { turn } else { 0 },
+            })
+            .collect();
+        self.arrange(&list, &[], units)
+    }
+
+    /// Removes `chosen` pages, with their markups.
+    ///
+    /// # Errors
+    /// When every page would go, or as [`Review::arrange`].
+    pub fn remove_pages(&mut self, chosen: &[usize], units: Units) -> Result<(), Error> {
+        let list: Vec<Placed> = (0..self.original.pages().len())
+            .filter(|page| !chosen.contains(page))
+            .map(Placed::here)
+            .collect();
+        self.arrange(&list, &[], units)
+    }
+
+    /// Moves `chosen` pages, in their order, to before page `to` of the
+    /// pages left, or to the end. Returns where the first of them is now.
+    ///
+    /// # Errors
+    /// As [`Review::arrange`].
+    pub fn move_pages(
+        &mut self,
+        chosen: &[usize],
+        to: usize,
+        units: Units,
+    ) -> Result<usize, Error> {
+        let count = self.original.pages().len();
+        let mut moved: Vec<usize> = chosen.iter().copied().filter(|&p| p < count).collect();
+        moved.sort_unstable();
+        moved.dedup();
+        let mut rest: Vec<usize> = (0..count).filter(|p| !moved.contains(p)).collect();
+        let at = to.min(rest.len());
+        rest.splice(at..at, moved);
+        let list: Vec<Placed> = rest.into_iter().map(Placed::here).collect();
+        self.arrange(&list, &[], units)?;
+        Ok(at)
+    }
+
+    /// Puts `pages` of the PDF `other` before page `at`, or at the end.
+    ///
+    /// # Errors
+    /// When `other` cannot be read, or as [`Review::arrange`].
+    pub fn insert_pages(
+        &mut self,
+        at: usize,
+        other: &[u8],
+        pages: &[usize],
+        units: Units,
+    ) -> Result<(), Error> {
+        let mut list: Vec<Placed> = (0..self.original.pages().len()).map(Placed::here).collect();
+        let at = at.min(list.len());
+        let new = pages.iter().map(|&p| Placed {
+            from: From::Other(0, p),
+            turn: 0,
+        });
+        list.splice(at..at, new);
+        self.arrange(&list, &[other], units)
+    }
+
+    /// Puts a blank page as large as page `like` before page `at`.
+    ///
+    /// # Errors
+    /// As [`Review::arrange`].
+    pub fn insert_blank(&mut self, at: usize, like: usize, units: Units) -> Result<(), Error> {
+        let pages = self.original.pages();
+        let size = pages.get(like).or(pages.first()).ok_or(Error::NoPages)?;
+        let mut list: Vec<Placed> = (0..pages.len()).map(Placed::here).collect();
+        let at = at.min(list.len());
+        list.insert(
+            at,
+            Placed {
+                from: From::Blank(size.width, size.height),
+                turn: 0,
+            },
+        );
+        self.arrange(&list, &[], units)
+    }
+
+    /// A PDF of its own holding `chosen` pages, in their order, with their
+    /// markups as they are now. The review does not change.
+    ///
+    /// # Errors
+    /// When the pages cannot be written.
+    pub fn extract(&self, chosen: &[usize], units: Units) -> Result<Vec<u8>, Error> {
+        let with_markups = annotations::save(self.original.bytes(), &self.to_save(units))?;
+        pages::extract(&with_markups, chosen)
     }
 
     /// The PDF as opened: its pages and their sizes.
@@ -189,7 +320,7 @@ impl Review {
     /// Whether there are changes not saved.
     #[must_use]
     pub fn modified(&self) -> bool {
-        self.state != self.saved
+        self.pages_changed || self.state != self.saved
     }
 
     /// Remembers the state before a change, so it can be undone.
@@ -206,18 +337,19 @@ impl Review {
             }
         }
         self.redo.clear();
+        self.after = None;
     }
 
     /// Whether there is something to undo.
     #[must_use]
     pub fn can_undo(&self) -> bool {
-        self.undo.iter().any(|s| *s != self.state)
+        self.before.is_some() || self.undo.iter().any(|s| *s != self.state)
     }
 
     /// Whether there is something to redo.
     #[must_use]
     pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
+        self.after.is_some() || !self.redo.is_empty()
     }
 
     /// Goes back one step.
@@ -229,6 +361,14 @@ impl Review {
                 return;
             }
         }
+        // Back past the last change of pages.
+        if let Some(before) = self.before.take() {
+            let mut after = std::mem::replace(self, *before);
+            after.typing = None;
+            self.after = Some(Box::new(after));
+            // The file may hold either; only saving says which.
+            self.pages_changed = true;
+        }
     }
 
     /// Goes forward again after undoing.
@@ -236,6 +376,10 @@ impl Review {
         self.typing = None;
         if let Some(state) = self.redo.pop() {
             self.undo.push(std::mem::replace(&mut self.state, state));
+        } else if let Some(after) = self.after.take() {
+            let before = std::mem::replace(self, *after);
+            self.before = Some(Box::new(before));
+            self.pages_changed = true;
         }
     }
 
@@ -459,6 +603,7 @@ impl Review {
     pub fn save(&mut self, units: Units) -> Result<Vec<u8>, Error> {
         let bytes = annotations::save(self.original.bytes(), &self.to_save(units))?;
         self.saved = self.state.clone();
+        self.pages_changed = false;
         Ok(bytes)
     }
 

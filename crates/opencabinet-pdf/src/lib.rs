@@ -6,6 +6,7 @@
 //! - [`Document`] opens a PDF and knows its pages' sizes and how their own
 //!   coordinates map to the page as shown.
 //! - [`render`] draws part of a page into a [`Bitmap`], with hayro.
+//! - [`pages`] turns, removes, moves, adds and extracts pages.
 //! - [`annotations`] reads the markups a PDF holds and saves new ones as an
 //!   incremental update, with lopdf: the original bytes are never changed,
 //!   only appended to.
@@ -20,6 +21,7 @@ pub mod annotations;
 pub mod find;
 mod flatten;
 pub mod outline;
+pub mod pages;
 mod render;
 pub mod report;
 pub mod sample;
@@ -126,6 +128,8 @@ pub enum Error {
     NoPages,
     /// Its markups could not be read or saved, with why.
     Annotations(String),
+    /// Its pages could not be changed, with why.
+    Pages(String),
 }
 
 impl fmt::Display for Error {
@@ -135,6 +139,7 @@ impl fmt::Display for Error {
             Self::Encrypted => f.write_str("the PDF is protected with a password"),
             Self::NoPages => f.write_str("the PDF has no pages"),
             Self::Annotations(why) => write!(f, "the PDF's markups: {why}"),
+            Self::Pages(why) => write!(f, "the pages could not be changed: {why}"),
         }
     }
 }

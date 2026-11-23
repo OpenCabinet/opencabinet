@@ -3,7 +3,8 @@
 
 //! Draws Review's window into a PNG without a screen, to look at the
 //! layout: `cargo run -p opencabinet-review-app --example screenshot --
-//! out.png [width height]`, with `PANEL` naming the left panel to open.
+//! out.png [width height]`, with `PANEL` naming the left panel to open
+//! and `REPLIES`, `SNAP` or `PAGES` showing those features.
 //! It opens a drawing made for the test, with bookmarks, a few markups,
 //! and the markup list.
 
@@ -81,6 +82,13 @@ fn main() {
         for (x, y) in [(580.0, 180.0), (590.0, 221.0)] {
             review.invoke_moved_to(x, y, false);
         }
+    }
+    // PAGES=1 turns the first page a quarter clockwise and chooses the
+    // first two pages in the Pages panel.
+    if std::env::var("PAGES").is_ok() {
+        review.invoke_turn_pages(1);
+        review.invoke_fit();
+        review.invoke_page_clicked(1, true, false);
     }
     // The left panel to show: 0 pages, 1 bookmarks, 2 find, 3 measure, 4
     // session.

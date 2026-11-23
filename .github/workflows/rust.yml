@@ -135,6 +135,31 @@ jobs:
           PY
           )
           test "$left" -eq 0 || { echo "expected no annotations, found $left"; exit 1; }
+          # Pages turned, moved, removed and put in, as an update after the
+          # original; and one page extracted to a PDF of its own.
+          cargo run --locked -q -p opencabinet-review --example pages_pdf -- arranged.pdf extracted.pdf
+          qpdf --check arranged.pdf
+          qpdf --check extracted.pdf
+          qpdf --json=2 --json-key=pages --json-key=qpdf arranged.pdf > arranged.json
+          qpdf --json=2 --json-key=pages --json-key=qpdf extracted.pdf > extracted.json
+          python3 - <<'PY'
+          import json
+          def pages(name):
+              data = json.load(open(name))
+              objects = data["qpdf"][1]
+              out = []
+              for page in data["pages"]:
+                  value = objects["obj:" + page["object"]]["value"]
+                  annots = value.get("/Annots", [])
+                  if isinstance(annots, str):
+                      annots = objects["obj:" + annots]["value"]
+                  out.append((value.get("/Rotate", 0), len(annots)))
+              return out
+          arranged = pages("arranged.json")
+          assert arranged == [(90, 1), (0, 0), (0, 0), (0, 0)], arranged
+          extracted = pages("extracted.json")
+          assert extracted == [(90, 1)], extracted
+          PY
       # The parts as DXF, audited by ezdxf (ADR-0015).
       - name: Check the DXF files with ezdxf
         if: runner.os == 'Linux'
