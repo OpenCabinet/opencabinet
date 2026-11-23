@@ -86,36 +86,7 @@ fn main() {
         review.invoke_released(to.0, to.1);
     }
     review.invoke_choose_tool(0);
-    // REPLIES=1 shows the last markup's replies in the editor.
-    if std::env::var("REPLIES").is_ok() {
-        review.invoke_reply("Is the opening 36\" or 42\"?".into());
-        review.invoke_reply("42\", per the revised elevation.".into());
-        review.set_editor_tab(1);
-    }
-    // SNAP=1 shows a line placed by a first click, the mouse snapped to
-    // where two grid lines cross.
-    if std::env::var("SNAP").is_ok() {
-        review.invoke_choose_tool(6);
-        review.invoke_pressed(560.0, 140.0, 0);
-        review.invoke_released(560.0, 140.0);
-        for (x, y) in [(580.0, 180.0), (590.0, 221.0)] {
-            review.invoke_moved_to(x, y, false);
-        }
-    }
-    // PAGES=1 turns the first page a quarter clockwise and chooses the
-    // first two pages in the Pages panel.
-    if std::env::var("PAGES").is_ok() {
-        review.invoke_turn_pages(1);
-        review.invoke_fit();
-        review.invoke_page_clicked(1, true, false);
-    }
-    // TURN=1 turns the view a quarter clockwise and shows the stamps, with
-    // one of the shop's own.
-    if std::env::var("TURN").is_ok() {
-        review.invoke_turn_view(1);
-        review.invoke_choose_tool(13);
-        review.invoke_add_stamp("SHOP CHECKED {date}".into());
-    }
+    show_features(&review);
     // The left panel to show: 0 pages, 1 bookmarks, 2 find, 3 measure, 4
     // session, 5 sheet set.
     let panel = std::env::var("PANEL")
@@ -146,4 +117,39 @@ fn main() {
         .unwrap();
     std::fs::remove_dir_all(&dir).ok();
     println!("{}", out.display());
+}
+
+/// Shows what the environment asks for: `REPLIES`, `SNAP`, `PAGES` or
+/// `TURN`.
+fn show_features(review: &opencabinet_review_app::ReviewWindow) {
+    // REPLIES=1 shows the last markup's replies in the editor.
+    if std::env::var("REPLIES").is_ok() {
+        review.invoke_reply("Is the opening 36\" or 42\"?".into());
+        review.invoke_reply("42\", per the revised elevation.".into());
+        review.set_editor_tab(1);
+    }
+    // SNAP=1 shows a line placed by a first click, the mouse snapped to
+    // where two grid lines cross.
+    if std::env::var("SNAP").is_ok() {
+        review.invoke_choose_tool(6);
+        review.invoke_pressed(560.0, 140.0, 0);
+        review.invoke_released(560.0, 140.0);
+        for (x, y) in [(580.0, 180.0), (590.0, 221.0)] {
+            review.invoke_moved_to(x, y, false);
+        }
+    }
+    // PAGES=1 turns the first page a quarter clockwise and chooses the
+    // first two pages in the Pages panel.
+    if std::env::var("PAGES").is_ok() {
+        review.invoke_turn_pages(1);
+        review.invoke_fit();
+        review.invoke_page_clicked(1, true, false);
+    }
+    // TURN=1 turns the view a quarter clockwise and shows the stamps, with
+    // one of the shop's own.
+    if std::env::var("TURN").is_ok() {
+        review.invoke_turn_view(1);
+        review.invoke_choose_tool(13);
+        review.invoke_add_stamp("SHOP CHECKED {date}".into());
+    }
 }
