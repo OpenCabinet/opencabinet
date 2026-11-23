@@ -15,6 +15,8 @@ pub enum FileKind {
     Pdf,
     /// The markup list for spreadsheets.
     List,
+    /// A sheet set.
+    Set,
 }
 
 impl FileKind {
@@ -22,6 +24,7 @@ impl FileKind {
         match self {
             Self::Pdf => ("PDF document", "pdf"),
             Self::List => ("Markup list for spreadsheets", "csv"),
+            Self::Set => ("Sheet set", "ocset"),
         }
     }
 }
@@ -58,10 +61,9 @@ impl Dialogs for SystemDialogs {
     }
 
     fn open_paths(&self) -> Vec<PathBuf> {
-        let (name, extension) = FileKind::Pdf.filter();
         FileDialog::new()
-            .set_title("Open PDFs")
-            .add_filter(name, &[extension])
+            .set_title("Open PDFs or a sheet set")
+            .add_filter("PDF documents and sheet sets", &["pdf", "ocset"])
             .pick_files()
             .unwrap_or_default()
     }
@@ -71,6 +73,7 @@ impl Dialogs for SystemDialogs {
         let title = match kind {
             FileKind::Pdf => "Save PDF as",
             FileKind::List => "Export markup list",
+            FileKind::Set => "Save sheet set as",
         };
         let path = FileDialog::new()
             .set_title(title)

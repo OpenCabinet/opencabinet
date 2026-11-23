@@ -56,6 +56,8 @@ const SCALES: &str = "scales";
 const PEOPLE: &str = "people";
 const CHAT: &str = "chat";
 const REPLIES: &str = "replies";
+/// Who the host handed the session over to, and where it went.
+const HANDOVER: &str = "handover";
 /// The longest chat message kept.
 const MAX_SAID: usize = 4000;
 
@@ -95,6 +97,101 @@ impl Shared {
         }
         shared.introduce(name, "joined the session");
         Ok(shared)
+    }
+
+    /// A copy of the session for a server that only passes it on: it does
+    /// not join it as a person.
+    ///
+    /// # Errors
+    /// When the bytes are not a session.
+    pub fn relay(bytes: &[u8]) -> Result<Self, String> {
+        let mut doc = AutoCommit::load(bytes).map_err(|e| e.to_string())?;
+        doc.set_actor(ActorId::random());
+        let shared = Self { doc };
+        if shared.map(MARKUPS).is_none() {
+            return Err("this is not a review session".into());
+        }
+        Ok(shared)
+    }
+
+    /// Hands the session over to the person called `name`, who will host
+    /// it from now on; false when nobody else has that name.
+    pub fn hand_over(&mut self, name: &str) -> bool {
+        let me = self.actor();
+        let Some(people) = self.map(PEOPLE) else {
+            return false;
+        };
+        let Some(actor) = self
+            .strings(&people)
+            .into_iter()
+            .find(|(actor, n)| n == name && *actor != me)
+            .map(|(actor, _)| actor)
+        else {
+            return false;
+        };
+        let Ok(handover) = self.doc.put_object(ROOT, HANDOVER, ObjType::Map) else {
+            return false;
+        };
+        let _ = self.doc.put(&handover, "to", actor);
+        let _ = self.doc.put(&handover, "invite", "");
+        self.doc.commit_with(
+            CommitOptions::default()
+                .with_message(format!("handed the session over to {name}"))
+                .with_time(now()),
+        );
+        true
+    }
+
+    /// Whether the session was handed over to this participant, who has
+    /// not started hosting it yet.
+    #[must_use]
+    pub fn handed_to_me(&self) -> bool {
+        self.map(HANDOVER).is_some_and(|map| {
+            let found = self.strings(&map);
+            found.get("to") == Some(&self.actor())
+                && found.get("invite").is_none_or(String::is_empty)
+        })
+    }
+
+    /// Says the session now lives at `invite`, hosted here.
+    pub fn moved_here(&mut self, invite: &str) {
+        let Some(handover) = self.map(HANDOVER) else {
+            return;
+        };
+        let _ = self.doc.put(&handover, "invite", invite);
+        self.doc.commit_with(
+            CommitOptions::default()
+                .with_message("hosts the session now")
+                .with_time(now()),
+        );
+    }
+
+    /// Where the session moved when it was last handed over, if it was.
+    #[must_use]
+    pub fn moved_to(&self) -> Option<String> {
+        let map = self.map(HANDOVER)?;
+        self.strings(&map)
+            .remove("invite")
+            .filter(|invite| !invite.is_empty())
+    }
+
+    /// The others in the session, by name.
+    #[must_use]
+    pub fn others(&self) -> Vec<String> {
+        let Some(map) = self.map(PEOPLE) else {
+            return Vec::new();
+        };
+        let me = self.actor();
+        let mine = self.own_name();
+        let mut names: Vec<String> = self
+            .strings(&map)
+            .into_iter()
+            .filter(|(actor, name)| *actor != me && *name != mine)
+            .map(|(_, name)| name)
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// The whole session, to send to someone joining.

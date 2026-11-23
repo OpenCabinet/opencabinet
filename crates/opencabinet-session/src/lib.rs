@@ -4,8 +4,11 @@
 //! Live review sessions for OpenCabinet Review (RFC-0004 §6).
 
 pub mod firewall;
+mod member;
 mod net;
+pub mod server;
 mod shared;
 
+pub use member::Participant;
 pub use net::{Guest, Host, Invite, Link, PORT, local_addresses};
 pub use shared::{Activity, Said, Shared};

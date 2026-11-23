@@ -3919,6 +3919,7 @@ dependencies = [
  "chrono",
  "opencabinet-model",
  "opencabinet-pdf",
+ "serde_json",
 ]
 
 [[package]]
@@ -3936,6 +3937,13 @@ dependencies = [
  "serde_json",
  "slint",
  "slint-build",
+]
+
+[[package]]
+name = "opencabinet-review-server"
+version = "0.1.0-beta.2"
+dependencies = [
+ "opencabinet-session",
 ]
 
 [[package]]

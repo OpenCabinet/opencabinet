@@ -58,6 +58,15 @@ export struct TabInfo {
     modified: bool,
 }
 
+// A sheet of the sheet set: its label, its file's name, whether it is
+// open, shown or missing, and how many markups it has when open.
+export struct SheetInfo {
+    label: string,
+    file: string,
+    state: string,
+    shown: bool,
+}
+
 // A saved tool in My tools: its name and color.
 export struct SavedInfo {
     name: string,
@@ -234,6 +243,9 @@ export component ReviewWindow inherits Window {
     in property <int> active-tab;
     // The files opened last, newest first.
     in property <[string]> recent;
+    // The sheet set, if any: its name and its sheets.
+    in property <string> set-name;
+    in property <[SheetInfo]> sheets;
     in property <string> found-label;
     in property <bool> comparing;
     in property <string> list-label;
@@ -242,7 +254,7 @@ export component ReviewWindow inherits Window {
     in-out property <string> author;
     in property <int> units;
     // The left panel open: -1 none, 0 pages, 1 bookmarks, 2 find, 3 measure,
-    // 4 session.
+    // 4 session, 5 sheet set.
     in-out property <int> panel: 0;
     // Whether the markup list is open under the drawing.
     in-out property <bool> list-open: true;
@@ -252,6 +264,8 @@ export component ReviewWindow inherits Window {
     in property <int> saved-in-use: -1;
     in property <bool> in-session;
     in property <bool> hosting;
+    // The others in the session, by name.
+    in property <[string]> others;
     in property <string> session-state: "Not in a session";
     in property <string> invite;
     in property <string> firewall-advice;
@@ -317,6 +331,8 @@ export component ReviewWindow inherits Window {
     callback set-filter(int, string);
     callback start-session();
     callback join-session(string);
+    callback start-on-server(string);
+    callback hand-over(string);
     callback leave-session();
     callback allow-firewall();
     callback quit();
@@ -339,6 +355,11 @@ export component ReviewWindow inherits Window {
     callback close-this-tab();
     callback next-tab();
     callback open-recent(int);
+    callback open-sheet(int);
+    callback add-to-set();
+    callback remove-from-set(int);
+    callback save-set();
+    callback save-tabs-as-set();
 
     title: root.window-title;
     preferred-width: 1366px;
@@ -363,6 +384,7 @@ export component ReviewWindow inherits Window {
                     activated => { root.open-recent(i); }
                 }
             }
+            MenuItem { title: "Save tabs as sheet set…"; enabled: root.has-document; activated => { root.save-tabs-as-set(); } }
             MenuItem { title: "Close tab"; shortcut: @keys(Control + W); enabled: root.has-document || root.tabs.length > 1; activated => { root.close-this-tab(); } }
             MenuItem { title: "Save"; shortcut: @keys(Control + S); enabled: root.has-document; activated => { root.save(); } }
             MenuItem { title: "Save as…"; enabled: root.has-document; activated => { root.save-as(); } }
@@ -524,6 +546,12 @@ export component ReviewWindow inherits Window {
                             icon: "M 8 9 A 3 3 0 1 0 8 3 A 3 3 0 1 0 8 9 Z M 2 20 C 2 14 14 14 14 20 M 17 10 A 2.5 2.5 0 1 0 17 5 A 2.5 2.5 0 1 0 17 10 Z M 15 13 C 19 13 22 15 22 19";
                             active: root.panel == 4;
                             clicked => { root.toggle(4); }
+                        }
+                        RailButton {
+                            name: "Set";
+                            icon: "M 4 6 L 14 6 L 14 20 L 4 20 Z M 7 3 L 17 3 L 17 17 M 10 0 L 20 0 L 20 14";
+                            active: root.panel == 5;
+                            clicked => { root.toggle(5); }
                         }
                     }
                 }
@@ -737,6 +765,61 @@ export component ReviewWindow inherits Window {
                         }
                     }
 
+                    if root.panel == 5: VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        PanelTitle { text: root.set-name != "" && root.set-name != "Sheet set" ? "Sheet set · " + root.set-name : "Sheet set"; }
+                        if root.sheets.length == 0: Text {
+                            text: "A sheet set keeps a project's drawings together. Open one (.ocset), or add the drawing shown and save the set.";
+                            wrap: word-wrap;
+                            font-size: 11px;
+                        }
+                        HorizontalLayout {
+                            spacing: 2px;
+                            alignment: start;
+                            BarButton { text: "Add this drawing"; enabled: root.has-document; clicked => { root.add-to-set(); } }
+                            BarButton { text: "Save set…"; enabled: root.sheets.length > 0; clicked => { root.save-set(); } }
+                        }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                spacing: 2px;
+                                for sheet[i] in root.sheets: Rectangle {
+                                    height: 40px;
+                                    border-radius: 3px;
+                                    background: sheet.shown ? Palette.accent-background.transparentize(80%)
+                                        : sheet-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                                    accessible-role: button;
+                                    accessible-label: sheet.label + ", " + sheet.state;
+                                    accessible-action-default => { root.open-sheet(i); }
+                                    sheet-touch := TouchArea { clicked => { root.open-sheet(i); } }
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 2px;
+                                        spacing: 4px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            horizontal-stretch: 1;
+                                            Text { text: sheet.label; font-size: 12px; font-weight: 600; overflow: elide; }
+                                            Text {
+                                                text: sheet.file + " · " + sheet.state;
+                                                font-size: 10px;
+                                                overflow: elide;
+                                                color: sheet.state == "Missing" ? #c77700 : Palette.foreground.transparentize(30%);
+                                            }
+                                        }
+                                        BarButton {
+                                            text: "×";
+                                            label: "Take " + sheet.label + " out of the set";
+                                            clicked => { root.remove-from-set(i); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if root.panel == 4: VerticalLayout {
                         padding: 8px;
                         spacing: 6px;
@@ -764,7 +847,34 @@ export component ReviewWindow inherits Window {
                             }
                             Button { text: "Join"; clicked => { root.join-session(code.text); } }
                         }
-                        if root.hosting: VerticalLayout {
+                        if !root.in-session: Text {
+                            text: "Across offices: start the session on a session server.";
+                            font-size: 10px;
+                            wrap: word-wrap;
+                            color: Palette.foreground.transparentize(25%);
+                        }
+                        if !root.in-session: HorizontalLayout {
+                            spacing: 4px;
+                            server := LineEdit {
+                                accessible-label: "Session server address";
+                                placeholder-text: "Server address (ocs1:…)";
+                            }
+                            Button {
+                                text: "Start";
+                                enabled: root.has-document;
+                                clicked => { root.start-on-server(server.text); }
+                            }
+                        }
+                        if root.hosting && root.others.length > 0: HorizontalLayout {
+                            spacing: 4px;
+                            Text { text: "Hand over to"; vertical-alignment: center; font-size: 11px; }
+                            heir := ComboBox {
+                                accessible-label: "Who will host the session";
+                                model: root.others;
+                            }
+                            Button { text: "Hand over"; clicked => { root.hand-over(heir.current-value); } }
+                        }
+                        if root.invite != "": VerticalLayout {
                             spacing: 2px;
                             Text { text: "Send this invitation to who joins:"; font-size: 11px; }
                             HorizontalLayout {

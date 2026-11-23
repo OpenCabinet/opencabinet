@@ -19,7 +19,7 @@ use std::fmt;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -51,19 +51,25 @@ const KNOCK: Duration = Duration::from_secs(6);
 /// How long joining may take before either side gives up.
 const GREETING: Duration = Duration::from_secs(30);
 
-const HELLO: u8 = 1;
-const WELCOME: u8 = 2;
-const SYNC: u8 = 3;
+pub(crate) const HELLO: u8 = 1;
+pub(crate) const WELCOME: u8 = 2;
+pub(crate) const SYNC: u8 = 3;
+/// Asks a session server for a room of its own (see `server`).
+pub(crate) const CREATE: u8 = 4;
+/// The server's answer: the room's secret.
+pub(crate) const CREATED: u8 = 5;
 
 /// What someone needs to join a session.
 ///
 /// Written `ocr1:<addresses>:<port>:<secret>:<fingerprint>`, the
 /// addresses separated by commas: a computer may be on more than one
-/// network, and whoever joins tries them all.
+/// network, and whoever joins tries them all. An address is an IPv4
+/// address or, for a session server, a name such as
+/// `review.example.org`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invite {
-    /// The host's IPv4 addresses, the likeliest first.
-    pub addresses: Vec<Ipv4Addr>,
+    /// The host's addresses, the likeliest first.
+    pub addresses: Vec<String>,
     /// The port the host listens on.
     pub port: u16,
     /// What proves the invitation.
@@ -72,7 +78,7 @@ pub struct Invite {
     pub fingerprint: [u8; 32],
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut out, b| {
         let _ = write!(out, "{b:02x}");
@@ -93,11 +99,10 @@ fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
 
 impl fmt::Display for Invite {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let addresses: Vec<String> = self.addresses.iter().map(ToString::to_string).collect();
         write!(
             f,
             "ocr1:{}:{}:{}:{}",
-            addresses.join(","),
+            self.addresses.join(","),
             self.port,
             hex(&self.secret),
             hex(&self.fingerprint)
@@ -117,11 +122,10 @@ impl FromStr for Invite {
         if tag != "ocr1" {
             return Err(bad());
         }
-        let addresses = addresses
-            .split(',')
-            .map(|a| a.trim().parse::<Ipv4Addr>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| bad())?;
+        let addresses: Vec<String> = addresses.split(',').map(|a| a.trim().to_owned()).collect();
+        if !addresses.iter().all(|a| is_address(a)) {
+            return Err(bad());
+        }
         let port: u16 = port.parse().map_err(|_| bad())?;
         if addresses.is_empty() || port == 0 {
             return Err(bad());
@@ -135,6 +139,17 @@ impl FromStr for Invite {
     }
 }
 
+/// Whether `text` can be an address in an invitation: an IPv4 address or
+/// a host name.
+pub(crate) fn is_address(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 253
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && !text.starts_with(['.', '-'])
+}
+
 /// What a participant shares with the connections that keep it in step.
 #[derive(Clone, Debug)]
 pub struct Link {
@@ -143,15 +158,24 @@ pub struct Link {
     /// Bumped whenever someone else's change arrives.
     pub changed: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
+    /// How many connections to a host this participant has open.
+    live: Arc<AtomicUsize>,
 }
 
 impl Link {
-    fn new(shared: Shared) -> Self {
+    pub(crate) fn new(shared: Shared) -> Self {
         Self {
             shared: Arc::new(Mutex::new(shared)),
             changed: Arc::new(AtomicU64::new(0)),
             stop: Arc::new(AtomicBool::new(false)),
+            live: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// How many connections to a host are open.
+    #[must_use]
+    pub fn connections(&self) -> usize {
+        self.live.load(Ordering::SeqCst)
     }
 
     /// Ends every connection of this participant.
@@ -166,7 +190,7 @@ impl Link {
     }
 }
 
-fn provider() -> Arc<CryptoProvider> {
+pub(crate) fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
@@ -219,6 +243,9 @@ pub struct Host {
     pub invite: Invite,
     /// This participant's copy and its connections.
     pub link: Link,
+    /// Set to stop listening and drop who joined here, while the copy
+    /// stays in step through other connections.
+    close: Arc<AtomicBool>,
 }
 
 impl Host {
@@ -232,7 +259,7 @@ impl Host {
             shared,
             pdf,
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            local_addresses(),
+            &local_addresses(),
         )
     }
 
@@ -244,7 +271,21 @@ impl Host {
         shared: Shared,
         pdf: Arc<Vec<u8>>,
         bind: IpAddr,
-        shown: Vec<Ipv4Addr>,
+        shown: &[Ipv4Addr],
+    ) -> Result<Self, String> {
+        Self::start_with(Link::new(shared), pdf, bind, shown)
+    }
+
+    /// Hosts the copy `link` already holds, as when a session is handed
+    /// over to this participant.
+    ///
+    /// # Errors
+    /// When the computer cannot listen or make its certificate.
+    pub fn start_with(
+        link: Link,
+        pdf: Arc<Vec<u8>>,
+        bind: IpAddr,
+        shown: &[Ipv4Addr],
     ) -> Result<Self, String> {
         let certified = rcgen::generate_simple_self_signed(vec![NAME.to_owned()])
             .map_err(|e| format!("Cannot make the session's certificate: {e}"))?;
@@ -270,17 +311,19 @@ impl Host {
             .map_err(|e| format!("Cannot listen: {e}"))?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-        let link = Link::new(shared);
+        let close = Arc::new(AtomicBool::new(false));
         let accepting = link.clone();
+        let closing = Arc::clone(&close);
         thread::spawn(move || {
-            while !accepting.stopped() {
+            while !accepting.stopped() && !closing.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let link = accepting.clone();
                         let config = Arc::clone(&config);
                         let pdf = Arc::clone(&pdf);
+                        let closing = Arc::clone(&closing);
                         thread::spawn(move || {
-                            let _ = admit(stream, &config, &pdf, secret, &link);
+                            let _ = admit(stream, &config, &pdf, secret, &link, &closing);
                         });
                     }
                     Err(e) if e.kind() == ErrorKind::WouldBlock => thread::sleep(TICK),
@@ -290,13 +333,19 @@ impl Host {
         });
         Ok(Self {
             invite: Invite {
-                addresses: shown,
+                addresses: shown.iter().map(ToString::to_string).collect(),
                 port,
                 secret,
                 fingerprint,
             },
             link,
+            close,
         })
+    }
+
+    /// Stops listening and drops who joined here; the copy is kept.
+    pub fn close(&self) {
+        self.close.store(true, Ordering::SeqCst);
     }
 }
 
@@ -307,6 +356,7 @@ fn admit(
     pdf: &[u8],
     secret: [u8; 16],
     link: &Link,
+    until: &AtomicBool,
 ) -> Result<(), String> {
     // On Windows a connection accepted from a listener that does not
     // block does not block either: sending the PDF across a network would
@@ -336,7 +386,78 @@ fn admit(
     welcome.extend_from_slice(pdf);
     welcome.extend_from_slice(&session);
     write_frame(&mut tls, WELCOME, &welcome)?;
-    keep_in_step(tls, frames, link)
+    keep_in_step(tls, frames, link, until)
+}
+
+/// The PDF and the session's bytes in a welcome.
+pub(crate) fn welcome_parts(welcome: &[u8]) -> Result<(&[u8], &[u8]), String> {
+    let length: [u8; 4] = welcome
+        .get(..4)
+        .and_then(|b| b.try_into().ok())
+        .ok_or("The host did not let you in")?;
+    let length = usize::try_from(u32::from_be_bytes(length)).map_err(|e| e.to_string())?;
+    let pdf = welcome
+        .get(4..4 + length)
+        .ok_or("The host sent a broken drawing")?;
+    Ok((pdf, &welcome[4 + length..]))
+}
+
+/// A PDF and a session's bytes, as a welcome carries them.
+pub(crate) fn welcome_bytes(pdf: &[u8], session: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = u32::try_from(pdf.len())
+        .map_err(|_| "the PDF is too large")?
+        .to_be_bytes()
+        .to_vec();
+    out.extend_from_slice(pdf);
+    out.extend_from_slice(session);
+    Ok(out)
+}
+
+/// A TLS connection to the host at one of `addresses`, whose certificate
+/// must have `fingerprint`.
+pub(crate) fn connect(
+    addresses: &[String],
+    port: u16,
+    fingerprint: [u8; 32],
+) -> Result<(StreamOwned<ClientConnection, TcpStream>, SocketAddr), String> {
+    let config = ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(Pinned {
+            fingerprint,
+            provider: provider(),
+        }))
+        .with_no_client_auth();
+    let (stream, address) = knock(addresses, port)?;
+    stream.set_nodelay(true).ok();
+    stream
+        .set_read_timeout(Some(GREETING))
+        .map_err(|e| e.to_string())?;
+    let server = ServerName::try_from(NAME).map_err(|e| e.to_string())?;
+    let connection = ClientConnection::new(Arc::new(config), server).map_err(|e| e.to_string())?;
+    Ok((StreamOwned::new(connection, stream), address))
+}
+
+/// Keeps `link` in step through `tls` until either side leaves; then, if
+/// no other connection is open and the session did not move to another
+/// host than `via`, the session has ended here.
+pub(crate) fn stay(
+    tls: StreamOwned<ClientConnection, TcpStream>,
+    frames: Frames,
+    link: Link,
+    via: String,
+) {
+    link.live.fetch_add(1, Ordering::SeqCst);
+    thread::spawn(move || {
+        let never = AtomicBool::new(false);
+        let _ = keep_in_step(tls, frames, &link, &never);
+        let left = link.live.fetch_sub(1, Ordering::SeqCst) - 1;
+        let moved = link.shared.lock().ok().and_then(|s| s.moved_to());
+        if left == 0 && moved.is_none_or(|to| to == via) {
+            link.stop();
+        }
+    });
 }
 
 /// A session joined from this computer.
@@ -355,61 +476,71 @@ impl Guest {
     /// A message for the user when the invitation is wrong, the host
     /// cannot be reached, or the host is not who the invitation says.
     pub fn join(invite: &str, name: &str) -> Result<Self, String> {
-        let invite: Invite = invite.parse()?;
-        let config = ClientConfig::builder_with_provider(provider())
-            .with_safe_default_protocol_versions()
-            .map_err(|e| e.to_string())?
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(Pinned {
-                fingerprint: invite.fingerprint,
-                provider: provider(),
-            }))
-            .with_no_client_auth();
-        let (stream, address) = knock(&invite)?;
-        stream.set_nodelay(true).ok();
-        stream
-            .set_read_timeout(Some(GREETING))
-            .map_err(|e| e.to_string())?;
-        let server = ServerName::try_from(NAME).map_err(|e| e.to_string())?;
-        let connection =
-            ClientConnection::new(Arc::new(config), server).map_err(|e| e.to_string())?;
-        let mut tls = StreamOwned::new(connection, stream);
-        let mut hello = invite.secret.to_vec();
-        hello.extend_from_slice(name.as_bytes());
-        write_frame(&mut tls, HELLO, &hello)
-            .map_err(|e| format!("The host did not answer as expected: {e}"))?;
-        let mut frames = Frames::default();
-        let (kind, welcome) = frames.read_blocking(&mut tls).map_err(|e| {
-            format!("The host at {address} closed the connection while letting you in: {e}")
-        })?;
-        if kind != WELCOME || welcome.len() < 4 {
-            return Err("The host did not let you in".into());
-        }
-        let length = u32::from_be_bytes([welcome[0], welcome[1], welcome[2], welcome[3]]);
-        let length = usize::try_from(length).map_err(|e| e.to_string())?;
-        let pdf = welcome
-            .get(4..4 + length)
-            .ok_or("The host sent a broken drawing")?
-            .to_vec();
-        let shared = Shared::join(&welcome[4 + length..], name)?;
+        let (tls, frames, welcome) = greet(invite, name)?;
+        let (pdf, session) = welcome_parts(&welcome)?;
+        let shared = Shared::join(session, name)?;
         let link = Link::new(shared);
-        let running = link.clone();
-        thread::spawn(move || {
-            let _ = keep_in_step(tls, frames, &running);
-            running.stop();
-        });
+        let pdf = pdf.to_vec();
+        stay(tls, frames, link.clone(), invite.trim().to_owned());
         Ok(Self { link, pdf })
     }
+
+    /// Connects `link`, already in the session, to the host `invite`
+    /// names, as when the session moved to another host. The copy it has
+    /// is kept: the host and it bring each other up to date.
+    ///
+    /// # Errors
+    /// As [`Guest::join`].
+    pub fn rejoin(invite: &str, link: &Link, name: &str) -> Result<(), String> {
+        let (tls, frames, _) = greet(invite, name)?;
+        stay(tls, frames, link.clone(), invite.trim().to_owned());
+        Ok(())
+    }
+}
+
+/// A connection to a host, how far it was read, and the host's welcome.
+type Greeted = (StreamOwned<ClientConnection, TcpStream>, Frames, Vec<u8>);
+
+/// Says hello to the host `invite` names, as `name`; the connection, and
+/// the welcome.
+fn greet(invite: &str, name: &str) -> Result<Greeted, String> {
+    let invite: Invite = invite.parse()?;
+    let (mut tls, address) = connect(&invite.addresses, invite.port, invite.fingerprint)?;
+    let mut hello = invite.secret.to_vec();
+    hello.extend_from_slice(name.as_bytes());
+    write_frame(&mut tls, HELLO, &hello)
+        .map_err(|e| format!("The host did not answer as expected: {e}"))?;
+    let mut frames = Frames::default();
+    let (kind, welcome) = frames.read_blocking(&mut tls).map_err(|e| {
+        format!("The host at {address} closed the connection while letting you in: {e}")
+    })?;
+    if kind != WELCOME {
+        return Err("The host did not let you in".into());
+    }
+    Ok((tls, frames, welcome))
 }
 
 /// Tries every address of the invitation at once, and keeps the first
 /// that answers.
-fn knock(invite: &Invite) -> Result<(TcpStream, SocketAddr), String> {
+fn knock(addresses: &[String], port: u16) -> Result<(TcpStream, SocketAddr), String> {
     let (answered, answers) = mpsc::channel();
-    for &ip in &invite.addresses {
-        let address = SocketAddr::new(IpAddr::V4(ip), invite.port);
+    for name in addresses {
+        let name = name.clone();
         let answered = answered.clone();
         thread::spawn(move || {
+            // A name is looked up here, away from the others.
+            let found = (name.as_str(), port)
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut all| all.find(SocketAddr::is_ipv4));
+            let Some(address) = found else {
+                let unknown = std::io::Error::new(ErrorKind::NotFound, "unknown name");
+                let _ = answered.send((
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
+                    Err(unknown),
+                ));
+                return;
+            };
             let _ = answered.send((address, TcpStream::connect_timeout(&address, KNOCK)));
         });
     }
@@ -430,7 +561,7 @@ fn knock(invite: &Invite) -> Result<(TcpStream, SocketAddr), String> {
 /// Accepts the host's certificate only when it is the one the invitation
 /// names.
 #[derive(Debug)]
-struct Pinned {
+pub(crate) struct Pinned {
     fingerprint: [u8; 32],
     provider: Arc<CryptoProvider>,
 }
@@ -490,13 +621,13 @@ impl ServerCertVerifier for Pinned {
 
 /// Frames read so far from a connection, and the bytes of the next one.
 #[derive(Default)]
-struct Frames {
+pub(crate) struct Frames {
     buffer: Vec<u8>,
 }
 
 impl Frames {
     /// The next whole frame in the buffer, if one has arrived.
-    fn next(&mut self) -> Result<Option<(u8, Vec<u8>)>, String> {
+    pub(crate) fn next(&mut self) -> Result<Option<(u8, Vec<u8>)>, String> {
         if self.buffer.len() < 5 {
             return Ok(None);
         }
@@ -521,7 +652,7 @@ impl Frames {
 
     /// Reads what has arrived, waiting at most the socket's timeout; false
     /// when the connection closed.
-    fn fill(&mut self, stream: &mut impl Read) -> Result<bool, String> {
+    pub(crate) fn fill(&mut self, stream: &mut impl Read) -> Result<bool, String> {
         let mut chunk = [0; 16 * 1024];
         match stream.read(&mut chunk) {
             Ok(0) => Ok(false),
@@ -535,7 +666,10 @@ impl Frames {
     }
 
     /// Waits for the next whole frame, as long as data keeps arriving.
-    fn read_blocking(&mut self, stream: &mut impl Read) -> Result<(u8, Vec<u8>), String> {
+    pub(crate) fn read_blocking(
+        &mut self,
+        stream: &mut impl Read,
+    ) -> Result<(u8, Vec<u8>), String> {
         let mut chunk = vec![0; 64 * 1024];
         loop {
             if let Some(frame) = self.next()? {
@@ -554,7 +688,7 @@ impl Frames {
     }
 }
 
-fn write_frame(stream: &mut impl Write, kind: u8, body: &[u8]) -> Result<(), String> {
+pub(crate) fn write_frame(stream: &mut impl Write, kind: u8, body: &[u8]) -> Result<(), String> {
     let length = u32::try_from(body.len()).map_err(|e| e.to_string())?;
     let mut frame = Vec::with_capacity(body.len() + 5);
     frame.push(kind);
@@ -566,10 +700,11 @@ fn write_frame(stream: &mut impl Write, kind: u8, body: &[u8]) -> Result<(), Str
 
 /// Sends what this side has to say and takes in what the other says,
 /// until either side leaves.
-fn keep_in_step<C, S>(
+pub(crate) fn keep_in_step<C, S>(
     mut tls: StreamOwned<C, TcpStream>,
     mut frames: Frames,
     link: &Link,
+    until: &AtomicBool,
 ) -> Result<(), String>
 where
     C: std::ops::DerefMut<Target = rustls::ConnectionCommon<S>>,
@@ -579,7 +714,7 @@ where
         .set_read_timeout(Some(TICK))
         .map_err(|e| e.to_string())?;
     let mut state = State::new();
-    while !link.stopped() {
+    while !link.stopped() && !until.load(Ordering::SeqCst) {
         let outgoing = link
             .shared
             .lock()
@@ -618,7 +753,7 @@ mod tests {
     #[test]
     fn an_invitation_is_written_and_read_back() {
         let invite = Invite {
-            addresses: vec![Ipv4Addr::new(192, 168, 1, 20), Ipv4Addr::new(10, 0, 0, 5)],
+            addresses: vec!["192.168.1.20".into(), "10.0.0.5".into()],
             port: 52000,
             secret: [7; 16],
             fingerprint: [0xab; 32],
@@ -631,6 +766,17 @@ mod tests {
         assert_eq!(one.parse::<Invite>().unwrap().addresses.len(), 1);
         assert!("hello".parse::<Invite>().is_err());
         assert!("ocr1:1.2.3.4:1:00:00".parse::<Invite>().is_err());
+        // A session server is named, not numbered.
+        let named = text.replacen("192.168.1.20,10.0.0.5", "review.example.org", 1);
+        assert_eq!(
+            named.parse::<Invite>().unwrap().addresses,
+            ["review.example.org"]
+        );
+        assert!(
+            text.replacen("192.168.1.20", "bad name!", 1)
+                .parse::<Invite>()
+                .is_err()
+        );
         assert!(
             text.replacen(":52000:", ":0:", 1)
                 .parse::<Invite>()
