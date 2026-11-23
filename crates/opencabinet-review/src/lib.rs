@@ -18,6 +18,7 @@
 
 mod markup;
 mod scale;
+pub mod sets;
 pub mod stamps;
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -41,8 +41,8 @@ fn main() {
     std::fs::create_dir_all(&dir).unwrap();
     let pdf = dir.join("A-201.pdf");
     std::fs::write(&pdf, opencabinet_pdf::sample::bookmarked()).unwrap();
-    // TABS=1 opens a second drawing, in a tab of its own, and shows the
-    // first.
+    // TABS=1 opens a second drawing, in a tab of its own, puts both in a
+    // sheet set and shows the first.
     let mut paths = vec![pdf.clone()];
     if std::env::var("TABS").is_ok() {
         let other = dir.join("A-301 Kitchen elevations.pdf");
@@ -56,7 +56,10 @@ fn main() {
     // The person's own tools, settings and recent files stay untouched.
     let review = opencabinet_review_app::create_apart(&paths).unwrap();
     if paths.len() > 1 {
+        // Both drawings in a sheet set, and the first one shown.
+        review.invoke_add_to_set();
         review.invoke_choose_tab(0);
+        review.invoke_add_to_set();
     }
     review.show().unwrap();
     window.set_size(PhysicalSize::new(width, height));
@@ -107,7 +110,7 @@ fn main() {
         review.invoke_page_clicked(1, true, false);
     }
     // The left panel to show: 0 pages, 1 bookmarks, 2 find, 3 measure, 4
-    // session.
+    // session, 5 sheet set.
     let panel = std::env::var("PANEL")
         .ok()
         .and_then(|p| p.parse().ok())

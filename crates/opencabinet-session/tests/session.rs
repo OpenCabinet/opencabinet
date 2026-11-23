@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use opencabinet_pdf::{Point, sample};
 use opencabinet_review::{Kind, Markup};
-use opencabinet_session::{Guest, Host, Invite, Link, Shared};
+use opencabinet_session::{Guest, Host, Invite, Link, Participant, Shared};
 
 fn cloud(id: &str, author: &str) -> Markup {
     Markup {
@@ -57,7 +57,7 @@ fn host() -> Host {
         Shared::start("Andrés"),
         pdf,
         loopback,
-        vec![Ipv4Addr::LOCALHOST],
+        &[Ipv4Addr::LOCALHOST],
     )
     .unwrap()
 }
@@ -128,7 +128,7 @@ fn a_large_drawing_reaches_who_joins() {
         Shared::start("Andrés"),
         Arc::clone(&pdf),
         loopback,
-        vec![Ipv4Addr::LOCALHOST],
+        &[Ipv4Addr::LOCALHOST],
     )
     .unwrap();
     let guest = Guest::join(&host.invite.to_string(), "María").unwrap();
@@ -156,4 +156,114 @@ fn other_programs_markups_come_back_unchanged() {
     }
     review.take_shared(shared.markups(), shared.scales());
     assert!(review.markups().iter().all(|m| !review.draws(m)));
+}
+
+/// Calls `follow` on everyone until `done` holds.
+fn follow_until(people: &mut [&mut Participant], done: impl Fn(&[&mut Participant]) -> bool) {
+    let start = Instant::now();
+    while !done(people) {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "the session did not move"
+        );
+        for p in people.iter_mut() {
+            p.follow();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn the_host_hands_the_session_over_and_nothing_is_lost() {
+    let pdf = sample::sheets(1, 2592.0, 1728.0, 2);
+    let mut andres =
+        Participant::host_here(Shared::start("Andrés"), pdf.clone(), "Andrés").unwrap();
+    publish(andres.link(), &[cloud("a", "Andrés")]);
+    let invite = andres.invite().unwrap();
+    let (mut maria, got) = Participant::join_here(&invite, "María").unwrap();
+    assert_eq!(got, pdf);
+    let (mut juan, _) = Participant::join_here(&invite, "Juan").unwrap();
+    converge(&[andres.link(), maria.link(), juan.link()], 1);
+    let start = Instant::now();
+    while andres.others().len() < 2 {
+        assert!(start.elapsed() < Duration::from_secs(10), "nobody arrived");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(andres.others(), ["Juan", "María"]);
+    assert!(maria.hand_over("Juan").is_err(), "only the host hands over");
+    assert!(andres.hand_over("Nobody").is_err());
+
+    // María takes the session; Juan and Andrés move to her computer.
+    andres.hand_over("María").unwrap();
+    follow_until(&mut [&mut andres, &mut maria, &mut juan], |p| {
+        p[1].hosting()
+            && !p[0].hosting()
+            && p[2].link().connections() >= 1
+            && p[0].link().connections() >= 1
+    });
+    let moved = maria.invite().unwrap();
+    assert_ne!(moved, invite);
+    assert_eq!(juan.link().shared.lock().unwrap().moved_to(), Some(moved));
+
+    // After the old door closes, everyone still marks up together.
+    std::thread::sleep(Duration::from_secs(6));
+    andres.follow();
+    juan.follow();
+    let mut his = juan.link().shared.lock().unwrap().markups();
+    his.push(cloud("j", "Juan"));
+    publish(juan.link(), &his);
+    converge(&[andres.link(), maria.link(), juan.link()], 2);
+    assert!(!juan.link().stopped());
+
+    // María leaves: the session goes to someone who is left.
+    maria.leave();
+    follow_until(&mut [&mut andres, &mut juan], |p| {
+        p[0].hosting() || p[1].hosting()
+    });
+    andres.leave();
+    juan.leave();
+}
+
+#[test]
+fn a_session_on_a_server_is_joined_like_any_other() {
+    use opencabinet_session::server::{Identity, Server};
+    let server = Server::start(
+        (Ipv4Addr::LOCALHOST, 0).into(),
+        "127.0.0.1",
+        &Identity::new().unwrap(),
+    )
+    .unwrap();
+    let pdf = sample::sheets(1, 2592.0, 1728.0, 2);
+    let mut shared = Shared::start("Andrés");
+    shared.publish(&[cloud("a", "Andrés")], &BTreeMap::new());
+    let andres =
+        Participant::start_on_server(&server.address.to_string(), shared, pdf.clone(), "Andrés")
+            .unwrap();
+    assert!(andres.on_server());
+    assert!(!andres.hosting());
+    let invite = andres.invite().unwrap();
+    assert!(invite.contains(":127.0.0.1:"));
+    assert_eq!(server.rooms(), 1);
+
+    let (maria, got) = Participant::join(&invite, "María").unwrap();
+    assert_eq!(got, pdf);
+    let mut theirs = maria.link().shared.lock().unwrap().markups();
+    theirs.push(cloud("b", "María"));
+    publish(maria.link(), &theirs);
+    converge(&[andres.link(), maria.link()], 2);
+    // The server passes changes on; it is not one of the people.
+    assert_eq!(
+        maria.link().shared.lock().unwrap().people(),
+        ["Andrés", "María"]
+    );
+
+    // A wrong server fingerprint is refused.
+    let mut wrong = server.address.clone();
+    wrong.fingerprint[0] ^= 1;
+    assert!(
+        Participant::start_on_server(&wrong.to_string(), Shared::start("Eve"), pdf, "Eve").is_err()
+    );
+    andres.leave();
+    maria.leave();
+    server.stop();
 }

@@ -26,6 +26,7 @@ use slint::{
 
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
 use crate::viewer::{COLORS, Keys, TOOLS, Tool, Viewer, WIDTHS};
+use opencabinet_review::sets::{self, SheetSet};
 use opencabinet_review::{Kind, Status, stamps};
 
 /// The code Slint generates from `ui/review.slint`, which follows Slint's
@@ -35,7 +36,9 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::{BookmarkInfo, Label, ReplyInfo, ReviewWindow, SavedInfo, Shape, TabInfo, ToolInfo};
+pub use ui::{
+    BookmarkInfo, Label, ReplyInfo, ReviewWindow, SavedInfo, Shape, SheetInfo, TabInfo, ToolInfo,
+};
 
 /// The most pages drawn as thumbnails.
 const MAX_THUMBNAILS: usize = 500;
@@ -107,6 +110,9 @@ struct App {
     /// The files opened last, newest first, and where they are kept.
     recent: RefCell<Vec<PathBuf>>,
     chest: Option<PathBuf>,
+    /// The sheet set, and where it is kept once saved or opened.
+    set: RefCell<SheetSet>,
+    set_path: RefCell<Option<PathBuf>>,
     dialogs: Rc<dyn Dialogs>,
     window: slint::Weak<ReviewWindow>,
     /// What the page image shows, so it is drawn again only when that
@@ -146,6 +152,8 @@ fn build(
         active: Cell::new(0),
         recent: RefCell::new(recent),
         chest: saved.clone(),
+        set: RefCell::new(SheetSet::default()),
+        set_path: RefCell::new(None),
         dialogs,
         window: window.as_weak(),
         drawn: RefCell::new(None),
@@ -267,6 +275,16 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
             a.status(&message);
         }
     });
+    let a = Rc::clone(app);
+    window.on_start_on_server(move |server| {
+        let result = a.viewer.borrow_mut().start_session_on_server(&server);
+        a.refresh();
+        if let Err(message) = result {
+            a.status(&message);
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_hand_over(move |name| a.try_change(|v| v.hand_over(&name)));
     window.on_export_flattened(on(App::export_flattened));
     window.on_export_summary(on(App::export_summary));
     let a = Rc::clone(app);
@@ -304,6 +322,58 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         app.switch_to((app.active.get() + 1) % count.max(1));
     }));
     window.on_close_this_tab(on(|app| app.close_tab(app.active.get())));
+    let a = Rc::clone(app);
+    window.on_open_sheet(move |i| {
+        let path = usize::try_from(i)
+            .ok()
+            .and_then(|i| a.set.borrow().sheets.get(i).map(|s| s.path.clone()));
+        if let Some(path) = path {
+            a.open(&path);
+        }
+    });
+    window.on_add_to_set(on(|app| {
+        let path = app.viewer.borrow().path().map(Path::to_owned);
+        if let Some(path) = path {
+            if app.set.borrow().sheets.is_empty() && app.set.borrow().name.is_empty() {
+                app.set.borrow_mut().name = "Sheet set".into();
+            }
+            let added = app.set.borrow_mut().add(&path);
+            app.refresh();
+            app.status(&if added {
+                format!(
+                    "Added {} to the set. Save the set to keep it.",
+                    sets::label_for(&path)
+                )
+            } else {
+                "The set has this drawing already.".to_owned()
+            });
+        } else {
+            app.status("Save the drawing first, so the set can find it.");
+        }
+    }));
+    let a = Rc::clone(app);
+    window.on_remove_from_set(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.set.borrow_mut().remove(i);
+            a.refresh();
+        }
+    });
+    window.on_save_set(on(|app| app.save_set(false)));
+    window.on_save_tabs_as_set(on(|app| {
+        let mut set = SheetSet {
+            name: app.set.borrow().name.clone(),
+            sheets: Vec::new(),
+        };
+        let paths: Vec<PathBuf> = app.tab_paths();
+        for path in &paths {
+            set.add(path);
+        }
+        if set.name.is_empty() {
+            set.name = "Sheet set".into();
+        }
+        *app.set.borrow_mut() = set;
+        app.save_set(true);
+    }));
     let a = Rc::clone(app);
     window.on_open_recent(move |i| {
         let path = usize::try_from(i)
@@ -626,14 +696,10 @@ impl App {
         };
         let viewer = self.viewer.borrow();
         window.set_in_session(viewer.in_session());
-        window.set_hosting(viewer.invite().is_some());
-        window.set_invite(
-            viewer
-                .invite()
-                .map(ToString::to_string)
-                .unwrap_or_default()
-                .into(),
-        );
+        window.set_hosting(viewer.hosting());
+        window.set_invite(viewer.invite().unwrap_or_default().into());
+        let others: Vec<SharedString> = viewer.others().into_iter().map(Into::into).collect();
+        window.set_others(strings(&others));
         window.set_session_state(viewer.session_state().into());
         let items = |lines: Vec<String>| {
             let items: Vec<StandardListViewItem> = lines
@@ -658,6 +724,13 @@ impl App {
     /// Opens the PDF at `path`: in its tab if it is open already, in the
     /// tab shown if that has nothing open, else in a new tab.
     fn open(&self, path: &Path) {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("ocset"))
+        {
+            self.open_set(path);
+            return;
+        }
         if let Some(at) = self.tab_of(path) {
             self.switch_to(at);
             return;
@@ -685,6 +758,83 @@ impl App {
         if let Err(message) = result {
             self.status(&message);
         }
+    }
+
+    /// Opens the sheet set at `path`: each drawing in a tab, and the set
+    /// in its panel.
+    fn open_set(&self, path: &Path) {
+        let set = match sets::read(path) {
+            Ok(set) => set,
+            Err(message) => {
+                self.status(&message);
+                return;
+            }
+        };
+        let missing = set.sheets.iter().filter(|s| !s.path.is_file()).count();
+        let to_open: Vec<PathBuf> = set
+            .sheets
+            .iter()
+            .filter(|s| s.path.is_file())
+            .map(|s| s.path.clone())
+            .collect();
+        let name = set.name.clone();
+        let count = set.sheets.len();
+        *self.set.borrow_mut() = set;
+        *self.set_path.borrow_mut() = Some(path.to_owned());
+        for sheet in &to_open {
+            self.open(sheet);
+        }
+        self.remember(path);
+        if let Some(window) = self.window.upgrade() {
+            window.set_panel(5);
+        }
+        self.refresh();
+        self.status(&if missing == 0 {
+            format!("Opened the sheet set {name}: {count} drawings.")
+        } else {
+            format!("Opened the sheet set {name}: {count} drawings, {missing} not found where the set says.")
+        });
+    }
+
+    /// Writes the sheet set where it is kept, or where the user says when
+    /// `ask` or it was never kept.
+    fn save_set(&self, ask: bool) {
+        let known = self.set_path.borrow().clone();
+        let path = if let Some(path) = known.filter(|_| !ask) {
+            path
+        } else {
+            let name = self.set.borrow().name.clone();
+            let Some(path) = self
+                .dialogs
+                .save_path(&format!("{name}.ocset"), FileKind::Set)
+            else {
+                return;
+            };
+            path
+        };
+        if self.set_path.borrow().as_ref() != Some(&path) {
+            self.set.borrow_mut().name = sets::label_for(&path);
+        }
+        let result = sets::write(&path, &self.set.borrow());
+        match result {
+            Ok(()) => {
+                *self.set_path.borrow_mut() = Some(path.clone());
+                self.remember(&path);
+                self.refresh();
+                self.status(&format!("Saved the sheet set {}.", sets::label_for(&path)));
+            }
+            Err(message) => self.status(&message),
+        }
+    }
+
+    /// Where each tab's drawing is, in tab order.
+    fn tab_paths(&self) -> Vec<PathBuf> {
+        let viewer = self.viewer.borrow();
+        self.tabs
+            .borrow()
+            .iter()
+            .filter_map(|t| t.as_ref().unwrap_or(&viewer).path().map(Path::to_owned))
+            .collect()
     }
 
     /// The tab where `path` is open, if any.
@@ -957,8 +1107,52 @@ impl App {
         }
     }
 
+    /// Shows the sheet set.
+    fn refresh_set(&self, window: &ReviewWindow, viewer: &Viewer) {
+        let open = {
+            let tabs = self.tabs.borrow();
+            let mut open: Vec<PathBuf> = tabs
+                .iter()
+                .flatten()
+                .filter_map(|t| t.path().map(Path::to_owned))
+                .collect();
+            open.extend(viewer.path().map(Path::to_owned));
+            open
+        };
+        let set = self.set.borrow();
+        let sheets: Vec<SheetInfo> = set
+            .sheets
+            .iter()
+            .map(|s| {
+                let shown = viewer.path() == Some(s.path.as_path());
+                let state = if shown {
+                    "Shown"
+                } else if open.contains(&s.path) {
+                    "Open"
+                } else if s.path.is_file() {
+                    "Not open"
+                } else {
+                    "Missing"
+                };
+                SheetInfo {
+                    label: s.label.as_str().into(),
+                    file: s
+                        .path
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+                        .into(),
+                    state: state.into(),
+                    shown,
+                }
+            })
+            .collect();
+        window.set_sheets(ModelRc::new(VecModel::from(sheets)));
+        window.set_set_name(set.name.as_str().into());
+    }
+
     /// Shows the tabs and Open recent.
     fn refresh_tabs(&self, window: &ReviewWindow, viewer: &Viewer) {
+        self.refresh_set(window, viewer);
         let tabs: Vec<TabInfo> = self
             .tabs
             .borrow()

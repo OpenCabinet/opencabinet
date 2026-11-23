@@ -112,6 +112,21 @@ follow [Semantic Versioning](https://semver.org/).
     to the next tab and Ctrl+W closes one, asking first if it has
     changes not saved. The tool, color and line in use follow from tab
     to tab. File > Open recent lists the last ten files.
+  - **Sheet sets:** a project's drawings kept together in a small
+    `.ocset` file beside them. Opening a set opens each drawing in a tab
+    and lists them in the Set panel, saying which are open, shown or
+    missing; drawings are added and taken out there, and File > Save
+    tabs as sheet set makes one from the open tabs.
+  - **Handing a session over:** the host picks who hosts next in the
+    Session panel. That person's computer starts hosting the copy it
+    has, everyone else moves to it with theirs, and nothing is lost on
+    the way. A host who leaves hands the session to someone still in
+    it.
+  - **Session server:** `opencabinet-review-server` (AGPL-3.0-or-later)
+    holds sessions for people on different networks. It prints a server
+    address (`ocs1:…`); Review starts a session there from the Session
+    panel, and the invitation it gets works like any other. The server
+    keeps its certificate on disk, so its address stays the same.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

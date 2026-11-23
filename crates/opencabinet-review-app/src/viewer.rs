@@ -23,7 +23,7 @@ use opencabinet_review::{
     presets, stamps, text_width,
 };
 use opencabinet_session::firewall::{self, Firewall};
-use opencabinet_session::{Guest, Host, Invite, Link, Shared};
+use opencabinet_session::{Participant, Shared};
 
 use crate::chest::{self, SavedTool, Settings};
 
@@ -1988,18 +1988,68 @@ impl Viewer {
         }
         let mut shared = Shared::start(&self.name());
         shared.publish(review.markups(), review.scales());
-        let pdf = Arc::new(review.document().bytes().to_vec());
-        let host = Host::start(shared, pdf)?;
+        let pdf = review.document().bytes().to_vec();
+        let member = Participant::host(shared, pdf, &self.name())?;
         self.status = "Hosting a session: send the invitation to who joins. If Windows asks, allow private networks.".into();
         let firewall = Arc::new(std::sync::Mutex::new((None, String::new())));
         look_at_firewall(&firewall, None);
         self.session = Some(Session {
-            link: host.link,
+            member,
             firewall,
-            invite: Some(host.invite),
             seen: 0,
         });
         Ok(())
+    }
+
+    /// Starts a review session on the session server at `server`
+    /// (`ocs1:…`), for people on other networks.
+    ///
+    /// # Errors
+    /// A message for the user when the server cannot be reached or
+    /// refuses.
+    pub fn start_session_on_server(&mut self, server: &str) -> Result<(), String> {
+        let review = self.review.as_ref().ok_or("Open a PDF first")?;
+        if self.session.is_some() {
+            return Err("You are in a session already".into());
+        }
+        let mut shared = Shared::start(&self.name());
+        shared.publish(review.markups(), review.scales());
+        let pdf = review.document().bytes().to_vec();
+        let member = Participant::start_on_server(server, shared, pdf, &self.name())?;
+        self.status = "The session is on the server: send the invitation to who joins.".into();
+        self.session = Some(Session {
+            member,
+            firewall: Arc::default(),
+            seen: 0,
+        });
+        Ok(())
+    }
+
+    /// Hands the session over to `name`, who will host it from their
+    /// computer.
+    ///
+    /// # Errors
+    /// When this window does not host the session or nobody is called
+    /// `name`.
+    pub fn hand_over(&mut self, name: &str) -> Result<(), String> {
+        let session = self.session.as_mut().ok_or("You are not in a session")?;
+        session.member.hand_over(name)?;
+        self.status = format!("Handing the session over to {name}…");
+        Ok(())
+    }
+
+    /// The others in the session, by name.
+    #[must_use]
+    pub fn others(&self) -> Vec<String> {
+        self.session
+            .as_ref()
+            .map_or_else(Vec::new, |s| s.member.others())
+    }
+
+    /// Whether this window hosts the session.
+    #[must_use]
+    pub fn hosting(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.member.hosting())
     }
 
     /// Joins the review session `invite` names, with its drawing.
@@ -2008,16 +2058,14 @@ impl Viewer {
     /// A message for the user when the invitation is wrong or the host
     /// cannot be reached.
     pub fn join_session(&mut self, invite: &str) -> Result<(), String> {
-        let guest = Guest::join(invite, &self.name())?;
-        let Guest { link, pdf } = guest;
+        let (member, pdf) = Participant::join(invite, &self.name())?;
         if let Err(message) = self.open_bytes(pdf, None) {
-            link.stop();
+            member.leave();
             return Err(message);
         }
         self.session = Some(Session {
-            link,
+            member,
             firewall: Arc::default(),
-            invite: None,
             seen: 0,
         });
         self.pull();
@@ -2028,8 +2076,13 @@ impl Viewer {
     /// Leaves the review session; the markups stay as they are here.
     pub fn leave_session(&mut self) {
         if let Some(session) = self.session.take() {
-            session.link.stop();
-            self.status = "Left the session.".into();
+            let hosting = session.member.hosting() && !session.member.others().is_empty();
+            session.member.leave();
+            self.status = if hosting {
+                "Left the session; someone else hosts it now.".into()
+            } else {
+                "Left the session.".into()
+            };
         }
     }
 
@@ -2046,7 +2099,7 @@ impl Viewer {
         let (Some(session), Some(review)) = (self.session.as_ref(), self.review.as_ref()) else {
             return;
         };
-        if let Ok(mut shared) = session.link.shared.lock() {
+        if let Ok(mut shared) = session.member.link().shared.lock() {
             shared.publish(review.markups(), review.scales());
         }
     }
@@ -2057,12 +2110,18 @@ impl Viewer {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
-        let changed = session.link.changed.load(Ordering::SeqCst);
+        if let Some(news) = session.member.follow() {
+            self.status = news;
+        }
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let changed = session.member.link().changed.load(Ordering::SeqCst);
         if changed == session.seen && session.seen != 0 {
             return false;
         }
         session.seen = changed.max(1);
-        let Ok(shared) = session.link.shared.lock() else {
+        let Ok(shared) = session.member.link().shared.lock() else {
             return false;
         };
         let (markups, scales) = (shared.markups(), shared.scales());
@@ -2085,8 +2144,8 @@ impl Viewer {
 
     /// The invitation to send, when hosting.
     #[must_use]
-    pub fn invite(&self) -> Option<&Invite> {
-        self.session.as_ref()?.invite.as_ref()
+    pub fn invite(&self) -> Option<String> {
+        self.session.as_ref()?.member.invite()
     }
 
     /// The session panel's first line.
@@ -2097,13 +2156,20 @@ impl Viewer {
                 "Not in a session. Start one with the PDF open, or paste an invitation to join one."
                     .into()
             }
-            Some(session) if session.link.stopped() => {
+            Some(session) if session.member.link().stopped() => {
                 "The session ended: the host left or the connection closed.".into()
             }
             Some(session) => {
-                let people = session.link.shared.lock().map_or(0, |s| s.people().len());
-                let role = if session.invite.is_some() {
+                let people = session
+                    .member
+                    .link()
+                    .shared
+                    .lock()
+                    .map_or(0, |s| s.people().len());
+                let role = if session.member.hosting() {
                     "Hosting"
+                } else if session.member.on_server() {
+                    "On a server"
                 } else {
                     "In a session"
                 };
@@ -2116,7 +2182,7 @@ impl Viewer {
     /// nothing is known to.
     #[must_use]
     pub fn firewall_advice(&self) -> String {
-        let Some(session) = self.session.as_ref().filter(|s| s.invite.is_some()) else {
+        let Some(session) = self.session.as_ref().filter(|s| s.member.hosting()) else {
             return String::new();
         };
         let Ok(state) = session.firewall.lock() else {
@@ -2136,7 +2202,7 @@ impl Viewer {
     pub fn firewall_blocks(&self) -> bool {
         self.session
             .as_ref()
-            .filter(|s| s.invite.is_some())
+            .filter(|s| s.member.hosting())
             .and_then(|s| s.firewall.lock().ok().and_then(|f| f.0))
             .is_some_and(|f| f.allowed == Some(false))
     }
@@ -2155,7 +2221,7 @@ impl Viewer {
     pub fn people(&self) -> Vec<String> {
         self.session
             .as_ref()
-            .and_then(|s| s.link.shared.lock().ok().map(|s| s.people()))
+            .and_then(|s| s.member.link().shared.lock().ok().map(|s| s.people()))
             .unwrap_or_default()
     }
 
@@ -2166,7 +2232,7 @@ impl Viewer {
         let Some(session) = self.session.as_ref() else {
             return Vec::new();
         };
-        let Ok(mut shared) = session.link.shared.lock() else {
+        let Ok(mut shared) = session.member.link().shared.lock() else {
             return Vec::new();
         };
         shared
@@ -2433,7 +2499,8 @@ impl Viewer {
             return false;
         };
         session
-            .link
+            .member
+            .link()
             .shared
             .lock()
             .is_ok_and(|mut shared| shared.say(text))
@@ -2445,7 +2512,7 @@ impl Viewer {
         let Some(session) = self.session.as_ref() else {
             return Vec::new();
         };
-        let Ok(shared) = session.link.shared.lock() else {
+        let Ok(shared) = session.member.link().shared.lock() else {
             return Vec::new();
         };
         shared
@@ -2759,12 +2826,11 @@ impl Viewer {
 /// A review session this window is in.
 #[derive(Debug)]
 struct Session {
-    link: Link,
+    /// This window's place in the session.
+    member: Participant,
     /// What the firewall lets in, when hosting, once looked at; and the
     /// answer to allowing Review through it.
     firewall: Arc<std::sync::Mutex<(Option<Firewall>, String)>>,
-    /// The invitation, when this window hosts.
-    invite: Option<Invite>,
     /// How many changes from others were taken in.
     seen: u64,
 }
@@ -3604,8 +3670,9 @@ mod tests {
         assert!(host.session_state().starts_with("Hosting"));
         // On the network address, which this test does not use: a guest
         // joins on this computer's loopback address instead.
-        let mut invite = host.invite().unwrap().clone();
-        invite.addresses = vec![std::net::Ipv4Addr::LOCALHOST];
+        let mut invite: opencabinet_session::Invite = host.invite().unwrap().parse().unwrap();
+        invite.addresses = vec!["127.0.0.1".into()];
+        assert!(host.hosting());
 
         let mut guest = Viewer::default();
         guest.author = "María".into();
@@ -3627,6 +3694,12 @@ mod tests {
         assert_eq!(host.rows().len(), 2);
         assert_eq!(host.rows()[1][3], "María");
         assert_eq!(host.people(), ["Andrés", "María"]);
+        assert_eq!(host.others(), ["María"]);
+        assert!(!guest.hosting());
+        assert!(
+            guest.hand_over("Andrés").is_err(),
+            "only the host hands over"
+        );
         assert!(host.activity()[0].contains("María: added an arrow on page 1"));
 
         // A word in the chat.

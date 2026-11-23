@@ -30,7 +30,7 @@ impl Dialogs for Answers {
     fn save_path(&self, _suggested_name: &str, kind: FileKind) -> Option<PathBuf> {
         let path = self.save.borrow().clone()?;
         Some(match kind {
-            FileKind::Pdf => path,
+            FileKind::Pdf | FileKind::Set => path,
             FileKind::List => path.with_extension("csv"),
         })
     }
@@ -269,6 +269,40 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     window.invoke_close_this_tab();
     assert_eq!(window.get_tabs().row_count(), 1);
     assert!(!window.get_has_document());
+
+    // A sheet set of both drawings: saved, then opened again, each in a
+    // tab, with one drawing gone missing.
+    *answers.open.borrow_mut() = Some(drawing.clone());
+    window.invoke_open();
+    *answers.open.borrow_mut() = Some(other.clone());
+    window.invoke_open();
+    let set = dir.join("Kitchen.ocset");
+    *answers.save.borrow_mut() = Some(set.clone());
+    window.invoke_save_tabs_as_set();
+    assert!(set.exists());
+    assert_eq!(window.get_set_name(), "Kitchen");
+    let sheets = window.get_sheets();
+    assert_eq!(sheets.row_count(), 2);
+    assert_eq!(sheets.row_data(1).unwrap().state, "Shown");
+    assert_eq!(sheets.row_data(0).unwrap().state, "Open");
+    window.invoke_remove_from_set(1);
+    assert_eq!(window.get_sheets().row_count(), 1);
+    window.invoke_add_to_set();
+    assert_eq!(window.get_sheets().row_count(), 2);
+    window.invoke_save_set();
+    window.invoke_close_this_tab();
+    window.invoke_close_this_tab();
+    std::fs::rename(&other, dir.join("moved.pdf")).unwrap();
+    *answers.open.borrow_mut() = Some(set.clone());
+    window.invoke_open();
+    assert_eq!(window.get_panel(), 5);
+    assert_eq!(window.get_tabs().row_count(), 1);
+    let sheets = window.get_sheets();
+    assert_eq!(sheets.row_data(0).unwrap().label, "A-201");
+    assert_eq!(sheets.row_data(1).unwrap().state, "Missing");
+    assert!(window.get_status().contains("1 not found"));
+    window.invoke_open_sheet(0);
+    assert_eq!(window.get_tabs().row_count(), 1);
 
     std::fs::remove_dir_all(&dir).ok();
 }

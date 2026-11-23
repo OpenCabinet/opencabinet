@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "opencabinet-review-server"
+description = "OpenCabinet Review's session server: holds live review sessions for people on different networks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Server services are AGPL (RFC-0004 §7): who runs it for others shares
+# their changes with them.
+license = "AGPL-3.0-or-later"
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "opencabinet-review-server"
+path = "src/main.rs"
+
+[dependencies]
+opencabinet-session = { workspace = true }
+
+[lints]
+workspace = true
