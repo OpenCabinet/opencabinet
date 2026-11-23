@@ -183,6 +183,9 @@ pub fn extract(bytes: &[u8], pages: &[usize]) -> Result<Vec<u8>, Error> {
     }
     document.trailer.remove(b"Prev");
     document.prune_objects();
+    // Numbered 1 to n again, so the file says how many objects it has.
+    document.renumber_objects();
+    document.trailer.set("Size", i64::from(document.max_id) + 1);
     let mut out = Vec::with_capacity(arranged.len());
     document.save_to(&mut out).map_err(fail)?;
     Ok(out)
