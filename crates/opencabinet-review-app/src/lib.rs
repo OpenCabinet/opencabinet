@@ -29,6 +29,20 @@ use crate::viewer::{COLORS, Keys, TOOLS, Tool, Viewer, WIDTHS};
 use opencabinet_review::sets::{self, SheetSet};
 use opencabinet_review::{Kind, Status};
 
+/// Shows what the measuring markups add up to.
+fn refresh_quantities(window: &ReviewWindow, viewer: &Viewer) {
+    let quantities: Vec<QuantityInfo> = viewer
+        .quantities()
+        .into_iter()
+        .map(|[what, total, detail]| QuantityInfo {
+            what: what.into(),
+            total: total.into(),
+            detail: detail.into(),
+        })
+        .collect();
+    window.set_quantities(ModelRc::new(VecModel::from(quantities)));
+}
+
 /// The code Slint generates from `ui/review.slint`, which follows Slint's
 /// conventions rather than this workspace's lints.
 #[allow(missing_docs, clippy::pedantic)]
@@ -37,7 +51,8 @@ mod ui {
 }
 
 pub use ui::{
-    BookmarkInfo, Label, ReplyInfo, ReviewWindow, SavedInfo, Shape, SheetInfo, TabInfo, ToolInfo,
+    BookmarkInfo, Label, QuantityInfo, ReplyInfo, ReviewWindow, SavedInfo, Shape, SheetInfo,
+    TabInfo, ToolInfo,
 };
 
 /// The most pages drawn as thumbnails.
@@ -304,6 +319,23 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     }));
     window.on_extract_pages(on(App::extract_pages));
+    window.on_export_quantities(on(|app| {
+        let stem = app
+            .viewer
+            .borrow()
+            .path()
+            .and_then(Path::file_stem)
+            .map_or_else(
+                || "drawing".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+        if let Some(path) = app
+            .dialogs
+            .save_path(&format!("{stem} quantities.csv"), FileKind::List)
+        {
+            app.try_change(|v| v.export_quantities(&path));
+        }
+    }));
     let a = Rc::clone(app);
     window.on_add_stamp(move |words| a.try_change(|v| v.add_stamp(&words)));
     let a = Rc::clone(app);
@@ -1210,6 +1242,7 @@ impl App {
         window.set_comparing(viewer.compared().is_some());
         window.set_zoom_label(viewer.zoom_label().into());
         window.set_turn_label(viewer.turn_label().into());
+        refresh_quantities(&window, &viewer);
         window.set_scale_label(viewer.scale_label().into());
         window.set_snap_label(viewer.snap_label().into());
         window.set_snap_on(viewer.snapping());

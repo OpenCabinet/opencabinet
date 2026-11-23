@@ -59,6 +59,11 @@ pub fn icon(tool: Tool) -> (&'static str, bool) {
                  M 9.5 17 A 2.5 2.5 0 1 0 14.5 17 A 2.5 2.5 0 1 0 9.5 17 Z",
                 true,
             ),
+            Kind::Angle => ("M 20 19 L 4 19 L 15 5 M 10 19 A 6 6 0 0 0 7.6 14.4", false),
+            Kind::Perimeter => (
+                "M 4 6 L 18 4 L 20 18 L 6 20 Z M 2 4 L 6 2 M 18 22 L 22 20",
+                false,
+            ),
         },
     }
 }

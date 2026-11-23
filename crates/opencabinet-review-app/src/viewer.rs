@@ -40,7 +40,7 @@ pub enum Tool {
 }
 
 /// The tools, in the order the window offers them.
-pub const TOOLS: [Tool; 19] = [
+pub const TOOLS: [Tool; 21] = [
     Tool::Select,
     Tool::Draw(Kind::Cloud),
     Tool::Draw(Kind::Rectangle),
@@ -60,6 +60,8 @@ pub const TOOLS: [Tool; 19] = [
     Tool::Draw(Kind::Path),
     Tool::Draw(Kind::Area),
     Tool::Draw(Kind::Count),
+    Tool::Draw(Kind::Angle),
+    Tool::Draw(Kind::Perimeter),
 ];
 
 impl Tool {
@@ -401,6 +403,53 @@ impl Viewer {
         Ok(())
     }
 
+    /// What the measuring markups add up to: for each kind and subject,
+    /// what it is, its total, and how many markups on which pages.
+    #[must_use]
+    pub fn quantities(&self) -> Vec<[String; 3]> {
+        self.review
+            .as_ref()
+            .map(|r| r.quantities(self.units))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|q| {
+                let what = if q.subject == q.kind.label() {
+                    q.subject
+                } else {
+                    format!("{} · {}", q.subject, q.kind.label())
+                };
+                let total = if q.total.is_empty() {
+                    String::new()
+                } else {
+                    q.total
+                };
+                let mut detail = format!(
+                    "{} {} on page{} {}",
+                    q.items,
+                    if q.items == 1 { "markup" } else { "markups" },
+                    if q.pages.contains(',') { "s" } else { "" },
+                    q.pages
+                );
+                if q.unscaled > 0 {
+                    let _ = write!(detail, "; {} not to scale, left out", q.unscaled);
+                }
+                [what, total, detail]
+            })
+            .collect()
+    }
+
+    /// Writes the quantities for spreadsheets to `path`.
+    ///
+    /// # Errors
+    /// A message for the user when it cannot be written.
+    pub fn export_quantities(&mut self, path: &Path) -> Result<(), String> {
+        let review = self.review.as_ref().ok_or("There is no PDF open")?;
+        std::fs::write(path, review.quantities_csv(self.units))
+            .map_err(|e| format!("Cannot save: {e}"))?;
+        self.status = format!("Wrote the quantities to {}.", file_name(path));
+        Ok(())
+    }
+
     /// Writes the markup list for spreadsheets to `path`.
     ///
     /// # Errors
@@ -714,6 +763,9 @@ impl Viewer {
             Tool::Draw(Kind::Stamp) => "Click to stamp, or drag the stamp's box.".into(),
             Tool::Draw(Kind::Count) => {
                 "Click each item to count; Enter or double click to finish.".into()
+            }
+            Tool::Draw(Kind::Angle) => {
+                "Click a point on one side, the corner, then a point on the other side.".into()
             }
             Tool::Draw(kind) if kind.measures() && self.page_scale().is_none() => {
                 "This page has no scale yet: calibrate it to read measurements.".into()
@@ -1029,11 +1081,18 @@ impl Viewer {
         }
         if let Some((kind, points, _)) = &mut self.building {
             points.push(point);
+            let (kind, full) = (
+                *kind,
+                kind.most_points().is_some_and(|most| points.len() >= most),
+            );
             // A shape placed by two clicks is done at the second.
             if kind.gesture() == Gesture::Drag
                 && let Some((kind, points, _)) = self.building.take()
             {
                 self.place_dragged(kind, &points);
+            } else if full {
+                // An angle is done at its third point.
+                self.finish();
             }
             return;
         }
@@ -3354,6 +3413,52 @@ mod tests {
         viewer.release((500.0, 160.0));
         let (low, high) = viewer.selected().unwrap().bounds();
         assert_eq!((high.x - low.x, high.y - low.y), (100.0, 100.0));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_angle_takes_three_clicks_and_quantities_add_up() {
+        let (mut viewer, dir) = viewer();
+        viewer.settings.snap = false;
+        viewer.choose_tool(Tool::Draw(Kind::Angle));
+        for at in [(400.0, 300.0), (300.0, 300.0), (300.0, 200.0)] {
+            click(&mut viewer, at);
+        }
+        // Done at the third click, without Enter.
+        assert!(!viewer.building());
+        let review = viewer.review().unwrap();
+        let angle = review.markups().last().unwrap();
+        assert_eq!(angle.kind, Kind::Angle);
+        assert_eq!(review.measured(angle, viewer.units).unwrap(), "90.0°");
+
+        // A perimeter, on a page at 1/4" = 1'-0".
+        let quarter = Viewer::scale_names()
+            .iter()
+            .position(|n| n == "1/4\" = 1'-0\"")
+            .unwrap();
+        viewer.choose_scale(quarter, false);
+        viewer.choose_tool(Tool::Draw(Kind::Perimeter));
+        for at in [
+            (100.0, 100.0),
+            (280.0, 100.0),
+            (280.0, 190.0),
+            (100.0, 190.0),
+        ] {
+            click(&mut viewer, at);
+        }
+        viewer.finish();
+        let rows = viewer.quantities();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1][0], "Perimeter");
+        assert_eq!(rows[1][1], "30'-0\"");
+        assert_eq!(rows[1][2], "1 markup on page 1");
+        let csv = dir.join("totals.csv");
+        viewer.export_quantities(&csv).unwrap();
+        assert!(
+            std::fs::read_to_string(&csv)
+                .unwrap()
+                .contains("Perimeter,Perimeter,1,1,")
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

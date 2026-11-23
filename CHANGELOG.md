@@ -139,6 +139,13 @@ follow [Semantic Versioning](https://semver.org/).
     stamp list to add a stamp in the color in use; Review keeps them in
     stamps.json beside My tools. A new built-in stamp, REVIEWED BY
     {name} {date}.
+  - **Angle and perimeter:** Angle measures the angle at a corner from
+    three clicks, finished at the third; Perimeter measures the length
+    around a closed shape at the page's scale.
+  - **Quantities:** the Totals panel adds up the measuring markups by
+    subject and kind (lengths and areas at each page's scale, counts
+    counted), says which pages they are on and how many had no scale,
+    and exports them for spreadsheets.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

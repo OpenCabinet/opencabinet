@@ -453,3 +453,58 @@ fn pages_change_with_their_markups_and_the_change_is_undone() {
     assert_eq!(again.markups().len(), 1);
     assert_eq!(again.markups()[0].page, 0);
 }
+
+#[test]
+fn angles_perimeters_and_quantities_add_up() {
+    let mut review = Review::open(sheets()).unwrap();
+    review.set_scale(0, quarter_inch());
+    let units = Units::Imperial;
+    // A right angle; a 10' × 5' rectangle's perimeter (at 18 pt to the
+    // foot); two 10' lengths, one of them on a page with no scale.
+    let corner = review.add(
+        markup(0, Kind::Angle, &[(100.0, 0.0), (0.0, 0.0), (0.0, 100.0)]),
+        "Andrés",
+    );
+    let around = review.add(
+        markup(
+            0,
+            Kind::Perimeter,
+            &[(0.0, 0.0), (180.0, 0.0), (180.0, 90.0), (0.0, 90.0)],
+        ),
+        "Andrés",
+    );
+    let mut run = markup(0, Kind::Length, &[(0.0, 0.0), (180.0, 0.0)]);
+    run.subject = "Countertop".into();
+    review.add(run.clone(), "Andrés");
+    review.add(Markup { page: 1, ..run }, "Andrés");
+    let mut boxes = markup(0, Kind::Count, &[(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]);
+    boxes.subject = "Base cabinets".into();
+    review.add(boxes, "Andrés");
+
+    let measured = |id: &str| {
+        let m = review.markup(id).unwrap();
+        review.measured(m, units).unwrap()
+    };
+    assert_eq!(measured(&corner), "90.0°");
+    assert_eq!(measured(&around), "30'-0\"");
+
+    let totals = review.quantities(units);
+    let row = |subject: &str| totals.iter().find(|q| q.subject == subject).unwrap();
+    assert_eq!(row("Countertop").items, 2);
+    assert_eq!(row("Countertop").pages, "1, 2");
+    assert_eq!(row("Countertop").total, "10'-0\"");
+    assert_eq!(row("Countertop").unscaled, 1);
+    assert_eq!(row("Base cabinets").total, "3");
+    assert_eq!(row("Angle").total, "");
+    let csv = review.quantities_csv(units);
+    assert!(csv.starts_with("Type,Subject,Items,Pages,Total,Not to scale\r\n"));
+    assert!(
+        csv.contains("Length,Countertop,2,\"1, 2\",\"10'-0\"\"\",1\r\n"),
+        "{csv}"
+    );
+
+    // Saved and opened again, an angle and a perimeter are still theirs.
+    let again = Review::open(review.save(units).unwrap()).unwrap();
+    let kinds: Vec<Kind> = again.markups().iter().map(|m| m.kind).collect();
+    assert!(kinds.contains(&Kind::Angle) && kinds.contains(&Kind::Perimeter));
+}
