@@ -32,6 +32,8 @@ struct Options {
     data: PathBuf,
 }
 
+const VERSION: &str = concat!("opencabinet-review-server ", env!("CARGO_PKG_VERSION"));
+
 const USAGE: &str = "usage: opencabinet-review-server --address NAME [--port PORT] [--data DIR]
 
   --address NAME  the name or IPv4 address people reach this server at
@@ -50,6 +52,7 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
             "--port" => port = value()?.parse().map_err(|_| "--port needs a number")?,
             "--data" => data = PathBuf::from(value()?),
             "--help" | "-h" => return Err(String::new()),
+            "--version" | "-V" => return Err(VERSION.into()),
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -63,6 +66,10 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
 fn main() -> ExitCode {
     let options = match options(std::env::args().skip(1)) {
         Ok(options) => options,
+        Err(why) if why == VERSION => {
+            println!("{VERSION}");
+            return ExitCode::SUCCESS;
+        }
         Err(why) => {
             if !why.is_empty() {
                 eprintln!("{why}\n");
@@ -92,6 +99,8 @@ fn main() -> ExitCode {
     println!("Server address, for Review's Session panel:");
     println!("{}", server.address);
     println!("Source: {}", env!("CARGO_PKG_REPOSITORY"));
+    // Whoever reads the output through a pipe sees the address at once.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     loop {
         std::thread::sleep(Duration::from_secs(60));
         println!("{} rooms", server.rooms());
@@ -123,5 +132,6 @@ mod tests {
         assert!(options(args("--port 9000")).is_err());
         assert!(options(args("--address a --port x")).is_err());
         assert!(options(args("--what")).is_err());
+        assert_eq!(options(args("--version")).unwrap_err(), VERSION);
     }
 }

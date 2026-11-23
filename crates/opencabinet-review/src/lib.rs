@@ -77,6 +77,9 @@ pub struct Review {
     after: Option<Box<Review>>,
     /// Whether the pages changed since the file was opened or saved.
     pages_changed: bool,
+    /// The markups kept out of sight, by id: not drawn, even those drawn
+    /// from their own look on the page. The file does not change.
+    unseen: BTreeSet<String>,
 }
 
 impl Review {
@@ -137,7 +140,20 @@ impl Review {
             before: None,
             after: None,
             pages_changed: false,
+            unseen: BTreeSet::new(),
         })
+    }
+
+    /// Keeps the markups with these ids out of sight; the file does not
+    /// change, and they stay in the list.
+    pub fn set_unseen(&mut self, ids: BTreeSet<String>) {
+        self.unseen = ids;
+    }
+
+    /// Whether the markup is kept out of sight.
+    #[must_use]
+    pub fn unseen(&self, markup: &Markup) -> bool {
+        self.unseen.contains(&markup.id)
     }
 
     /// Changes the pages to `list` (see [`pages::arrange`]), with the
@@ -285,7 +301,7 @@ impl Review {
             .state
             .markups
             .iter()
-            .filter(|m| self.draws(m))
+            .filter(|m| self.draws(m) || self.unseen.contains(&m.id))
             .filter_map(|m| m.origin)
             .chain(self.state.removed.iter().copied())
             .collect();
@@ -364,7 +380,9 @@ impl Review {
         }
         // Back past the last change of pages.
         if let Some(before) = self.before.take() {
+            let unseen = std::mem::take(&mut self.unseen);
             let mut after = std::mem::replace(self, *before);
+            self.unseen = unseen;
             after.typing = None;
             self.after = Some(Box::new(after));
             // The file may hold either; only saving says which.
@@ -495,7 +513,7 @@ impl Review {
             .markups
             .iter()
             .rev()
-            .find(|m| m.page == page && m.hit(point, tolerance))
+            .find(|m| m.page == page && !self.unseen.contains(&m.id) && m.hit(point, tolerance))
     }
 
     /// The scale of `page`, if it was calibrated.

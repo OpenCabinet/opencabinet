@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Builds OpenCabinet Review's session server (RFC-0004 §7) for Linux and
+# Windows, starts it, checks it from outside as Review would use it (a
+# session started on it, joined, a markup crossing it), and keeps it as a
+# downloadable artifact with its license, guide and, on Linux, its
+# systemd service. Run it by hand from the Actions tab ("Run workflow").
+
+name: Review server
+
+on:
+  pull_request:
+    paths:
+      - crates/opencabinet-model/**
+      - crates/opencabinet-pdf/**
+      - crates/opencabinet-review/**
+      - crates/opencabinet-session/**
+      - crates/opencabinet-review-server/**
+      - Cargo.lock
+      - docs/review-server.md
+      - packaging/linux/opencabinet-review-server.service
+      - .github/workflows/review-server.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  server:
+    name: Review server (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rustup reads rust-toolchain.toml and installs the pinned version.
+      - name: Install toolchain
+        run: rustup toolchain install
+      - name: Build
+        run: |
+          cargo build --locked --release -p opencabinet-review-server
+          cargo build --locked --release -p opencabinet-session --example server_smoke
+      - name: Start it and check it from outside
+        run: |
+          exe=""
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          server="target/release/opencabinet-review-server$exe"
+          "$server" --version
+          "$server" --address 127.0.0.1 --port 0 --data "$RUNNER_TEMP/review-server" > server.out 2>&1 &
+          pid=$!
+          for _ in $(seq 1 100); do
+            grep -q '^ocs1:' server.out && break
+            sleep 0.2
+          done
+          address=$(grep '^ocs1:' server.out) || { cat server.out; exit 1; }
+          "target/release/examples/server_smoke$exe" "$address"
+          kill "$pid" || true
+          echo "Started, joined and stopped on $RUNNER_OS." >> "$GITHUB_STEP_SUMMARY"
+      - name: Gather the files
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          case "$RUNNER_OS" in
+            Windows) target=windows-x64; exe=".exe" ;;
+            *) target=linux-x64; exe="" ;;
+          esac
+          name="opencabinet-review-server-$version+dev.$GITHUB_RUN_NUMBER-$target"
+          mkdir -p "dist/$name"
+          cp "target/release/opencabinet-review-server$exe" "dist/$name/"
+          cp LICENSES/AGPL-3.0-or-later.txt "dist/$name/LICENSE.txt"
+          cp docs/review-server.md "dist/$name/README.md"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            cp packaging/linux/opencabinet-review-server.service "dist/$name/"
+          fi
+          echo "NAME=$name" >> "$GITHUB_ENV"
+      - name: Upload the server
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.NAME }}
+          path: dist/${{ env.NAME }}
+          retention-days: 30

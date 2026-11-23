@@ -261,6 +261,10 @@ export component ReviewWindow inherits Window {
     in property <[SheetInfo]> sheets;
     // What the measuring markups add up to.
     in property <[QuantityInfo]> quantities;
+    // Whether the drawing shows only the markups the list shows.
+    in property <bool> only-listed;
+    // Where the words looked for are, drawing by drawing.
+    in property <[StandardListViewItem]> found-everywhere;
     in property <string> found-label;
     in property <bool> comparing;
     in property <string> list-label;
@@ -346,6 +350,9 @@ export component ReviewWindow inherits Window {
     callback stop-compare();
     callback export-flattened();
     callback set-filter(int, string);
+    callback set-only-listed(bool);
+    callback find-everywhere(string);
+    callback show-found-in(int);
     callback start-session();
     callback join-session(string);
     callback start-on-server(string);
@@ -721,6 +728,17 @@ export component ReviewWindow inherits Window {
                             Button { text: "◀"; accessible-label: "Previous match"; enabled: root.found-label != ""; clicked => { root.find-next(true); } }
                             Button { text: "▶"; accessible-label: "Next match"; enabled: root.found-label != ""; clicked => { root.find-next(false); } }
                             Text { text: root.found-label; vertical-alignment: center; }
+                        }
+                        if root.tabs.length > 1: Button {
+                            text: "Find in every open drawing";
+                            enabled: root.has-document;
+                            clicked => { root.find-everywhere(search.text); }
+                        }
+                        if root.found-everywhere.length > 0: StandardListView {
+                            height: 110px;
+                            accessible-label: "Drawings the words are in";
+                            model: root.found-everywhere;
+                            current-item-changed(row) => { root.show-found-in(row); }
                         }
                         Rectangle { height: 12px; }
                         PanelTitle { text: "Compare"; }
@@ -1191,6 +1209,12 @@ export component ReviewWindow inherits Window {
                                 accessible-label: "Show markups with words";
                                 placeholder-text: "Filter";
                                 edited(text) => { root.set-filter(status-filter.current-index, text); }
+                            }
+                            BarButton {
+                                text: "Only these";
+                                label: "Show on the drawing only the markups the list shows";
+                                checked: root.only-listed;
+                                clicked => { root.set-only-listed(!root.only-listed); }
                             }
                             Button { text: "Summary PDF…"; enabled: root.has-document; clicked => { root.export-summary(); } }
                             Button { text: "CSV…"; enabled: root.has-document; clicked => { root.export-list(); } }
