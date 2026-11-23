@@ -7,6 +7,7 @@
 //! Screen coordinates are the window's logical pixels inside the page
 //! view, from its top left corner.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -256,6 +257,8 @@ pub struct Viewer {
     /// A link followed that the window must open: another drawing or a
     /// web address.
     follow: Option<Follow>,
+    /// Whether the drawing shows only the markups the list shows.
+    only_listed: bool,
     status: String,
 }
 
@@ -309,6 +312,7 @@ impl Default for Viewer {
             own_stamps: Vec::new(),
             links: None,
             follow: None,
+            only_listed: false,
             status: "Open a PDF to start.".into(),
         }
     }
@@ -1771,6 +1775,45 @@ impl Viewer {
     }
 
     /// The markups the list shows, in its order.
+    /// Whether the drawing shows only the markups the list shows.
+    #[must_use]
+    pub fn only_listed(&self) -> bool {
+        self.only_listed
+    }
+
+    /// Shows on the drawing only the markups the list shows, or all.
+    pub fn set_only_listed(&mut self, on: bool) {
+        self.only_listed = on;
+        self.status = if on {
+            "The drawing shows only the markups the list shows.".into()
+        } else {
+            "The drawing shows every markup.".into()
+        };
+    }
+
+    /// Tells the review which markups to keep out of sight: those the
+    /// list does not show, when only those are to be seen.
+    pub fn keep_sight(&mut self) {
+        let unseen: BTreeSet<String> = if self.only_listed {
+            let listed: BTreeSet<&str> = self.listed().iter().map(|m| m.id.as_str()).collect();
+            self.review
+                .as_ref()
+                .map(|r| {
+                    r.markups()
+                        .iter()
+                        .filter(|m| !listed.contains(m.id.as_str()))
+                        .map(|m| m.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            BTreeSet::new()
+        };
+        if let Some(review) = self.review.as_mut() {
+            review.set_unseen(unseen);
+        }
+    }
+
     fn listed(&self) -> Vec<&Markup> {
         let Some(review) = self.review.as_ref() else {
             return Vec::new();
@@ -1846,6 +1889,25 @@ impl Viewer {
             .position(|f| f.page >= self.page)
             .unwrap_or(0);
         self.show_found();
+    }
+
+    /// How many pages of this drawing have `query`, and how many times it
+    /// is on them, without moving to them.
+    #[must_use]
+    pub fn count_found(&self, query: &str) -> (usize, usize) {
+        let query = query.trim();
+        let Some(document) = self.review.as_ref().map(Review::document) else {
+            return (0, 0);
+        };
+        if query.is_empty() {
+            return (0, 0);
+        }
+        (0..document.pages().len())
+            .filter_map(|page| find(document, page, query).ok())
+            .filter(|found| !found.is_empty())
+            .fold((0, 0), |(pages, times), found| {
+                (pages + 1, times + found.len())
+            })
     }
 
     /// Shows the next place found, or the one before with `back`.
@@ -2960,7 +3022,11 @@ impl Viewer {
         };
         let mut outlines = Vec::new();
         let chosen = self.chosen();
-        for markup in review.markups().iter().filter(|m| m.page == self.page) {
+        for markup in review
+            .markups()
+            .iter()
+            .filter(|m| m.page == self.page && !review.unseen(m))
+        {
             let selected = chosen.contains(&markup.id);
             if review.draws(markup) {
                 draw(markup, selected);
@@ -3504,6 +3570,41 @@ mod tests {
         viewer.release((500.0, 160.0));
         let (low, high) = viewer.selected().unwrap().bounds();
         assert_eq!((high.x - low.x, high.y - low.y), (100.0, 100.0));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_drawing_shows_only_what_the_list_shows_when_asked() {
+        let (mut viewer, dir) = viewer();
+        viewer.settings.snap = false;
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (100.0, 100.0), (200.0, 200.0));
+        viewer.set_text("Filler 3\"");
+        viewer.choose_tool(Tool::Draw(Kind::Cloud));
+        drag(&mut viewer, (400.0, 100.0), (500.0, 200.0));
+        viewer.choose_tool(Tool::Select);
+        viewer.escape();
+        // Nothing picked, so no grips are drawn.
+        viewer.select_only(None);
+        let drawn = |v: &Viewer| v.overlay().0.iter().filter(|s| s.stroke.is_some()).count();
+        assert_eq!(drawn(&viewer), 2);
+
+        viewer.set_filter(None, "filler");
+        viewer.keep_sight();
+        assert_eq!(drawn(&viewer), 2, "the list alone is filtered");
+        viewer.set_only_listed(true);
+        viewer.keep_sight();
+        assert_eq!(drawn(&viewer), 1);
+        // What is out of sight cannot be picked either.
+        click(&mut viewer, (450.0, 100.0));
+        assert!(viewer.selected().is_none());
+        click(&mut viewer, (150.0, 100.0));
+        assert!(viewer.selected().is_some());
+
+        viewer.set_only_listed(false);
+        viewer.keep_sight();
+        viewer.select_only(None);
+        assert_eq!(drawn(&viewer), 2);
         std::fs::remove_dir_all(dir).ok();
     }
 

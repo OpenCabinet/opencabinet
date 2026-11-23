@@ -154,6 +154,17 @@ follow [Semantic Versioning](https://semver.org/).
     link, so other viewers follow it too; double-click it to follow it
     in Review. Other programs' links are followed, not listed or
     changed.
+  - **Only these:** a switch on the markup list shows on the drawing only
+    the markups the list shows, other programs' included; the rest can
+    not be picked meanwhile. The file does not change.
+  - **Find in every open drawing:** the Find panel lists the open
+    drawings that have the words, with how many times and on how many
+    pages; choosing one shows it at the first match.
+  - **Session server package:** each pull request that touches it builds
+    `opencabinet-review-server` for Linux and Windows, starts it and
+    checks it from outside (a session started on it, joined, a markup
+    crossing it), and keeps it as an artifact with its license, guide
+    and a systemd service for Linux. `--version` says which it is.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

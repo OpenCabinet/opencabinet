@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: CC0-1.0
+
+# OpenCabinet Review's session server as a systemd service. Copy the
+# binary to /usr/local/bin, this file to /etc/systemd/system, change
+# review.example.org to the server's name, then:
+#   systemctl daemon-reload && systemctl enable --now opencabinet-review-server
+# The server address people paste into Review is in its log:
+#   journalctl -u opencabinet-review-server
+
+[Unit]
+Description=OpenCabinet Review session server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/opencabinet-review-server --address review.example.org --port 47100 --data ${STATE_DIRECTORY}
+# Its own user, made for it; its certificate kept in /var/lib.
+DynamicUser=yes
+StateDirectory=opencabinet-review-server
+StateDirectoryMode=0700
+Restart=on-failure
+# It needs the network and its folder, nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

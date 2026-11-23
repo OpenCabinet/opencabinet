@@ -15,13 +15,19 @@ The server is `opencabinet-review-server`, licensed under the
 for other people, you must offer them its source code, including your
 changes.
 
-## Start it
+## Get it
 
-Build it from this repository:
+Each pull request that touches the server builds it for Linux and
+Windows: in the Actions tab, the **Review server** run keeps it as an
+artifact, with this guide, its license and, for Linux, a systemd service.
+There is no release of it yet. You can also build it from this
+repository:
 
 ```sh
 cargo build --release -p opencabinet-review-server
 ```
+
+## Start it
 
 Run it on a machine people can reach, telling it the name or IPv4
 address they reach it at:
@@ -36,9 +42,25 @@ opencabinet-review-server --address review.example.org --port 47100 --data /var/
 | `--port` | TCP port to listen on | 47100 |
 | `--data` | Folder for the server's certificate and key | `./review-server` |
 
-It prints the **server address**, such as
+`opencabinet-review-server --version` says which version it is. It
+prints the **server address**, such as
 `ocs1:review.example.org:47100:3f2a…`. Give that address to the people
 who start sessions. Open the port in the machine's firewall.
+
+## Run it as a service on Linux
+
+`packaging/linux/opencabinet-review-server.service` runs it with systemd
+under a user of its own, its certificate kept in
+`/var/lib/opencabinet-review-server`, and little else it may touch:
+
+```sh
+sudo cp opencabinet-review-server /usr/local/bin/
+sudo cp opencabinet-review-server.service /etc/systemd/system/
+sudo nano /etc/systemd/system/opencabinet-review-server.service   # your server's name
+sudo systemctl daemon-reload
+sudo systemctl enable --now opencabinet-review-server
+journalctl -u opencabinet-review-server   # the server address
+```
 
 ## Keep the data folder private
 

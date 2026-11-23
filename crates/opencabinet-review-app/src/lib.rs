@@ -159,6 +159,9 @@ struct App {
     /// The files opened last, newest first, and where they are kept.
     recent: RefCell<Vec<PathBuf>>,
     chest: Option<PathBuf>,
+    /// The words last looked for in every drawing, and the tabs they are
+    /// in.
+    found_in: RefCell<(String, Vec<usize>)>,
     /// The sheet set, and where it is kept once saved or opened.
     set: RefCell<SheetSet>,
     set_path: RefCell<Option<PathBuf>>,
@@ -201,6 +204,7 @@ fn build(
         active: Cell::new(0),
         recent: RefCell::new(recent),
         chest: saved.clone(),
+        found_in: RefCell::new((String::new(), Vec::new())),
         set: RefCell::new(SheetSet::default()),
         set_path: RefCell::new(None),
         dialogs,
@@ -352,6 +356,16 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     }));
     window.on_extract_pages(on(App::extract_pages));
+    let a = Rc::clone(app);
+    window.on_find_everywhere(move |text| a.find_everywhere(&text));
+    let a = Rc::clone(app);
+    window.on_show_found_in(move |row| {
+        if let Ok(row) = usize::try_from(row) {
+            a.show_found_in(row);
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_set_only_listed(move |on| a.change(|v| v.set_only_listed(on)));
     window.on_export_quantities(on(|app| {
         let stem = app
             .viewer
@@ -1200,6 +1214,53 @@ impl App {
         }
     }
 
+    /// Looks for `query` in every open drawing; the window lists where it
+    /// is, drawing by drawing.
+    fn find_everywhere(&self, query: &str) {
+        let query = query.trim();
+        let mut lines = Vec::new();
+        let mut where_found = Vec::new();
+        {
+            let viewer = self.viewer.borrow();
+            let tabs = self.tabs.borrow();
+            for (at, tab) in tabs.iter().enumerate() {
+                let v = tab.as_ref().unwrap_or(&viewer);
+                let (pages, times) = v.count_found(query);
+                if times > 0 {
+                    lines.push(format!(
+                        "{} — {times} on {pages} page{}",
+                        v.tab_title(),
+                        if pages == 1 { "" } else { "s" }
+                    ));
+                    where_found.push(at);
+                }
+            }
+        }
+        if lines.is_empty() && !query.is_empty() {
+            lines.push(format!("\"{query}\" is in none of the open drawings."));
+        }
+        *self.found_in.borrow_mut() = (query.to_owned(), where_found);
+        if let Some(window) = self.window.upgrade() {
+            let rows: Vec<StandardListViewItem> = lines
+                .iter()
+                .map(|l| StandardListViewItem::from(l.as_str()))
+                .collect();
+            window.set_found_everywhere(ModelRc::new(VecModel::from(rows)));
+        }
+    }
+
+    /// Shows the drawing found in, at its first match.
+    fn show_found_in(&self, row: usize) {
+        let (query, tab) = {
+            let found = self.found_in.borrow();
+            (found.0.clone(), found.1.get(row).copied())
+        };
+        if let Some(tab) = tab {
+            self.switch_to(tab);
+            self.change(|v| v.find(&query));
+        }
+    }
+
     /// Shows the sheet set.
     fn refresh_set(&self, window: &ReviewWindow, viewer: &Viewer) {
         let open = {
@@ -1294,6 +1355,7 @@ impl App {
         window.set_comparing(viewer.compared().is_some());
         window.set_zoom_label(viewer.zoom_label().into());
         window.set_turn_label(viewer.turn_label().into());
+        window.set_only_listed(viewer.only_listed());
         refresh_quantities(&window, &viewer);
         window.set_scale_label(viewer.scale_label().into());
         window.set_snap_label(viewer.snap_label().into());
@@ -1400,6 +1462,7 @@ impl App {
     fn refresh_page(&self, window: &ReviewWindow) {
         let scale = f64::from(window.window().scale_factor());
         let mut viewer = self.viewer.borrow_mut();
+        viewer.keep_sight();
         let Some(view) = viewer.view(scale) else {
             return;
         };

@@ -255,6 +255,16 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     window.invoke_next_tab();
     assert_eq!(window.get_active_tab(), 0);
     assert_eq!(window.get_page_label(), "Page 1 of 2");
+    // Words looked for in every open drawing: only the second has A-203.
+    window.invoke_find_everywhere("A-203".into());
+    let found = window.get_found_everywhere();
+    assert_eq!(found.row_count(), 1);
+    assert_eq!(found.row_data(0).unwrap().text, "A-301.pdf — 1 on 1 page");
+    window.invoke_show_found_in(0);
+    assert_eq!(window.get_active_tab(), 1);
+    assert_eq!(window.get_page_label(), "Page 3 of 3");
+    window.invoke_next_tab();
+    assert_eq!(window.get_active_tab(), 0);
     answers.discard.set(false);
     window.invoke_close_tab(0);
     assert_eq!(answers.asked_to_discard.get(), 1);

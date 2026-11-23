@@ -120,8 +120,12 @@ fn main() {
 }
 
 /// Shows what the environment asks for: `REPLIES`, `SNAP`, `PAGES`,
-/// `TURN` or `QTY`.
+/// `TURN`, `QTY` or `FIND`.
 fn show_features(review: &opencabinet_review_app::ReviewWindow) {
+    // FIND=1 looks for a sheet number in every open drawing.
+    if std::env::var("FIND").is_ok() {
+        review.invoke_find_everywhere("A-20".into());
+    }
     // QTY=1 measures at 1/4" = 1'-0": two lengths, an angle and a count.
     if std::env::var("QTY").is_ok() {
         use slint::Model;
