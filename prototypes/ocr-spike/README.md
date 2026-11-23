@@ -8,7 +8,8 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 Can OpenCabinet Review make scanned drawings searchable with
 [ocrs](https://github.com/robertknight/ocrs) 0.14 (pure Rust, MIT or
 Apache-2.0), and how fast on modest hardware (ADR-0014)? Measured on
-2026-11-23. Delete this folder when the OCR decision is recorded.
+2026-11-23. Delete this folder when the OCR decision is recorded in
+ADR-0017.
 
 ## Run it
 
@@ -64,6 +65,12 @@ cabinet labels and long words; never a dimension (36", 2'-6") nor TYP.
 - **Slow.** 11–27 s for a 36" × 24" sheet at 100–150 dpi.
 - Its author calls it an early preview; this agrees.
 
-So ocrs is not recommended for Review now. ADR-0017 should compare the
-other candidates (Tesseract, the OCR built into Windows) on these same
-sheets before anything is chosen.
+So ocrs is not recommended for Review now.
+
+## Decision: on hold
+
+On 2026-11-23 Andrés put OCR on hold until it is clear that Review needs
+it. When it is taken up again, the next spike measures **Tesseract
+first**, on these same sheets, then the OCR built into Windows if
+Tesseract falls short; ADR-0017 records the choice with those numbers.
+Keep this folder until then.
