@@ -33,6 +33,9 @@ pub struct View {
     pub width: u32,
     /// The bitmap's height, in pixels.
     pub height: u32,
+    /// Quarter turns clockwise the page is seen turned, without changing
+    /// the file (see [`crate::Page::turned`]).
+    pub turn: u8,
 }
 
 /// An image: rows of RGBA pixels, 4 bytes each, top to bottom.
@@ -75,7 +78,10 @@ pub fn render(document: &Document, view: View) -> Result<Bitmap, Error> {
     {
         return Err(Error::Invalid);
     }
-    let page_size = *document.pages().get(view.page).ok_or(Error::Invalid)?;
+    let unturned = *document.pages().get(view.page).ok_or(Error::Invalid)?;
+    let page_size = unturned.turned(view.turn);
+    // From the page as the PDF shows it to the page as seen.
+    let turn = unturned.to_pdf().then(page_size.to_page).0;
     let pdf = Pdf::new(document.shared_bytes()).map_err(|_| Error::Invalid)?;
     let pages = pdf.pages();
     let page = pages.get(view.page).ok_or(Error::Invalid)?;
@@ -100,7 +106,7 @@ pub fn render(document: &Document, view: View) -> Result<Bitmap, Error> {
         &settings,
         &RenderSettings::default(),
         &mut ctx,
-        place * page.initial_transform(true).to_kurbo(),
+        place * Affine::new(turn) * page.initial_transform(true).to_kurbo(),
     );
     ctx.flush();
     let mut pixmap = Pixmap::new(width, height);

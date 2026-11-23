@@ -20,6 +20,7 @@
 pub mod annotations;
 pub mod find;
 mod flatten;
+pub mod labels;
 pub mod outline;
 pub mod pages;
 mod render;
@@ -77,6 +78,21 @@ impl Transform {
         Point::new(a * point.x + c * point.y + e, b * point.x + d * point.y + f)
     }
 
+    /// This transform, then `next`.
+    #[must_use]
+    pub fn then(self, next: Self) -> Self {
+        let [a, b, c, d, e, f] = self.0;
+        let [na, nb, nc, nd, ne, nf] = next.0;
+        Self([
+            na * a + nc * b,
+            nb * a + nd * b,
+            na * c + nc * d,
+            nb * c + nd * d,
+            na * e + nc * f + ne,
+            nb * e + nd * f + nf,
+        ])
+    }
+
     /// The transform that undoes this one; `None` when it flattens the
     /// plane.
     #[must_use]
@@ -110,6 +126,24 @@ pub struct Page {
 }
 
 impl Page {
+    /// The page as seen turned `turns` quarter turns clockwise, without
+    /// changing the file: its size, and its page space, turned.
+    #[must_use]
+    pub fn turned(&self, turns: u8) -> Self {
+        let (w, h) = (self.width, self.height);
+        let (turn, width, height) = match turns % 4 {
+            1 => (Transform([0.0, 1.0, -1.0, 0.0, h, 0.0]), h, w),
+            2 => (Transform([-1.0, 0.0, 0.0, -1.0, w, h]), w, h),
+            3 => (Transform([0.0, -1.0, 1.0, 0.0, 0.0, w]), h, w),
+            _ => return *self,
+        };
+        Self {
+            width,
+            height,
+            to_page: self.to_page.then(turn),
+        }
+    }
+
     /// From page space back to PDF space.
     #[must_use]
     pub fn to_pdf(&self) -> Transform {
@@ -203,6 +237,46 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_is_turned_a_quarter_at_a_time() {
+        let page = Page {
+            width: 300.0,
+            height: 200.0,
+            to_page: Transform([1.0, 0.0, 0.0, -1.0, 0.0, 200.0]),
+        };
+        // The top left corner, in PDF space (0, 200).
+        let corner = Point::new(0.0, 200.0);
+        let quarter = page.turned(1);
+        assert_eq!((quarter.width, quarter.height), (200.0, 300.0));
+        // Turned clockwise, the top left goes to the top right.
+        assert!(
+            quarter
+                .to_page
+                .apply(corner)
+                .distance(Point::new(200.0, 0.0))
+                < 1e-9
+        );
+        assert!(
+            page.turned(2)
+                .to_page
+                .apply(corner)
+                .distance(Point::new(300.0, 200.0))
+                < 1e-9
+        );
+        assert!(
+            page.turned(3)
+                .to_page
+                .apply(corner)
+                .distance(Point::new(0.0, 300.0))
+                < 1e-9
+        );
+        assert_eq!(page.turned(4), page);
+        let back = quarter
+            .to_pdf()
+            .apply(quarter.to_page.apply(Point::new(7.0, 9.0)));
+        assert!(back.distance(Point::new(7.0, 9.0)) < 1e-9);
+    }
 
     #[test]
     fn a_transform_is_undone_by_its_inverse() {

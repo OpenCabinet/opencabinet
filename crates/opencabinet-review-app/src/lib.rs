@@ -27,7 +27,7 @@ use slint::{
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
 use crate::viewer::{COLORS, Keys, TOOLS, Tool, Viewer, WIDTHS};
 use opencabinet_review::sets::{self, SheetSet};
-use opencabinet_review::{Kind, Status, stamps};
+use opencabinet_review::{Kind, Status};
 
 /// The code Slint generates from `ui/review.slint`, which follows Slint's
 /// conventions rather than this workspace's lints.
@@ -63,6 +63,7 @@ fn thumbnail(
         origin: opencabinet_pdf::Point::new(0.0, 0.0),
         width: (page.width * zoom).ceil().max(1.0) as u32,
         height: (page.height * zoom).ceil().max(1.0) as u32,
+        turn: 0,
     };
     render(document, view).ok()
 }
@@ -185,8 +186,6 @@ fn build(
     window.set_tools(ModelRc::new(VecModel::from(tools)));
     let widths: Vec<SharedString> = WIDTHS.iter().map(|&(name, _)| name.into()).collect();
     window.set_widths(strings(&widths));
-    let words: Vec<SharedString> = stamps::TEMPLATES.iter().map(|t| t.words.into()).collect();
-    window.set_stamps(strings(&words));
     let statuses: Vec<SharedString> = Status::ALL.iter().map(|s| s.label().into()).collect();
     window.set_statuses(strings(&statuses));
     let scales: Vec<SharedString> = Viewer::scale_names().into_iter().map(Into::into).collect();
@@ -305,6 +304,16 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     }));
     window.on_extract_pages(on(App::extract_pages));
+    let a = Rc::clone(app);
+    window.on_add_stamp(move |words| a.try_change(|v| v.add_stamp(&words)));
+    let a = Rc::clone(app);
+    window.on_remove_stamp(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.try_change(|v| v.remove_stamp(i));
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_turn_view(move |turn| a.change(|v| v.turn_view(turn)));
     let a = Rc::clone(app);
     window.on_choose_tab(move |i| {
         if let Ok(i) = usize::try_from(i) {
@@ -1194,10 +1203,13 @@ impl App {
             .collect();
         window.set_pages_chosen(ModelRc::new(VecModel::from(marks)));
         window.set_pages_label(viewer.pages_label().into());
+        let names: Vec<SharedString> = viewer.page_names().into_iter().map(Into::into).collect();
+        window.set_page_names(strings(&names));
         window.set_can_change_pages(viewer.can_change_pages());
         window.set_found_label(viewer.found_label().into());
         window.set_comparing(viewer.compared().is_some());
         window.set_zoom_label(viewer.zoom_label().into());
+        window.set_turn_label(viewer.turn_label().into());
         window.set_scale_label(viewer.scale_label().into());
         window.set_snap_label(viewer.snap_label().into());
         window.set_snap_on(viewer.snapping());
@@ -1220,6 +1232,9 @@ impl App {
         window.set_width_index(i32::try_from(viewer.width()).unwrap_or(1));
         window.set_fill_shapes(viewer.fill());
         window.set_stamp(i32::try_from(viewer.stamp()).unwrap_or(0));
+        let stamps: Vec<SharedString> = viewer.stamp_names().into_iter().map(Into::into).collect();
+        window.set_stamps(strings(&stamps));
+        window.set_built_in_stamps(i32::try_from(Viewer::built_in_stamps()).unwrap_or(0));
         window.set_stamping(viewer.tool() == Tool::Draw(Kind::Stamp));
         let saved: Vec<SavedInfo> = viewer
             .saved_tools()

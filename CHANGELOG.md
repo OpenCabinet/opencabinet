@@ -127,6 +127,18 @@ follow [Semantic Versioning](https://semver.org/).
     address (`ocs1:…`); Review starts a session there from the Session
     panel, and the invitation it gets works like any other. The server
     keeps its certificate on disk, so its address stays the same.
+  - **Turn the view:** View > Turn view turns every page a quarter turn
+    on screen without changing the file; markups, snapping and
+    measuring turn with it, and the status bar says how far.
+  - **Page labels:** a drawing's own page names, such as A-201, are
+    shown in the status bar and under the thumbnails. Moving pages drops
+    them, since they name pages by their place.
+  - **Stamps of your own:** a stamp's words may hold `{name}` and
+    `{date}`, filled in when it is placed (the date as 11/22/2026 in
+    imperial units, 2026-11-22 in metric). Type new words under the
+    stamp list to add a stamp in the color in use; Review keeps them in
+    stamps.json beside My tools. A new built-in stamp, REVIEWED BY
+    {name} {date}.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

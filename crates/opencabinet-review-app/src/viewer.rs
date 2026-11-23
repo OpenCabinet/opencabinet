@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 
 use opencabinet_model::{Length, Units};
 use opencabinet_pdf::find::{Found, find};
+use opencabinet_pdf::labels::page_labels;
 use opencabinet_pdf::outline::{Bookmark, bookmarks};
 use opencabinet_pdf::report::{self, Row, Table};
 use opencabinet_pdf::snaps::{Snap, Snapped, Snaps};
@@ -239,6 +240,13 @@ pub struct Viewer {
     /// The pages chosen in the Pages panel, besides the one shown; empty
     /// when only the page shown is.
     chosen_pages: Vec<usize>,
+    /// Quarter turns clockwise the pages are seen turned; the file does
+    /// not change.
+    turns: u8,
+    /// The names the PDF gives its pages, if it gives any.
+    labels: Vec<String>,
+    /// The person's own stamps: their words and color.
+    own_stamps: Vec<(String, Color)>,
     status: String,
 }
 
@@ -287,6 +295,9 @@ impl Default for Viewer {
             style: None,
             bookmarks: Vec::new(),
             chosen_pages: Vec::new(),
+            turns: 0,
+            labels: Vec::new(),
+            own_stamps: Vec::new(),
             status: "Open a PDF to start.".into(),
         }
     }
@@ -312,6 +323,7 @@ impl Viewer {
         other.width = self.width;
         other.fill = self.fill;
         other.stamp = self.stamp;
+        other.own_stamps.clone_from(&self.own_stamps);
         other.settings = self.settings;
         other.saved.clone_from(&self.saved);
         other.saved_path.clone_from(&self.saved_path);
@@ -348,6 +360,7 @@ impl Viewer {
         let review = Review::open(bytes).map_err(|e| capitalize(&e.to_string()))?;
         // A drawing whose bookmarks cannot be read still opens.
         self.bookmarks = bookmarks(review.document().bytes()).unwrap_or_default();
+        self.labels = page_labels(review.document().bytes()).unwrap_or_default();
         self.status = format!(
             "{} pages, {} markups.",
             review.document().pages().len(),
@@ -365,6 +378,7 @@ impl Viewer {
         self.searched.clear();
         self.compare = None;
         self.chosen_pages.clear();
+        self.turns = 0;
         self.fit();
         Ok(())
     }
@@ -440,13 +454,45 @@ impl Viewer {
         &self.status
     }
 
+    /// The page shown, as seen: turned when the view is.
     fn page_size(&self) -> Option<Page> {
         self.review
             .as_ref()?
             .document()
             .pages()
             .get(self.page)
-            .copied()
+            .map(|page| page.turned(self.turns))
+    }
+
+    /// Turns the view a quarter turn, clockwise when `turn` is positive;
+    /// the file does not change. Markups, snapping and measuring turn
+    /// with it.
+    pub fn turn_view(&mut self, turn: i32) {
+        if self.review.is_none() {
+            return;
+        }
+        let turns = (i32::from(self.turns) + turn).rem_euclid(4);
+        self.turns = u8::try_from(turns).unwrap_or(0);
+        self.drag = None;
+        self.building = None;
+        self.snapped = None;
+        self.fit();
+        self.status = match self.turns {
+            0 => "The view is upright again.".into(),
+            n => format!(
+                "The view is turned {}° clockwise. The file does not change; Turn page in the Pages menu does that.",
+                u32::from(n) * 90
+            ),
+        };
+    }
+
+    /// How far the view is turned, as `90°`, or nothing when upright.
+    #[must_use]
+    pub fn turn_label(&self) -> String {
+        match self.turns {
+            0 => String::new(),
+            n => format!("View {}°", u32::from(n) * 90),
+        }
     }
 
     /// The page shown, from 0.
@@ -459,8 +505,33 @@ impl Viewer {
     #[must_use]
     pub fn page_label(&self) -> String {
         self.review.as_ref().map_or_else(String::new, |r| {
-            format!("Page {} of {}", self.page + 1, r.document().pages().len())
+            let place = format!("Page {} of {}", self.page + 1, r.document().pages().len());
+            match self.labels.get(self.page) {
+                Some(label) if *label != (self.page + 1).to_string() && !label.is_empty() => {
+                    format!("{label} · {place}")
+                }
+                _ => place,
+            }
         })
+    }
+
+    /// Each page's name for the thumbnails: the PDF's label, or its
+    /// number.
+    #[must_use]
+    pub fn page_names(&self) -> Vec<String> {
+        let count = self
+            .review
+            .as_ref()
+            .map_or(0, |r| r.document().pages().len());
+        (0..count)
+            .map(|p| {
+                self.labels
+                    .get(p)
+                    .filter(|l| !l.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| (p + 1).to_string())
+            })
+            .collect()
     }
 
     /// Shows page `page`, fit to the window.
@@ -592,6 +663,7 @@ impl Viewer {
             origin: Point::new(self.scroll.0 * scale, self.scroll.1 * scale),
             width: (w * scale).ceil() as u32,
             height: (h * scale).ceil() as u32,
+            turn: self.turns,
         })
     }
 
@@ -720,9 +792,94 @@ impl Viewer {
         self.stamp
     }
 
+    /// Every stamp offered: Review's, then the person's own.
+    #[must_use]
+    pub fn stamp_names(&self) -> Vec<String> {
+        stamps::TEMPLATES
+            .iter()
+            .map(|t| t.words.to_owned())
+            .chain(self.own_stamps.iter().map(|(words, _)| words.clone()))
+            .collect()
+    }
+
+    /// How many of the stamps offered are Review's own.
+    #[must_use]
+    pub fn built_in_stamps() -> usize {
+        stamps::TEMPLATES.len()
+    }
+
+    /// The stamp placed next, its `{name}` and `{date}` filled in.
+    fn stamp_template(&self) -> OwnStamp {
+        let built_in = |i: usize| {
+            let t = stamps::TEMPLATES[i.min(stamps::TEMPLATES.len() - 1)];
+            (t.words.to_owned(), t.color)
+        };
+        let (words, color) = if let Some(own) = self.stamp.checked_sub(stamps::TEMPLATES.len()) {
+            self.own_stamps
+                .get(own)
+                .cloned()
+                .unwrap_or_else(|| built_in(0))
+        } else {
+            built_in(self.stamp)
+        };
+        let date = chrono::Local::now().date_naive();
+        let date = match self.units {
+            Units::Imperial => date.format("%m/%d/%Y").to_string(),
+            Units::Metric => date.format("%Y-%m-%d").to_string(),
+        };
+        OwnStamp {
+            words: stamps::fill_in(&words, &self.name(), &date),
+            color,
+        }
+    }
+
+    /// Adds a stamp of the person's own with `words`, in the color in use,
+    /// and picks it.
+    ///
+    /// # Errors
+    /// When the words are empty, or the stamps cannot be kept.
+    pub fn add_stamp(&mut self, words: &str) -> Result<(), String> {
+        let words: String = words.trim().chars().take(stamps::MAX_WORDS).collect();
+        if words.is_empty() {
+            return Err("Write the stamp's words first".into());
+        }
+        let color = COLORS.get(self.color).map_or([0.8, 0.1, 0.1], |&(_, c)| c);
+        self.own_stamps.push((words.clone(), color));
+        self.stamp = stamps::TEMPLATES.len() + self.own_stamps.len() - 1;
+        self.keep_stamps()?;
+        self.status = format!("Added the stamp {words}.");
+        Ok(())
+    }
+
+    /// Removes stamp `index` of those offered, when it is the person's own.
+    ///
+    /// # Errors
+    /// When the stamps cannot be kept.
+    pub fn remove_stamp(&mut self, index: usize) -> Result<(), String> {
+        let Some(own) = index.checked_sub(stamps::TEMPLATES.len()) else {
+            return Ok(());
+        };
+        if own < self.own_stamps.len() {
+            self.own_stamps.remove(own);
+            if self.stamp >= index {
+                self.stamp = self.stamp.saturating_sub(1);
+            }
+            self.keep_stamps()?;
+        }
+        Ok(())
+    }
+
+    fn keep_stamps(&self) -> Result<(), String> {
+        match &self.saved_path {
+            Some(path) => chest::store_stamps(path, &self.own_stamps)
+                .map_err(|e| format!("Cannot keep the stamps: {e}")),
+            None => Ok(()),
+        }
+    }
+
     /// Picks the stamp placed next.
     pub fn choose_stamp(&mut self, stamp: usize) {
-        if stamp < stamps::TEMPLATES.len() {
+        if stamp < stamps::TEMPLATES.len() + self.own_stamps.len() {
             self.stamp = stamp;
             self.choose_tool(Tool::Draw(Kind::Stamp));
         }
@@ -798,7 +955,7 @@ impl Viewer {
 
     /// A new markup of `kind` through `points`, in the style in use.
     fn new_markup(&self, kind: Kind, points: Vec<Point>) -> Markup {
-        let template = stamps::TEMPLATES[self.stamp];
+        let template = self.stamp_template();
         if let Some(style) = self.style.as_ref().filter(|s| s.kind == kind) {
             return Markup {
                 page: self.page,
@@ -809,7 +966,7 @@ impl Viewer {
                 fill: style.fill && kind.fillable(),
                 subject: style.subject.clone(),
                 text: if kind == Kind::Stamp {
-                    template.words.into()
+                    template.words.clone()
                 } else {
                     String::new()
                 },
@@ -828,7 +985,7 @@ impl Viewer {
             width: WIDTHS[self.width].1,
             fill: self.fill && kind.fillable(),
             text: if kind == Kind::Stamp {
-                template.words.into()
+                template.words
             } else {
                 String::new()
             },
@@ -1752,6 +1909,11 @@ impl Viewer {
             .as_ref()
             .and_then(|r| bookmarks(r.document().bytes()).ok())
             .unwrap_or_default();
+        self.labels = self
+            .review
+            .as_ref()
+            .and_then(|r| page_labels(r.document().bytes()).ok())
+            .unwrap_or_default();
         self.snaps = None;
         self.snapped = None;
         self.drag = None;
@@ -2526,6 +2688,7 @@ impl Viewer {
     pub fn keep_saved_tools_at(&mut self, path: PathBuf) {
         self.saved = chest::load(&path);
         self.settings = chest::load_settings(&path);
+        self.own_stamps = chest::load_stamps(&path);
         self.saved_path = Some(path);
     }
 
@@ -2991,6 +3154,12 @@ fn marker((x, y): (f64, f64), kind: Snap) -> String {
     }
 }
 
+/// A stamp to place: its words, filled in, and its color.
+struct OwnStamp {
+    words: String,
+    color: Color,
+}
+
 /// `page 3` or `pages 2, 3 and 7`.
 fn pages_named(pages: &[usize]) -> String {
     match pages {
@@ -3185,6 +3354,83 @@ mod tests {
         viewer.release((500.0, 160.0));
         let (low, high) = viewer.selected().unwrap().bounds();
         assert_eq!((high.x - low.x, high.y - low.y), (100.0, 100.0));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_view_turns_with_the_markups_and_the_file_stays() {
+        let (mut viewer, dir) = viewer();
+        let bytes = viewer.review().unwrap().document().bytes().to_vec();
+        viewer.turn_view(1);
+        assert_eq!(viewer.turn_label(), "View 90°");
+        assert_eq!(viewer.view(1.0).unwrap().turn, 1);
+        let page = viewer.page_size().unwrap();
+        assert_eq!((page.width, page.height), (1728.0, 2592.0));
+        // A point goes to the page and back to the same place on screen.
+        let at = (321.0, 234.0);
+        let back = viewer.to_screen(&page, viewer.to_pdf(at).unwrap());
+        assert!((back.0 - at.0).abs() < 1e-6 && (back.1 - at.1).abs() < 1e-6);
+
+        // A rectangle drawn on the turned view is found where it was drawn.
+        viewer.choose_tool(Tool::Draw(Kind::Rectangle));
+        drag(&mut viewer, (200.0, 200.0), (320.0, 280.0));
+        viewer.choose_tool(Tool::Select);
+        viewer.escape();
+        click(&mut viewer, (200.0, 240.0));
+        assert!(viewer.selected().is_some());
+        // Upright again, the same markup is somewhere else on screen.
+        for _ in 0..3 {
+            viewer.turn_view(1);
+        }
+        assert_eq!(viewer.turn_label(), "");
+        assert_eq!(
+            viewer.review().unwrap().document().bytes(),
+            bytes.as_slice()
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn stamps_say_who_and_when_and_a_shop_adds_its_own() {
+        let (mut viewer, dir) = viewer();
+        viewer.author = "Andrés".into();
+        viewer.choose_tool(Tool::Draw(Kind::Stamp));
+        let reviewed = viewer
+            .stamp_names()
+            .iter()
+            .position(|w| w.contains("{name}"))
+            .unwrap();
+        viewer.choose_stamp(reviewed);
+        click(&mut viewer, (300.0, 300.0));
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%m/%d/%Y")
+            .to_string();
+        let placed = viewer
+            .review()
+            .unwrap()
+            .markups()
+            .last()
+            .unwrap()
+            .text
+            .clone();
+        assert_eq!(placed, format!("REVIEWED BY Andrés {today}"));
+
+        // A stamp of the shop's own, in the color in use, then taken out.
+        viewer.choose_color(2);
+        assert!(viewer.add_stamp("   ").is_err());
+        viewer.add_stamp("SHOP CHECKED {date}").unwrap();
+        let own = viewer.stamp_names().len() - 1;
+        assert_eq!(viewer.stamp(), own);
+        click(&mut viewer, (300.0, 500.0));
+        let placed = viewer.review().unwrap().markups().last().unwrap().clone();
+        assert_eq!(placed.text, format!("SHOP CHECKED {today}"));
+        assert_eq!(placed.color, COLORS[2].1);
+        viewer.remove_stamp(0).unwrap();
+        assert_eq!(viewer.stamp_names().len(), own + 1, "Review's stay");
+        viewer.remove_stamp(own).unwrap();
+        assert_eq!(viewer.stamp_names().len(), own);
+        assert!(viewer.stamp() < own);
         std::fs::remove_dir_all(dir).ok();
     }
 
