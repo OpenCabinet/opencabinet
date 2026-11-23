@@ -52,6 +52,12 @@ export struct BookmarkInfo {
     has-page: bool,
 }
 
+// An open file's tab: its name, and whether it has changes not saved.
+export struct TabInfo {
+    title: string,
+    modified: bool,
+}
+
 // A saved tool in My tools: its name and color.
 export struct SavedInfo {
     name: string,
@@ -223,6 +229,11 @@ export component ReviewWindow inherits Window {
     in property <[bool]> pages-chosen;
     in property <string> pages-label;
     in property <bool> can-change-pages;
+    // The open files, and which is shown.
+    in property <[TabInfo]> tabs;
+    in property <int> active-tab;
+    // The files opened last, newest first.
+    in property <[string]> recent;
     in property <string> found-label;
     in property <bool> comparing;
     in property <string> list-label;
@@ -323,6 +334,11 @@ export component ReviewWindow inherits Window {
     callback insert-blank();
     callback insert-pages();
     callback extract-pages();
+    callback choose-tab(int);
+    callback close-tab(int);
+    callback close-this-tab();
+    callback next-tab();
+    callback open-recent(int);
 
     title: root.window-title;
     preferred-width: 1366px;
@@ -339,6 +355,15 @@ export component ReviewWindow inherits Window {
         Menu {
             title: "File";
             MenuItem { title: "Open…"; shortcut: @keys(Control + O); activated => { root.open(); } }
+            Menu {
+                title: "Open recent";
+                enabled: root.recent.length > 0;
+                for path[i] in root.recent: MenuItem {
+                    title: path;
+                    activated => { root.open-recent(i); }
+                }
+            }
+            MenuItem { title: "Close tab"; shortcut: @keys(Control + W); enabled: root.has-document || root.tabs.length > 1; activated => { root.close-this-tab(); } }
             MenuItem { title: "Save"; shortcut: @keys(Control + S); enabled: root.has-document; activated => { root.save(); } }
             MenuItem { title: "Save as…"; enabled: root.has-document; activated => { root.save-as(); } }
             MenuSeparator { }
@@ -428,6 +453,10 @@ export component ReviewWindow inherits Window {
             }
             if (event.text == Key.PageDown) {
                 root.next-page();
+                return accept;
+            }
+            if (event.modifiers.control && event.text == Key.Tab) {
+                root.next-tab();
                 return accept;
             }
             if (event.text == Key.F3) {
@@ -808,6 +837,66 @@ export component ReviewWindow inherits Window {
                 VerticalLayout {
                 horizontal-stretch: 1;
                 spacing: 0px;
+                // The open files, one tab each.
+                Rectangle {
+                    height: 30px;
+                    background: Palette.alternate-background;
+                    border-width: 1px;
+                    border-color: Palette.border;
+                    HorizontalLayout {
+                        padding-left: 4px;
+                        padding-top: 3px;
+                        spacing: 2px;
+                        alignment: start;
+                        for file[i] in root.tabs: Rectangle {
+                            min-width: 90px;
+                            max-width: 240px;
+                            border-radius: 4px;
+                            background: i == root.active-tab ? Palette.background
+                                : tab-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                            border-width: i == root.active-tab ? 1px : 0px;
+                            border-color: Palette.border;
+                            accessible-role: tab;
+                            accessible-label: file.title;
+                            accessible-item-selected: i == root.active-tab;
+                            accessible-action-default => { root.choose-tab(i); }
+                            tab-touch := TouchArea { clicked => { root.choose-tab(i); } }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 4px;
+                                spacing: 4px;
+                                Text {
+                                    text: (file.modified ? "* " : "") + file.title;
+                                    vertical-alignment: center;
+                                    font-size: 12px;
+                                    font-weight: i == root.active-tab ? 600 : 400;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                Rectangle {
+                                    width: 20px;
+                                    border-radius: 3px;
+                                    background: close-touch.has-hover ? Palette.foreground.transparentize(85%) : transparent;
+                                    accessible-role: button;
+                                    accessible-label: "Close " + file.title;
+                                    accessible-action-default => { root.close-tab(i); }
+                                    Text { text: "×"; horizontal-alignment: center; vertical-alignment: center; font-size: 14px; }
+                                    close-touch := TouchArea { clicked => { root.close-tab(i); } }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: 26px;
+                            border-radius: 4px;
+                            background: open-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                            accessible-role: button;
+                            accessible-label: "Open in a new tab";
+                            accessible-action-default => { root.open(); }
+                            Text { text: "+"; horizontal-alignment: center; vertical-alignment: center; font-size: 16px; }
+                            open-touch := TouchArea { clicked => { root.open(); } }
+                        }
+                    }
+                }
                 body := Rectangle {
                     vertical-stretch: 1;
                     clip: true;

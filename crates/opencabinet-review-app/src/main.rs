@@ -9,9 +9,12 @@
 use slint::ComponentHandle;
 
 fn main() -> Result<(), slint::PlatformError> {
-    // A PDF given on the command line, or opened with Review from the
-    // system's file manager.
-    let path = std::env::args_os().nth(1).map(std::path::PathBuf::from);
-    let window = opencabinet_review_app::create(path.as_deref())?;
+    // The PDFs given on the command line, or opened with Review from the
+    // system's file manager, each in a tab.
+    let paths: Vec<std::path::PathBuf> = std::env::args_os()
+        .skip(1)
+        .map(std::path::PathBuf::from)
+        .collect();
+    let window = opencabinet_review_app::create_all(&paths)?;
     window.run()
 }

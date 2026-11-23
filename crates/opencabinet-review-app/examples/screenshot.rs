@@ -4,7 +4,7 @@
 //! Draws Review's window into a PNG without a screen, to look at the
 //! layout: `cargo run -p opencabinet-review-app --example screenshot --
 //! out.png [width height]`, with `PANEL` naming the left panel to open
-//! and `REPLIES`, `SNAP` or `PAGES` showing those features.
+//! and `REPLIES`, `SNAP`, `PAGES` or `TABS` showing those features.
 //! It opens a drawing made for the test, with bookmarks, a few markups,
 //! and the markup list.
 
@@ -41,7 +41,23 @@ fn main() {
     std::fs::create_dir_all(&dir).unwrap();
     let pdf = dir.join("A-201.pdf");
     std::fs::write(&pdf, opencabinet_pdf::sample::bookmarked()).unwrap();
-    let review = opencabinet_review_app::create(Some(&pdf)).unwrap();
+    // TABS=1 opens a second drawing, in a tab of its own, and shows the
+    // first.
+    let mut paths = vec![pdf.clone()];
+    if std::env::var("TABS").is_ok() {
+        let other = dir.join("A-301 Kitchen elevations.pdf");
+        std::fs::write(
+            &other,
+            opencabinet_pdf::sample::sheets(3, 1728.0, 1296.0, 4),
+        )
+        .unwrap();
+        paths.push(other);
+    }
+    // The person's own tools, settings and recent files stay untouched.
+    let review = opencabinet_review_app::create_apart(&paths).unwrap();
+    if paths.len() > 1 {
+        review.invoke_choose_tab(0);
+    }
     review.show().unwrap();
     window.set_size(PhysicalSize::new(width, height));
     let mut pixels = vec![Rgb565Pixel::default(); (width * height) as usize];

@@ -106,6 +106,12 @@ follow [Semantic Versioning](https://semver.org/).
     scales go with their page, and Undo takes each change back. Saving
     still appends one incremental update; pages cannot change during a
     session.
+  - **Tabs:** several PDFs open at once, each in a tab above the
+    drawing, with its own markups, pages and undo. Open picks several
+    files at a time, a file already open goes to its tab, Ctrl+Tab goes
+    to the next tab and Ctrl+W closes one, asking first if it has
+    changes not saved. The tool, color and line in use follow from tab
+    to tab. File > Open recent lists the last ten files.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

@@ -31,6 +31,11 @@ pub trait Dialogs {
     /// The PDF to open, or `None` when the user cancels.
     fn open_path(&self) -> Option<PathBuf>;
 
+    /// The PDFs to open, each in a tab; none when the user cancels.
+    fn open_paths(&self) -> Vec<PathBuf> {
+        self.open_path().into_iter().collect()
+    }
+
     /// Where to save a file of `kind`, starting from `suggested_name`, or
     /// `None` when the user cancels.
     fn save_path(&self, suggested_name: &str, kind: FileKind) -> Option<PathBuf>;
@@ -50,6 +55,15 @@ impl Dialogs for SystemDialogs {
             .set_title("Open PDF")
             .add_filter(name, &[extension])
             .pick_file()
+    }
+
+    fn open_paths(&self) -> Vec<PathBuf> {
+        let (name, extension) = FileKind::Pdf.filter();
+        FileDialog::new()
+            .set_title("Open PDFs")
+            .add_filter(name, &[extension])
+            .pick_files()
+            .unwrap_or_default()
     }
 
     fn save_path(&self, suggested_name: &str, kind: FileKind) -> Option<PathBuf> {
