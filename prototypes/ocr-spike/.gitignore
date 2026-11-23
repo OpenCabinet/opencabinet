@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: CC0-1.0
+
+/target/
+/out/
+# The models are downloaded, not kept in git (see README.md).
+/models/

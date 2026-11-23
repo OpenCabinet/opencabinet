@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 OpenCabinet contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Throwaway spike for OCR in OpenCabinet Review (ADR-0017, proposed): how
+# well does ocrs read drawings, and how fast on modest hardware?
+[package]
+name = "ocr-spike"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+ocrs = "0.14.0"
+rten = "0.28.0"
+opencabinet-pdf = { path = "../../crates/opencabinet-pdf" }
+
+[profile.release]
+lto = true
+codegen-units = 1
