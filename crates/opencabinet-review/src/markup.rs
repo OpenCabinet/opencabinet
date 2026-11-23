@@ -51,6 +51,13 @@ pub enum Kind {
     Area,
     /// A count of points.
     Count,
+    /// A measured angle: from a first point, at a corner, to a third.
+    Angle,
+    /// A measured length around a closed shape.
+    Perimeter,
+    /// A box that goes to a page, another drawing or a web address when
+    /// clicked; its text says where (see [`Markup::link`]).
+    Link,
 }
 
 /// How a markup is drawn with the mouse.
@@ -66,7 +73,7 @@ pub enum Gesture {
 
 impl Kind {
     /// Every kind, in the order the window offers them.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 20] = [
         Self::Cloud,
         Self::Rectangle,
         Self::Ellipse,
@@ -84,6 +91,9 @@ impl Kind {
         Self::Path,
         Self::Area,
         Self::Count,
+        Self::Angle,
+        Self::Perimeter,
+        Self::Link,
     ];
 
     /// What the window and the markup list call it.
@@ -107,6 +117,9 @@ impl Kind {
             Self::Path => "Path length",
             Self::Area => "Area",
             Self::Count => "Count",
+            Self::Angle => "Angle",
+            Self::Perimeter => "Perimeter",
+            Self::Link => "Link",
         }
     }
 
@@ -131,6 +144,9 @@ impl Kind {
             Self::Path => "path",
             Self::Area => "area",
             Self::Count => "count",
+            Self::Angle => "angle",
+            Self::Perimeter => "perimeter",
+            Self::Link => "link",
         }
     }
 
@@ -144,9 +160,13 @@ impl Kind {
     #[must_use]
     pub const fn gesture(self) -> Gesture {
         match self {
-            Self::Polygon | Self::Polyline | Self::Path | Self::Area | Self::Count => {
-                Gesture::Clicks
-            }
+            Self::Polygon
+            | Self::Polyline
+            | Self::Path
+            | Self::Area
+            | Self::Count
+            | Self::Angle
+            | Self::Perimeter => Gesture::Clicks,
             Self::Note => Gesture::Click,
             _ => Gesture::Drag,
         }
@@ -157,20 +177,40 @@ impl Kind {
     pub const fn boxed(self) -> bool {
         matches!(
             self,
-            Self::Rectangle | Self::Ellipse | Self::Highlight | Self::Text | Self::Stamp
+            Self::Rectangle
+                | Self::Ellipse
+                | Self::Highlight
+                | Self::Text
+                | Self::Stamp
+                | Self::Link
         )
     }
 
     /// Whether its outline closes on itself.
     #[must_use]
     pub const fn closed(self) -> bool {
-        matches!(self, Self::Cloud | Self::Polygon | Self::Area)
+        matches!(
+            self,
+            Self::Cloud | Self::Polygon | Self::Area | Self::Perimeter
+        )
+    }
+
+    /// The most points it takes, after which it is finished on its own.
+    #[must_use]
+    pub const fn most_points(self) -> Option<usize> {
+        match self {
+            Self::Angle => Some(3),
+            _ => None,
+        }
     }
 
     /// Whether it measures something.
     #[must_use]
     pub const fn measures(self) -> bool {
-        matches!(self, Self::Length | Self::Path | Self::Area | Self::Count)
+        matches!(
+            self,
+            Self::Length | Self::Path | Self::Area | Self::Count | Self::Angle | Self::Perimeter
+        )
     }
 
     /// Whether it may be filled.
@@ -475,6 +515,15 @@ impl Markup {
         }
     }
 
+    /// Where a link markup goes, from its text; `None` for other markups
+    /// or text that names nowhere.
+    #[must_use]
+    pub fn link(&self) -> Option<opencabinet_pdf::links::Target> {
+        (self.kind == Kind::Link)
+            .then(|| opencabinet_pdf::links::Target::parse(&self.text))
+            .flatten()
+    }
+
     /// A note's icon box.
     fn note_box(&self) -> (Point, Point) {
         let a = self.points.first().copied().unwrap_or_default();
@@ -511,7 +560,7 @@ impl Markup {
     pub fn outline(&self) -> Vec<Segment> {
         let (low, high) = self.bounds();
         match self.kind {
-            Kind::Rectangle | Kind::Highlight | Kind::Text => rectangle(low, high),
+            Kind::Rectangle | Kind::Highlight | Kind::Text | Kind::Link => rectangle(low, high),
             Kind::Stamp => {
                 let inset = 3.0 + self.width;
                 let mut out = rectangle(low, high);
@@ -523,12 +572,14 @@ impl Markup {
             }
             Kind::Ellipse => ellipse(low, high),
             Kind::Cloud => cloud(&self.points, self.scallop()),
-            Kind::Polygon | Kind::Area => {
+            Kind::Polygon | Kind::Area | Kind::Perimeter => {
                 let mut out = polyline(&self.points);
                 out.push(Segment::Close);
                 out
             }
-            Kind::Line | Kind::Pen | Kind::Polyline | Kind::Path => polyline(&self.points),
+            Kind::Line | Kind::Pen | Kind::Polyline | Kind::Path | Kind::Angle => {
+                polyline(&self.points)
+            }
             Kind::Arrow => {
                 let mut out = polyline(&self.points);
                 if let [.., a, b] = self.points[..] {
@@ -624,6 +675,15 @@ impl Markup {
                 )]
             }
             Kind::Stamp => self.stamp_captions(),
+            Kind::Link if !self.text.is_empty() => {
+                let (low, high) = self.text_box();
+                vec![caption(
+                    Point::new(low.x + 3.0, high.y - FONT_SIZE * 0.8 - 2.0),
+                    &format!("→ {}", self.text),
+                    FONT_SIZE * 0.8,
+                    false,
+                )]
+            }
             Kind::Length | Kind::Path => {
                 let (Some(value), Some(a), Some(b)) =
                     (value, self.points.first(), self.points.get(1))
@@ -638,9 +698,18 @@ impl Markup {
                     false,
                 )]
             }
-            Kind::Area => value.map_or_else(Vec::new, |value| {
+            Kind::Area | Kind::Perimeter => value.map_or_else(Vec::new, |value| {
                 vec![caption(centroid(&self.points), value, FONT_SIZE, true)]
             }),
+            Kind::Angle => match (value, self.points.get(1)) {
+                (Some(value), Some(corner)) => vec![caption(
+                    Point::new(corner.x + 6.0, corner.y + 6.0),
+                    value,
+                    FONT_SIZE,
+                    false,
+                )],
+                _ => Vec::new(),
+            },
             Kind::Count => self
                 .points
                 .iter()
@@ -720,10 +789,13 @@ impl Markup {
         };
         let (subtype, vertices) = match self.kind {
             Kind::Rectangle | Kind::Highlight => (Subtype::Square, Vec::new()),
+            Kind::Link => (Subtype::Link, Vec::new()),
             Kind::Ellipse => (Subtype::Circle, Vec::new()),
-            Kind::Cloud | Kind::Polygon | Kind::Area => (Subtype::Polygon, self.points.clone()),
+            Kind::Cloud | Kind::Polygon | Kind::Area | Kind::Perimeter => {
+                (Subtype::Polygon, self.points.clone())
+            }
             Kind::Line | Kind::Arrow | Kind::Length => (Subtype::Line, self.points.clone()),
-            Kind::Polyline | Kind::Path => (Subtype::PolyLine, self.points.clone()),
+            Kind::Polyline | Kind::Path | Kind::Angle => (Subtype::PolyLine, self.points.clone()),
             Kind::Pen | Kind::Count => (Subtype::Ink, self.points.clone()),
             Kind::Text | Kind::Callout => (Subtype::FreeText, Vec::new()),
             Kind::Note => (Subtype::Text, Vec::new()),
@@ -776,6 +848,7 @@ impl Markup {
             origin: self.origin,
             change: Change::New,
             replies: self.replies.clone(),
+            link: self.link(),
         }
     }
 
@@ -943,7 +1016,7 @@ fn foreign_kind(annotation: &Annotation) -> Option<Kind> {
         (Subtype::FreeText, _) if !annotation.callout.is_empty() => Kind::Callout,
         (Subtype::FreeText, _) => Kind::Text,
         (Subtype::Text, _) => Kind::Note,
-        (Subtype::Stamp, _) => return None,
+        (Subtype::Stamp | Subtype::Link, _) => return None,
     })
 }
 

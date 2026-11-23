@@ -25,9 +25,23 @@ use slint::{
 };
 
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
-use crate::viewer::{COLORS, Keys, TOOLS, Tool, Viewer, WIDTHS};
+use crate::viewer::{COLORS, Follow, Keys, TOOLS, Tool, Viewer, WIDTHS};
 use opencabinet_review::sets::{self, SheetSet};
 use opencabinet_review::{Kind, Status};
+
+/// Shows what the measuring markups add up to.
+fn refresh_quantities(window: &ReviewWindow, viewer: &Viewer) {
+    let quantities: Vec<QuantityInfo> = viewer
+        .quantities()
+        .into_iter()
+        .map(|[what, total, detail]| QuantityInfo {
+            what: what.into(),
+            total: total.into(),
+            detail: detail.into(),
+        })
+        .collect();
+    window.set_quantities(ModelRc::new(VecModel::from(quantities)));
+}
 
 /// The code Slint generates from `ui/review.slint`, which follows Slint's
 /// conventions rather than this workspace's lints.
@@ -37,8 +51,42 @@ mod ui {
 }
 
 pub use ui::{
-    BookmarkInfo, Label, ReplyInfo, ReviewWindow, SavedInfo, Shape, SheetInfo, TabInfo, ToolInfo,
+    BookmarkInfo, Label, QuantityInfo, ReplyInfo, ReviewWindow, SavedInfo, Shape, SheetInfo,
+    TabInfo, ToolInfo,
 };
+
+/// Opens `address`, a web or mail address a link goes to, in the
+/// system's own browser or mail program.
+///
+/// # Errors
+/// A message for the user when it cannot.
+fn open_web(address: &str) -> Result<(), String> {
+    // Only addresses a link may go to; never a program or a file.
+    let lower = address.to_lowercase();
+    if !["http://", "https://", "mailto:"]
+        .iter()
+        .any(|p| lower.starts_with(p))
+        || address
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '"')
+    {
+        return Err("Links open only web and mail addresses.".into());
+    }
+    let mut command = if cfg!(windows) {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    command
+        .arg(address)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Cannot open {address}: {e}"))
+}
 
 /// The most pages drawn as thumbnails.
 const MAX_THUMBNAILS: usize = 500;
@@ -304,6 +352,23 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     }));
     window.on_extract_pages(on(App::extract_pages));
+    window.on_export_quantities(on(|app| {
+        let stem = app
+            .viewer
+            .borrow()
+            .path()
+            .and_then(Path::file_stem)
+            .map_or_else(
+                || "drawing".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+        if let Some(path) = app
+            .dialogs
+            .save_path(&format!("{stem} quantities.csv"), FileKind::List)
+        {
+            app.try_change(|v| v.export_quantities(&path));
+        }
+    }));
     let a = Rc::clone(app);
     window.on_add_stamp(move |words| a.try_change(|v| v.add_stamp(&words)));
     let a = Rc::clone(app);
@@ -635,13 +700,32 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
 
 impl App {
     fn change(&self, f: impl FnOnce(&mut Viewer)) {
-        let changed = {
+        let (changed, follow) = {
             let mut viewer = self.viewer.borrow_mut();
             let before = viewer.document_key();
             f(&mut viewer);
             viewer.publish();
-            viewer.document_key() != before
+            (viewer.document_key() != before, viewer.take_follow())
         };
+        match follow {
+            Some(Follow::File(path, page)) => {
+                if path.is_file() {
+                    self.open(&path);
+                    self.viewer.borrow_mut().go_to(page);
+                } else {
+                    self.viewer.borrow_mut().say_status(&format!(
+                        "The link goes to {}, which is not there.",
+                        path.display()
+                    ));
+                }
+            }
+            Some(Follow::Web(address)) => {
+                if let Err(message) = open_web(&address) {
+                    self.viewer.borrow_mut().say_status(&message);
+                }
+            }
+            None => {}
+        }
         if changed {
             // Other pages: other thumbnails, and the page drawn again.
             *self.generation.borrow_mut() += 1;
@@ -1210,6 +1294,7 @@ impl App {
         window.set_comparing(viewer.compared().is_some());
         window.set_zoom_label(viewer.zoom_label().into());
         window.set_turn_label(viewer.turn_label().into());
+        refresh_quantities(&window, &viewer);
         window.set_scale_label(viewer.scale_label().into());
         window.set_snap_label(viewer.snap_label().into());
         window.set_snap_on(viewer.snapping());

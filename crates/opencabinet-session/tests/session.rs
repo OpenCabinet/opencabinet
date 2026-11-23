@@ -164,7 +164,26 @@ fn follow_until(people: &mut [&mut Participant], done: impl Fn(&[&mut Participan
     while !done(people) {
         assert!(
             start.elapsed() < Duration::from_secs(20),
-            "the session did not move"
+            "the session did not move: {}",
+            {
+                let states: Vec<String> = people
+                    .iter()
+                    .map(|p| {
+                        let shared = p.link().shared.lock().unwrap();
+                        format!(
+                            "hosting {} connections {} stopped {} handed to me {} moved {:?}",
+                            p.hosting(),
+                            p.link().connections(),
+                            p.link().stopped(),
+                            shared.handed_to_me(),
+                            shared
+                                .moved_to()
+                                .map(|m| m.chars().take(30).collect::<String>())
+                        )
+                    })
+                    .collect();
+                states.join(" | ")
+            }
         );
         for p in people.iter_mut() {
             p.follow();

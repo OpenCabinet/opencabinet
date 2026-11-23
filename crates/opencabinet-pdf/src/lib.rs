@@ -21,6 +21,7 @@ pub mod annotations;
 pub mod find;
 mod flatten;
 pub mod labels;
+pub mod links;
 pub mod outline;
 pub mod pages;
 mod render;

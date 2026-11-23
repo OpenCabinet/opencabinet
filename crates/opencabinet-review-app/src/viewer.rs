@@ -15,6 +15,7 @@ use std::sync::atomic::Ordering;
 use opencabinet_model::{Length, Units};
 use opencabinet_pdf::find::{Found, find};
 use opencabinet_pdf::labels::page_labels;
+use opencabinet_pdf::links::{Link, Target, links};
 use opencabinet_pdf::outline::{Bookmark, bookmarks};
 use opencabinet_pdf::report::{self, Row, Table};
 use opencabinet_pdf::snaps::{Snap, Snapped, Snaps};
@@ -40,7 +41,7 @@ pub enum Tool {
 }
 
 /// The tools, in the order the window offers them.
-pub const TOOLS: [Tool; 19] = [
+pub const TOOLS: [Tool; 22] = [
     Tool::Select,
     Tool::Draw(Kind::Cloud),
     Tool::Draw(Kind::Rectangle),
@@ -60,6 +61,9 @@ pub const TOOLS: [Tool; 19] = [
     Tool::Draw(Kind::Path),
     Tool::Draw(Kind::Area),
     Tool::Draw(Kind::Count),
+    Tool::Draw(Kind::Angle),
+    Tool::Draw(Kind::Perimeter),
+    Tool::Draw(Kind::Link),
 ];
 
 impl Tool {
@@ -247,6 +251,11 @@ pub struct Viewer {
     labels: Vec<String>,
     /// The person's own stamps: their words and color.
     own_stamps: Vec<(String, Color)>,
+    /// The links on a page, read when first needed.
+    links: Option<(usize, Vec<Link>)>,
+    /// A link followed that the window must open: another drawing or a
+    /// web address.
+    follow: Option<Follow>,
     status: String,
 }
 
@@ -298,6 +307,8 @@ impl Default for Viewer {
             turns: 0,
             labels: Vec::new(),
             own_stamps: Vec::new(),
+            links: None,
+            follow: None,
             status: "Open a PDF to start.".into(),
         }
     }
@@ -379,6 +390,7 @@ impl Viewer {
         self.compare = None;
         self.chosen_pages.clear();
         self.turns = 0;
+        self.links = None;
         self.fit();
         Ok(())
     }
@@ -398,6 +410,53 @@ impl Viewer {
         std::fs::write(&path, bytes).map_err(|e| format!("Cannot save: {e}"))?;
         self.status = format!("Saved {}.", file_name(&path));
         self.path = Some(path);
+        Ok(())
+    }
+
+    /// What the measuring markups add up to: for each kind and subject,
+    /// what it is, its total, and how many markups on which pages.
+    #[must_use]
+    pub fn quantities(&self) -> Vec<[String; 3]> {
+        self.review
+            .as_ref()
+            .map(|r| r.quantities(self.units))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|q| {
+                let what = if q.subject == q.kind.label() {
+                    q.subject
+                } else {
+                    format!("{} · {}", q.subject, q.kind.label())
+                };
+                let total = if q.total.is_empty() {
+                    String::new()
+                } else {
+                    q.total
+                };
+                let mut detail = format!(
+                    "{} {} on page{} {}",
+                    q.items,
+                    if q.items == 1 { "markup" } else { "markups" },
+                    if q.pages.contains(',') { "s" } else { "" },
+                    q.pages
+                );
+                if q.unscaled > 0 {
+                    let _ = write!(detail, "; {} not to scale, left out", q.unscaled);
+                }
+                [what, total, detail]
+            })
+            .collect()
+    }
+
+    /// Writes the quantities for spreadsheets to `path`.
+    ///
+    /// # Errors
+    /// A message for the user when it cannot be written.
+    pub fn export_quantities(&mut self, path: &Path) -> Result<(), String> {
+        let review = self.review.as_ref().ok_or("There is no PDF open")?;
+        std::fs::write(path, review.quantities_csv(self.units))
+            .map_err(|e| format!("Cannot save: {e}"))?;
+        self.status = format!("Wrote the quantities to {}.", file_name(path));
         Ok(())
     }
 
@@ -446,6 +505,11 @@ impl Viewer {
             ),
             None => "OpenCabinet Review".into(),
         }
+    }
+
+    /// Says `text` in the line at the bottom of the window.
+    pub fn say_status(&mut self, text: &str) {
+        text.clone_into(&mut self.status);
     }
 
     /// The line at the bottom of the window.
@@ -714,6 +778,10 @@ impl Viewer {
             Tool::Draw(Kind::Stamp) => "Click to stamp, or drag the stamp's box.".into(),
             Tool::Draw(Kind::Count) => {
                 "Click each item to count; Enter or double click to finish.".into()
+            }
+            Tool::Draw(Kind::Link) => "Drag the link's box, then type where it goes on the right: a page number, a drawing such as A-301.pdf, or a web address. Double-click a link to follow it.".into(),
+            Tool::Draw(Kind::Angle) => {
+                "Click a point on one side, the corner, then a point on the other side.".into()
             }
             Tool::Draw(kind) if kind.measures() && self.page_scale().is_none() => {
                 "This page has no scale yet: calibrate it to read measurements.".into()
@@ -1029,11 +1097,18 @@ impl Viewer {
         }
         if let Some((kind, points, _)) = &mut self.building {
             points.push(point);
+            let (kind, full) = (
+                *kind,
+                kind.most_points().is_some_and(|most| points.len() >= most),
+            );
             // A shape placed by two clicks is done at the second.
             if kind.gesture() == Gesture::Drag
                 && let Some((kind, points, _)) = self.building.take()
             {
                 self.place_dragged(kind, &points);
+            } else if full {
+                // An angle is done at its third point.
+                self.finish();
             }
             return;
         }
@@ -1128,9 +1203,68 @@ impl Viewer {
             }
             None => {
                 self.select_only(None);
+                // A link on the page goes where it says.
+                if let Some(target) = self.link_at(point) {
+                    self.follow_link(target);
+                    return None;
+                }
                 Some(Drag::Pan { last: at })
             }
         }
+    }
+
+    /// Where the link on the page at `point` goes, if one is there.
+    fn link_at(&mut self, point: Point) -> Option<Target> {
+        let page = self.page;
+        if self.links.as_ref().is_none_or(|(p, _)| *p != page) {
+            let bytes = self.review.as_ref()?.document().bytes().to_vec();
+            self.links = Some((page, links(&bytes, page).unwrap_or_default()));
+        }
+        let (_, on_page) = self.links.as_ref()?;
+        on_page
+            .iter()
+            .find(|l| {
+                let [x0, y0, x1, y1] = l.rect;
+                (x0..=x1).contains(&point.x) && (y0..=y1).contains(&point.y)
+            })
+            .map(|l| l.target.clone())
+    }
+
+    /// Goes where `target` says: a page here, or, through the window,
+    /// another drawing or a web address.
+    pub fn follow_link(&mut self, target: Target) {
+        match target {
+            Target::Page(page) => {
+                let count = self
+                    .review
+                    .as_ref()
+                    .map_or(0, |r| r.document().pages().len());
+                if page < count {
+                    self.go_to(page);
+                    self.status = format!("Went to page {}.", page + 1);
+                } else {
+                    self.status = format!("This PDF has no page {}.", page + 1);
+                }
+            }
+            Target::File(name, page) => {
+                let path = Path::new(&name);
+                let path = match self.path.as_deref().and_then(Path::parent) {
+                    Some(folder) if path.is_relative() => folder.join(path),
+                    _ => path.to_owned(),
+                };
+                self.status = format!("Opening {}…", file_name(&path));
+                self.follow = Some(Follow::File(path, page));
+            }
+            Target::Web(address) => {
+                self.status = format!("Opening {address} in the web browser…");
+                self.follow = Some(Follow::Web(address));
+            }
+        }
+    }
+
+    /// The drawing or web address a link asks the window to open, once.
+    pub fn take_follow(&mut self) -> Option<Follow> {
+        self.follow.take()
     }
 
     /// The mouse moved, a button held or not.
@@ -1265,6 +1399,12 @@ impl Viewer {
 
     /// A double click: finishes a shape drawn point by point.
     pub fn double_click(&mut self) {
+        if self.building.is_none()
+            && let Some(target) = self.selected().and_then(Markup::link)
+        {
+            self.follow_link(target);
+            return;
+        }
         self.finish();
     }
 
@@ -1915,6 +2055,7 @@ impl Viewer {
             .and_then(|r| page_labels(r.document().bytes()).ok())
             .unwrap_or_default();
         self.snaps = None;
+        self.links = None;
         self.snapped = None;
         self.drag = None;
         self.building = None;
@@ -3154,6 +3295,15 @@ fn marker((x, y): (f64, f64), kind: Snap) -> String {
     }
 }
 
+/// What a followed link asks the window to open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Follow {
+    /// A drawing, at a page from 0.
+    File(PathBuf, usize),
+    /// A web or mail address.
+    Web(String),
+}
+
 /// A stamp to place: its words, filled in, and its color.
 struct OwnStamp {
     words: String,
@@ -3354,6 +3504,114 @@ mod tests {
         viewer.release((500.0, 160.0));
         let (low, high) = viewer.selected().unwrap().bounds();
         assert_eq!((high.x - low.x, high.y - low.y), (100.0, 100.0));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn links_go_to_pages_drawings_and_web_addresses() {
+        let (mut viewer, dir) = viewer();
+        viewer.settings.snap = false;
+        viewer.choose_tool(Tool::Draw(Kind::Link));
+        drag(&mut viewer, (100.0, 100.0), (260.0, 160.0));
+        viewer.set_text("2");
+        viewer.choose_tool(Tool::Select);
+        viewer.escape();
+        // A click picks the link to edit it; a double click follows it.
+        click(&mut viewer, (180.0, 130.0));
+        assert_eq!(viewer.selected().unwrap().kind, Kind::Link);
+        viewer.double_click();
+        assert_eq!(viewer.page(), 1);
+        assert_eq!(viewer.take_follow(), None);
+
+        viewer.go_to(0);
+        // Going to a page fits it; the view the link was drawn in again.
+        viewer.zoom = 1.0;
+        viewer.scroll = (0.0, 0.0);
+        click(&mut viewer, (180.0, 130.0));
+        viewer.set_text("A-301.pdf#3");
+        viewer.double_click();
+        assert_eq!(
+            viewer.take_follow(),
+            Some(Follow::File(dir.join("A-301.pdf"), 2))
+        );
+        viewer.set_text("https://example.org/specs");
+        viewer.double_click();
+        assert_eq!(
+            viewer.take_follow(),
+            Some(Follow::Web("https://example.org/specs".into()))
+        );
+        assert_eq!(viewer.take_follow(), None, "once");
+
+        // Another program's link, not a markup here, is followed with a
+        // click.
+        let mut markups = opencabinet_pdf::annotations::Markups::default();
+        markups
+            .annotations
+            .push(opencabinet_pdf::annotations::Annotation {
+                subtype: opencabinet_pdf::annotations::Subtype::Link,
+                rect: [100.0, 1500.0, 300.0, 1600.0],
+                link: Some(Target::Page(1)),
+                ..opencabinet_pdf::annotations::Annotation::default()
+            });
+        let path = dir.join("linked.pdf");
+        let bytes = opencabinet_pdf::sample::sheets(2, 2592.0, 1728.0, 0);
+        std::fs::write(
+            &path,
+            opencabinet_pdf::annotations::save(&bytes, &markups).unwrap(),
+        )
+        .unwrap();
+        viewer.open(&path).unwrap();
+        assert_eq!(viewer.review().unwrap().markups().len(), 0);
+        let page = viewer.page_size().unwrap();
+        let at = viewer.to_screen(&page, Point::new(200.0, 1550.0));
+        click(&mut viewer, at);
+        assert_eq!(viewer.page(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_angle_takes_three_clicks_and_quantities_add_up() {
+        let (mut viewer, dir) = viewer();
+        viewer.settings.snap = false;
+        viewer.choose_tool(Tool::Draw(Kind::Angle));
+        for at in [(400.0, 300.0), (300.0, 300.0), (300.0, 200.0)] {
+            click(&mut viewer, at);
+        }
+        // Done at the third click, without Enter.
+        assert!(!viewer.building());
+        let review = viewer.review().unwrap();
+        let angle = review.markups().last().unwrap();
+        assert_eq!(angle.kind, Kind::Angle);
+        assert_eq!(review.measured(angle, viewer.units).unwrap(), "90.0°");
+
+        // A perimeter, on a page at 1/4" = 1'-0".
+        let quarter = Viewer::scale_names()
+            .iter()
+            .position(|n| n == "1/4\" = 1'-0\"")
+            .unwrap();
+        viewer.choose_scale(quarter, false);
+        viewer.choose_tool(Tool::Draw(Kind::Perimeter));
+        for at in [
+            (100.0, 100.0),
+            (280.0, 100.0),
+            (280.0, 190.0),
+            (100.0, 190.0),
+        ] {
+            click(&mut viewer, at);
+        }
+        viewer.finish();
+        let rows = viewer.quantities();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1][0], "Perimeter");
+        assert_eq!(rows[1][1], "30'-0\"");
+        assert_eq!(rows[1][2], "1 markup on page 1");
+        let csv = dir.join("totals.csv");
+        viewer.export_quantities(&csv).unwrap();
+        assert!(
+            std::fs::read_to_string(&csv)
+                .unwrap()
+                .contains("Perimeter,Perimeter,1,1,")
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

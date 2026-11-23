@@ -67,6 +67,13 @@ export struct SheetInfo {
     shown: bool,
 }
 
+// What measuring markups of one kind and subject add up to.
+export struct QuantityInfo {
+    what: string,
+    total: string,
+    detail: string,
+}
+
 // A saved tool in My tools: its name and color.
 export struct SavedInfo {
     name: string,
@@ -252,6 +259,8 @@ export component ReviewWindow inherits Window {
     // The sheet set, if any: its name and its sheets.
     in property <string> set-name;
     in property <[SheetInfo]> sheets;
+    // What the measuring markups add up to.
+    in property <[QuantityInfo]> quantities;
     in property <string> found-label;
     in property <bool> comparing;
     in property <string> list-label;
@@ -260,7 +269,7 @@ export component ReviewWindow inherits Window {
     in-out property <string> author;
     in property <int> units;
     // The left panel open: -1 none, 0 pages, 1 bookmarks, 2 find, 3 measure,
-    // 4 session, 5 sheet set.
+    // 4 session, 5 sheet set, 6 quantities.
     in-out property <int> panel: 0;
     // Whether the markup list is open under the drawing.
     in-out property <bool> list-open: true;
@@ -364,6 +373,7 @@ export component ReviewWindow inherits Window {
     callback next-tab();
     callback open-recent(int);
     callback turn-view(int);
+    callback export-quantities();
     callback open-sheet(int);
     callback add-to-set();
     callback remove-from-set(int);
@@ -557,6 +567,12 @@ export component ReviewWindow inherits Window {
                             icon: "M 8 9 A 3 3 0 1 0 8 3 A 3 3 0 1 0 8 9 Z M 2 20 C 2 14 14 14 14 20 M 17 10 A 2.5 2.5 0 1 0 17 5 A 2.5 2.5 0 1 0 17 10 Z M 15 13 C 19 13 22 15 22 19";
                             active: root.panel == 4;
                             clicked => { root.toggle(4); }
+                        }
+                        RailButton {
+                            name: "Totals";
+                            icon: "M 5 4 L 19 4 M 5 9 L 19 9 M 5 14 L 19 14 M 5 20 L 19 20 M 5 17 L 19 17";
+                            active: root.panel == 6;
+                            clicked => { root.toggle(6); }
                         }
                         RailButton {
                             name: "Set";
@@ -773,6 +789,47 @@ export component ReviewWindow inherits Window {
                             model: ["Feet and inches", "Millimeters"];
                             current-index: root.units;
                             selected => { root.choose-units(self.current-index); }
+                        }
+                    }
+
+                    if root.panel == 6: VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        PanelTitle { text: "Quantities"; }
+                        Text {
+                            text: root.quantities.length == 0
+                                ? "Measure with Length, Path length, Perimeter, Area or Count: the totals appear here, by subject. Give markups a subject, such as Countertop, to total them apart."
+                                : "Totals of the measuring markups, by subject, at each page's scale.";
+                            wrap: word-wrap;
+                            font-size: 11px;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            BarButton { text: "Export CSV…"; enabled: root.quantities.length > 0; clicked => { root.export-quantities(); } }
+                        }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                spacing: 4px;
+                                for q in root.quantities: Rectangle {
+                                    height: 46px;
+                                    border-radius: 3px;
+                                    background: Palette.foreground.transparentize(94%);
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        spacing: 4px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            horizontal-stretch: 1;
+                                            Text { text: q.what; font-size: 12px; font-weight: 600; overflow: elide; }
+                                            Text { text: q.detail; font-size: 10px; overflow: elide; color: Palette.foreground.transparentize(30%); }
+                                        }
+                                        Text { text: q.total; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+                                    }
+                                }
+                            }
                         }
                     }
 

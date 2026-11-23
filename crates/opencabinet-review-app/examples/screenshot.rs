@@ -119,9 +119,40 @@ fn main() {
     println!("{}", out.display());
 }
 
-/// Shows what the environment asks for: `REPLIES`, `SNAP`, `PAGES` or
-/// `TURN`.
+/// Shows what the environment asks for: `REPLIES`, `SNAP`, `PAGES`,
+/// `TURN` or `QTY`.
 fn show_features(review: &opencabinet_review_app::ReviewWindow) {
+    // QTY=1 measures at 1/4" = 1'-0": two lengths, an angle and a count.
+    if std::env::var("QTY").is_ok() {
+        use slint::Model;
+        let scales = review.get_scales();
+        if let Some(quarter) = (0..scales.row_count())
+            .find(|&i| scales.row_data(i).is_some_and(|s| s == "1/4\" = 1'-0\""))
+        {
+            review.invoke_choose_scale(i32::try_from(quarter).unwrap_or(0), false);
+        }
+        for (from, to) in [
+            ((520.0, 380.0), (700.0, 380.0)),
+            ((520.0, 420.0), (640.0, 420.0)),
+        ] {
+            review.invoke_choose_tool(15);
+            review.invoke_pressed(from.0, from.1, 0);
+            review.invoke_dragged(to.0, to.1);
+            review.invoke_released(to.0, to.1);
+        }
+        review.invoke_choose_tool(19);
+        for (x, y) in [(760.0, 300.0), (700.0, 300.0), (700.0, 240.0)] {
+            review.invoke_pressed(x, y, 0);
+            review.invoke_released(x, y);
+        }
+        review.invoke_choose_tool(18);
+        for (x, y) in [(560.0, 250.0), (600.0, 250.0), (640.0, 250.0)] {
+            review.invoke_pressed(x, y, 0);
+            review.invoke_released(x, y);
+        }
+        review.invoke_finish();
+        review.invoke_choose_tool(0);
+    }
     // REPLIES=1 shows the last markup's replies in the editor.
     if std::env::var("REPLIES").is_ok() {
         review.invoke_reply("Is the opening 36\" or 42\"?".into());

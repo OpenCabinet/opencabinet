@@ -255,6 +255,34 @@ pub fn path_length(points: &[Point]) -> f64 {
         .sum()
 }
 
+/// The length around the closed shape through `points`, on the sheet.
+#[must_use]
+pub fn perimeter(points: &[Point]) -> f64 {
+    match points {
+        [first, .., last] if points.len() > 2 => path_length(points) + last.distance(*first),
+        _ => path_length(points),
+    }
+}
+
+/// The angle at the second of `points`, between the first and the third,
+/// in degrees from 0 to 180; `None` until there are three distinct points.
+#[must_use]
+pub fn angle(points: &[Point]) -> Option<f64> {
+    let [a, corner, b, ..] = points else {
+        return None;
+    };
+    let (u, v) = (
+        (a.x - corner.x, a.y - corner.y),
+        (b.x - corner.x, b.y - corner.y),
+    );
+    let (lu, lv) = (u.0.hypot(u.1), v.0.hypot(v.1));
+    if lu < f64::EPSILON || lv < f64::EPSILON {
+        return None;
+    }
+    let cos = ((u.0 * v.0 + u.1 * v.1) / (lu * lv)).clamp(-1.0, 1.0);
+    Some(cos.acos().to_degrees())
+}
+
 /// The area inside the polygon through `points`, on the sheet.
 #[must_use]
 pub fn polygon_area(points: &[Point]) -> f64 {

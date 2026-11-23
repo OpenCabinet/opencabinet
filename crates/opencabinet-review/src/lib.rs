@@ -35,7 +35,7 @@ pub use markup::{
     COUNT_RADIUS, Caption, Color, FILL_OPACITY, FONT_SIZE, Gesture, Kind, Markup, NOTE_SIZE,
     Segment, Status, text_width,
 };
-pub use scale::{Scale, path_length, polygon_area, presets, shown, shown_area};
+pub use scale::{Scale, angle, path_length, perimeter, polygon_area, presets, shown, shown_area};
 
 /// How many steps can be undone.
 const HISTORY: usize = 200;
@@ -587,11 +587,16 @@ impl Review {
         if markup.kind == Kind::Count {
             return Some(markup.points.len().to_string());
         }
+        if markup.kind == Kind::Angle {
+            // An angle is the same at any scale.
+            return angle(&markup.points).map(|degrees| format!("{degrees:.1}°"));
+        }
         let Some(scale) = self.scale_of(markup) else {
             return Some("Not to scale".to_owned());
         };
         Some(match markup.kind {
             Kind::Area => shown_area(scale.area_mm2(polygon_area(&markup.points)), units),
+            Kind::Perimeter => shown(scale.length(perimeter(&markup.points)), units),
             _ => shown(scale.length(path_length(&markup.points)), units),
         })
     }
@@ -738,6 +743,115 @@ impl Review {
         }
         out
     }
+
+    /// What the measuring markups add up to, by kind and subject, in the
+    /// order they were first made: lengths and areas summed at each page's
+    /// scale, counts counted.
+    #[must_use]
+    pub fn quantities(&self, units: Units) -> Vec<Quantity> {
+        let mut groups: Vec<(Kind, String, Vec<&Markup>)> = Vec::new();
+        for markup in self.state.markups.iter().filter(|m| m.kind.measures()) {
+            let subject = markup.subject().to_owned();
+            match groups
+                .iter_mut()
+                .find(|(k, s, _)| *k == markup.kind && *s == subject)
+            {
+                Some((_, _, list)) => list.push(markup),
+                None => groups.push((markup.kind, subject, vec![markup])),
+            }
+        }
+        groups
+            .into_iter()
+            .map(|(kind, subject, list)| {
+                let pages: BTreeSet<usize> = list.iter().map(|m| m.page + 1).collect();
+                let scaled: Vec<(&Markup, Scale)> = list
+                    .iter()
+                    .filter_map(|m| self.scale_of(m).map(|s| (*m, s)))
+                    .collect();
+                let unscaled = match kind {
+                    Kind::Count | Kind::Angle => 0,
+                    _ => list.len() - scaled.len(),
+                };
+                let total = match kind {
+                    Kind::Count => list
+                        .iter()
+                        .map(|m| m.points.len())
+                        .sum::<usize>()
+                        .to_string(),
+                    Kind::Angle => String::new(),
+                    Kind::Area => shown_area(
+                        scaled
+                            .iter()
+                            .map(|(m, s)| s.area_mm2(polygon_area(&m.points)))
+                            .sum(),
+                        units,
+                    ),
+                    _ => {
+                        let nm: i64 = scaled
+                            .iter()
+                            .map(|(m, s)| {
+                                let points = if kind == Kind::Perimeter {
+                                    perimeter(&m.points)
+                                } else {
+                                    path_length(&m.points)
+                                };
+                                s.length(points).nm()
+                            })
+                            .sum();
+                        shown(Length::from_nm(nm), units)
+                    }
+                };
+                Quantity {
+                    kind,
+                    subject,
+                    items: list.len(),
+                    pages: pages
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    total,
+                    unscaled,
+                }
+            })
+            .collect()
+    }
+
+    /// The quantities for spreadsheets: one row per kind and subject.
+    #[must_use]
+    pub fn quantities_csv(&self, units: Units) -> String {
+        let mut out = String::from("Type,Subject,Items,Pages,Total,Not to scale\r\n");
+        for q in self.quantities(units) {
+            let fields = [
+                q.kind.label().to_owned(),
+                q.subject,
+                q.items.to_string(),
+                q.pages,
+                q.total,
+                q.unscaled.to_string(),
+            ];
+            let row: Vec<String> = fields.iter().map(|f| csv_field(f)).collect();
+            let _ = write!(out, "{}\r\n", row.join(","));
+        }
+        out
+    }
+}
+
+/// What the measuring markups of one kind and subject add up to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Quantity {
+    /// What they measure.
+    pub kind: Kind,
+    /// Their subject.
+    pub subject: String,
+    /// How many markups.
+    pub items: usize,
+    /// The pages they are on, from 1, as `2, 5`.
+    pub pages: String,
+    /// What they add up to, in the units asked for; empty for angles.
+    pub total: String,
+    /// How many could not be measured, their page having no scale.
+    pub unscaled: usize,
 }
 
 /// Now, as a PDF date.
