@@ -508,3 +508,23 @@ fn angles_perimeters_and_quantities_add_up() {
     let kinds: Vec<Kind> = again.markups().iter().map(|m| m.kind).collect();
     assert!(kinds.contains(&Kind::Angle) && kinds.contains(&Kind::Perimeter));
 }
+
+#[test]
+fn a_link_markup_is_saved_as_a_link_and_comes_back() {
+    use opencabinet_pdf::links::{Target, links};
+    let mut review = Review::open(sheets()).unwrap();
+    let mut link = markup(0, Kind::Link, &[(100.0, 100.0), (300.0, 200.0)]);
+    link.text = "page 2".into();
+    assert_eq!(link.link(), Some(Target::Page(1)));
+    review.add(link, "Andrés");
+    let saved = review.save(Units::Imperial).unwrap();
+    assert_eq!(links(&saved, 0).unwrap()[0].target, Target::Page(1));
+    let again = Review::open(saved).unwrap();
+    let back = &again.markups()[0];
+    assert_eq!(back.kind, Kind::Link);
+    assert_eq!(back.text, "page 2");
+    // Words that name nowhere make a link that goes nowhere yet.
+    let mut nowhere = markup(0, Kind::Link, &[(0.0, 0.0), (10.0, 10.0)]);
+    nowhere.text = "ask the architect".into();
+    assert_eq!(nowhere.link(), None);
+}

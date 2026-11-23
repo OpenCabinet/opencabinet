@@ -67,10 +67,12 @@ pub enum Subtype {
     Text,
     /// A stamp.
     Stamp,
+    /// A link Review made; others' links are left alone and not read.
+    Link,
 }
 
 impl Subtype {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Square,
         Self::Circle,
         Self::Line,
@@ -80,6 +82,7 @@ impl Subtype {
         Self::FreeText,
         Self::Text,
         Self::Stamp,
+        Self::Link,
     ];
 
     fn name(self) -> &'static str {
@@ -93,6 +96,7 @@ impl Subtype {
             Self::FreeText => "FreeText",
             Self::Text => "Text",
             Self::Stamp => "Stamp",
+            Self::Link => "Link",
         }
     }
 
@@ -214,6 +218,8 @@ pub struct Annotation {
     /// The replies to it, in the order the PDF lists them; replies to
     /// replies come with the markup they answer.
     pub replies: Vec<Reply>,
+    /// Where a link goes, when it is one, to write its action.
+    pub link: Option<crate::links::Target>,
 }
 
 impl Default for Annotation {
@@ -246,6 +252,7 @@ impl Default for Annotation {
             origin: None,
             change: Change::New,
             replies: Vec::new(),
+            link: None,
         }
     }
 }
@@ -422,7 +429,7 @@ pub fn save(bytes: &[u8], markups: &Markups) -> Result<Vec<u8>, Error> {
     let removed: BTreeSet<ObjectId> = markups.removed.iter().copied().collect();
     let mut font = None;
 
-    let mut changed = rewrite_in_place(&mut document, markups, &mut font);
+    let mut changed = rewrite_in_place(&mut document, markups, &mut font, &pages);
 
     for (index, &page_id) in pages.iter().enumerate() {
         let prev = document.get_prev_documents();
@@ -457,7 +464,7 @@ pub fn save(bytes: &[u8], markups: &Markups) -> Result<Vec<u8>, Error> {
         let mut annots = kept;
         append_new(
             &mut document.new_document,
-            page_id,
+            (page_id, &pages),
             (&new, &answered),
             &mut font,
             &mut annots,
@@ -496,7 +503,7 @@ pub fn save(bytes: &[u8], markups: &Markups) -> Result<Vec<u8>, Error> {
 /// `answered`.
 fn append_new(
     document: &mut lopdf::Document,
-    page: ObjectId,
+    (page, pages): (ObjectId, &[ObjectId]),
     (new, answered): (&[&Annotation], &[&Annotation]),
     font: &mut Option<ObjectId>,
     annots: &mut Vec<Object>,
@@ -509,7 +516,7 @@ fn append_new(
             // Printed with the page.
             "F" => 4,
         };
-        fill(document, &mut dict, annotation, font);
+        fill(document, &mut dict, annotation, (font, pages));
         let id = document.add_object(dict);
         annots.push(Object::Reference(id));
         for reply in &annotation.replies {
@@ -534,6 +541,7 @@ fn rewrite_in_place(
     document: &mut IncrementalDocument,
     markups: &Markups,
     font: &mut Option<ObjectId>,
+    pages: &[ObjectId],
 ) -> bool {
     let mut changed = false;
     for annotation in &markups.annotations {
@@ -555,7 +563,12 @@ fn rewrite_in_place(
             Change::Rewritten => {
                 let font = *font.get_or_insert_with(|| add_font(&mut document.new_document));
                 let mut dict = original;
-                fill(&mut document.new_document, &mut dict, annotation, font);
+                fill(
+                    &mut document.new_document,
+                    &mut dict,
+                    annotation,
+                    (font, pages),
+                );
                 dict
             }
         };
@@ -734,6 +747,10 @@ fn read_annotation(
     if dict.has(b"IRT") {
         return None;
     }
+    // Other programs' links are followed, not edited (see `links`).
+    if subtype == Subtype::Link && own_entries(document, dict).is_none() {
+        return None;
+    }
     let rect = numbers(document, dict.get(b"Rect").ok());
     let [x0, y0, x1, y1] = rect[..] else {
         return None;
@@ -750,9 +767,12 @@ fn read_annotation(
                 .collect(),
             _ => Vec::new(),
         },
-        Subtype::Square | Subtype::Circle | Subtype::FreeText | Subtype::Text | Subtype::Stamp => {
-            Vec::new()
-        }
+        Subtype::Square
+        | Subtype::Circle
+        | Subtype::FreeText
+        | Subtype::Text
+        | Subtype::Stamp
+        | Subtype::Link => Vec::new(),
     };
     let width = dict_in(document, dict, b"BS")
         .and_then(|bs| bs.get(b"W").ok().and_then(number))
@@ -813,6 +833,7 @@ fn read_annotation(
         origin: None,
         change: Change::Unchanged,
         replies: Vec::new(),
+        link: None,
     })
 }
 
@@ -931,7 +952,7 @@ fn fill(
     document: &mut lopdf::Document,
     dict: &mut Dictionary,
     annotation: &Annotation,
-    font: ObjectId,
+    (font, pages): (ObjectId, &[ObjectId]),
 ) {
     let [x0, y0, x1, y1] = annotation.rect;
     let opacity = annotation.opacity.clamp(0.0, 1.0);
@@ -991,6 +1012,15 @@ fn fill(
             );
             if !annotation.callout.is_empty() {
                 dict.set("CL", flat(&annotation.callout));
+            }
+        }
+        Subtype::Link => {
+            dict.remove(b"Dest");
+            match annotation.link.as_ref().and_then(|t| t.action(pages)) {
+                Some(action) => dict.set("A", action),
+                None => {
+                    dict.remove(b"A");
+                }
             }
         }
         Subtype::Square | Subtype::Circle | Subtype::Text | Subtype::Stamp => {}

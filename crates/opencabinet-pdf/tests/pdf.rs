@@ -611,3 +611,51 @@ fn pages_are_named_as_the_pdf_says_until_they_move() {
         Vec::<String>::new()
     );
 }
+
+#[test]
+fn links_are_written_as_standard_links_and_followed() {
+    use opencabinet_pdf::links::{Target, links};
+    let original = sample::sheets(2, SHEET.0, SHEET.1, 0);
+    let mut markups = Markups::default();
+    for (n, target) in [
+        Target::Page(1),
+        Target::File("A-301.pdf".into(), 2),
+        Target::Web("https://example.org/specs".into()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut link = square(0, &format!("link {n}"));
+        link.subtype = Subtype::Link;
+        link.contents = target.text();
+        link.own = BTreeMap::from([("Kind".into(), "link".into())]);
+        #[expect(clippy::cast_precision_loss, reason = "a small number")]
+        let y = 100.0 * n as f64;
+        link.rect = [100.0, 200.0 + y, 300.0, 260.0 + y];
+        link.link = Some(target);
+        markups.annotations.push(link);
+    }
+    let saved = annotations::save(&original, &markups).unwrap();
+    let found = links(&saved, 0).unwrap();
+    let targets: Vec<Target> = found.iter().map(|l| l.target.clone()).collect();
+    assert_eq!(
+        targets,
+        [
+            Target::Page(1),
+            Target::File("A-301.pdf".into(), 2),
+            Target::Web("https://example.org/specs".into()),
+        ]
+    );
+    assert_eq!(found[0].rect, [100.0, 200.0, 300.0, 260.0]);
+    // Review's own links come back as markups; nobody else's do.
+    let read = annotations::read(&saved).unwrap();
+    assert_eq!(read.annotations.len(), 3);
+    assert!(read.annotations.iter().all(|a| a.subtype == Subtype::Link));
+    let foreign = annotations::read(&sample::foreign_markups()).unwrap();
+    assert!(
+        foreign
+            .annotations
+            .iter()
+            .all(|a| a.subtype != Subtype::Link)
+    );
+}

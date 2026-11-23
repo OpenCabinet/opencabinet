@@ -25,7 +25,7 @@ use slint::{
 };
 
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
-use crate::viewer::{COLORS, Keys, TOOLS, Tool, Viewer, WIDTHS};
+use crate::viewer::{COLORS, Follow, Keys, TOOLS, Tool, Viewer, WIDTHS};
 use opencabinet_review::sets::{self, SheetSet};
 use opencabinet_review::{Kind, Status};
 
@@ -54,6 +54,39 @@ pub use ui::{
     BookmarkInfo, Label, QuantityInfo, ReplyInfo, ReviewWindow, SavedInfo, Shape, SheetInfo,
     TabInfo, ToolInfo,
 };
+
+/// Opens `address`, a web or mail address a link goes to, in the
+/// system's own browser or mail program.
+///
+/// # Errors
+/// A message for the user when it cannot.
+fn open_web(address: &str) -> Result<(), String> {
+    // Only addresses a link may go to; never a program or a file.
+    let lower = address.to_lowercase();
+    if !["http://", "https://", "mailto:"]
+        .iter()
+        .any(|p| lower.starts_with(p))
+        || address
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '"')
+    {
+        return Err("Links open only web and mail addresses.".into());
+    }
+    let mut command = if cfg!(windows) {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    command
+        .arg(address)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Cannot open {address}: {e}"))
+}
 
 /// The most pages drawn as thumbnails.
 const MAX_THUMBNAILS: usize = 500;
@@ -667,13 +700,32 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
 
 impl App {
     fn change(&self, f: impl FnOnce(&mut Viewer)) {
-        let changed = {
+        let (changed, follow) = {
             let mut viewer = self.viewer.borrow_mut();
             let before = viewer.document_key();
             f(&mut viewer);
             viewer.publish();
-            viewer.document_key() != before
+            (viewer.document_key() != before, viewer.take_follow())
         };
+        match follow {
+            Some(Follow::File(path, page)) => {
+                if path.is_file() {
+                    self.open(&path);
+                    self.viewer.borrow_mut().go_to(page);
+                } else {
+                    self.viewer.borrow_mut().say_status(&format!(
+                        "The link goes to {}, which is not there.",
+                        path.display()
+                    ));
+                }
+            }
+            Some(Follow::Web(address)) => {
+                if let Err(message) = open_web(&address) {
+                    self.viewer.borrow_mut().say_status(&message);
+                }
+            }
+            None => {}
+        }
         if changed {
             // Other pages: other thumbnails, and the page drawn again.
             *self.generation.borrow_mut() += 1;

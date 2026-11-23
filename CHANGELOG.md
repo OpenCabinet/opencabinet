@@ -146,6 +146,14 @@ follow [Semantic Versioning](https://semver.org/).
     subject and kind (lengths and areas at each page's scale, counts
     counted), says which pages they are on and how many had no scale,
     and exports them for spreadsheets.
+  - **Links:** clicking a link a drawing already has goes where it
+    says: another page, another drawing (opened in a tab) or a web
+    address (opened in the browser). The Link tool draws a box whose
+    text says where it goes: a page number, a drawing such as
+    A-301.pdf#2, or a web or mail address. It is saved as a standard PDF
+    link, so other viewers follow it too; double-click it to follow it
+    in Review. Other programs' links are followed, not listed or
+    changed.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

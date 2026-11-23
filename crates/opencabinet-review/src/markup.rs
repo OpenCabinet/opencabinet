@@ -55,6 +55,9 @@ pub enum Kind {
     Angle,
     /// A measured length around a closed shape.
     Perimeter,
+    /// A box that goes to a page, another drawing or a web address when
+    /// clicked; its text says where (see [`Markup::link`]).
+    Link,
 }
 
 /// How a markup is drawn with the mouse.
@@ -70,7 +73,7 @@ pub enum Gesture {
 
 impl Kind {
     /// Every kind, in the order the window offers them.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Cloud,
         Self::Rectangle,
         Self::Ellipse,
@@ -90,6 +93,7 @@ impl Kind {
         Self::Count,
         Self::Angle,
         Self::Perimeter,
+        Self::Link,
     ];
 
     /// What the window and the markup list call it.
@@ -115,6 +119,7 @@ impl Kind {
             Self::Count => "Count",
             Self::Angle => "Angle",
             Self::Perimeter => "Perimeter",
+            Self::Link => "Link",
         }
     }
 
@@ -141,6 +146,7 @@ impl Kind {
             Self::Count => "count",
             Self::Angle => "angle",
             Self::Perimeter => "perimeter",
+            Self::Link => "link",
         }
     }
 
@@ -171,7 +177,12 @@ impl Kind {
     pub const fn boxed(self) -> bool {
         matches!(
             self,
-            Self::Rectangle | Self::Ellipse | Self::Highlight | Self::Text | Self::Stamp
+            Self::Rectangle
+                | Self::Ellipse
+                | Self::Highlight
+                | Self::Text
+                | Self::Stamp
+                | Self::Link
         )
     }
 
@@ -504,6 +515,15 @@ impl Markup {
         }
     }
 
+    /// Where a link markup goes, from its text; `None` for other markups
+    /// or text that names nowhere.
+    #[must_use]
+    pub fn link(&self) -> Option<opencabinet_pdf::links::Target> {
+        (self.kind == Kind::Link)
+            .then(|| opencabinet_pdf::links::Target::parse(&self.text))
+            .flatten()
+    }
+
     /// A note's icon box.
     fn note_box(&self) -> (Point, Point) {
         let a = self.points.first().copied().unwrap_or_default();
@@ -540,7 +560,7 @@ impl Markup {
     pub fn outline(&self) -> Vec<Segment> {
         let (low, high) = self.bounds();
         match self.kind {
-            Kind::Rectangle | Kind::Highlight | Kind::Text => rectangle(low, high),
+            Kind::Rectangle | Kind::Highlight | Kind::Text | Kind::Link => rectangle(low, high),
             Kind::Stamp => {
                 let inset = 3.0 + self.width;
                 let mut out = rectangle(low, high);
@@ -655,6 +675,15 @@ impl Markup {
                 )]
             }
             Kind::Stamp => self.stamp_captions(),
+            Kind::Link if !self.text.is_empty() => {
+                let (low, high) = self.text_box();
+                vec![caption(
+                    Point::new(low.x + 3.0, high.y - FONT_SIZE * 0.8 - 2.0),
+                    &format!("→ {}", self.text),
+                    FONT_SIZE * 0.8,
+                    false,
+                )]
+            }
             Kind::Length | Kind::Path => {
                 let (Some(value), Some(a), Some(b)) =
                     (value, self.points.first(), self.points.get(1))
@@ -760,6 +789,7 @@ impl Markup {
         };
         let (subtype, vertices) = match self.kind {
             Kind::Rectangle | Kind::Highlight => (Subtype::Square, Vec::new()),
+            Kind::Link => (Subtype::Link, Vec::new()),
             Kind::Ellipse => (Subtype::Circle, Vec::new()),
             Kind::Cloud | Kind::Polygon | Kind::Area | Kind::Perimeter => {
                 (Subtype::Polygon, self.points.clone())
@@ -818,6 +848,7 @@ impl Markup {
             origin: self.origin,
             change: Change::New,
             replies: self.replies.clone(),
+            link: self.link(),
         }
     }
 
@@ -985,7 +1016,7 @@ fn foreign_kind(annotation: &Annotation) -> Option<Kind> {
         (Subtype::FreeText, _) if !annotation.callout.is_empty() => Kind::Callout,
         (Subtype::FreeText, _) => Kind::Text,
         (Subtype::Text, _) => Kind::Note,
-        (Subtype::Stamp, _) => return None,
+        (Subtype::Stamp | Subtype::Link, _) => return None,
     })
 }
 

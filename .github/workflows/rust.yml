@@ -124,14 +124,19 @@ jobs:
           )
           test "$annotations" -eq "$count" || { echo "expected $count annotations, found $annotations"; exit 1; }
           # The flattened copy: valid, with the markups drawn into the
-          # page and none left as annotations.
+          # page and none left as annotations; links stay, still links.
           qpdf --check flat.pdf
           qpdf --json=2 --json-key=pages --json-key=qpdf flat.pdf > flat.json
           left=$(python3 - <<'PY'
           import json
           data = json.load(open("flat.json"))
-          page = data["qpdf"][1]["obj:" + data["pages"][0]["object"]]["value"]
-          print(len(page.get("/Annots", [])))
+          objects = data["qpdf"][1]
+          page = objects["obj:" + data["pages"][0]["object"]]["value"]
+          annots = page.get("/Annots", [])
+          if isinstance(annots, str):
+              annots = objects["obj:" + annots]["value"]
+          subtypes = [objects["obj:" + a]["value"].get("/Subtype") if isinstance(a, str) else a.get("/Subtype") for a in annots]
+          print(sum(1 for s in subtypes if s != "/Link"))
           PY
           )
           test "$left" -eq 0 || { echo "expected no annotations, found $left"; exit 1; }
