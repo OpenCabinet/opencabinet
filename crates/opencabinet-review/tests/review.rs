@@ -372,6 +372,7 @@ fn a_flattened_copy_draws_the_markups_into_the_page() {
         origin: Point::new(0.0, 0.0),
         width: 1400,
         height: 1728,
+        turn: 0,
     };
     let red = opencabinet_pdf::render(&document, view)
         .unwrap()

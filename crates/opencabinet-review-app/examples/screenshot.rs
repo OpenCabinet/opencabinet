@@ -4,7 +4,7 @@
 //! Draws Review's window into a PNG without a screen, to look at the
 //! layout: `cargo run -p opencabinet-review-app --example screenshot --
 //! out.png [width height]`, with `PANEL` naming the left panel to open
-//! and `REPLIES`, `SNAP`, `PAGES` or `TABS` showing those features.
+//! and `REPLIES`, `SNAP`, `PAGES`, `TABS` or `TURN` showing those features.
 //! It opens a drawing made for the test, with bookmarks, a few markups,
 //! and the markup list.
 
@@ -108,6 +108,13 @@ fn main() {
         review.invoke_turn_pages(1);
         review.invoke_fit();
         review.invoke_page_clicked(1, true, false);
+    }
+    // TURN=1 turns the view a quarter clockwise and shows the stamps, with
+    // one of the shop's own.
+    if std::env::var("TURN").is_ok() {
+        review.invoke_turn_view(1);
+        review.invoke_choose_tool(13);
+        review.invoke_add_stamp("SHOP CHECKED {date}".into());
     }
     // The left panel to show: 0 pages, 1 bookmarks, 2 find, 3 measure, 4
     // session, 5 sheet set.

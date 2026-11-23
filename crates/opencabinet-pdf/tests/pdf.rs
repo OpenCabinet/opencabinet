@@ -84,6 +84,7 @@ fn a_view_is_drawn_white_on_the_page_and_gray_around_it() {
         origin: Point::new(-100.0, -100.0),
         width: 800,
         height: 600,
+        turn: 0,
     };
     let bitmap = render(&document, view).unwrap();
     assert_eq!(bitmap.pixels.len(), 800 * 600 * 4);
@@ -334,6 +335,7 @@ fn a_saved_markup_is_drawn_from_its_appearance() {
         origin: Point::new(0.0, 0.0),
         width: 600,
         height: 1728,
+        turn: 0,
     };
     let red = render(&saved, view).unwrap().pixel(250, 1728 - 298);
     assert!(red[0] > 200 && red[1] < 60 && red[2] < 60, "{red:?}");
@@ -539,4 +541,73 @@ fn a_page_keeps_what_it_inherited_when_moved() {
     let after = Document::open(turned).unwrap();
     let sizes: Vec<(f64, f64)> = after.pages().iter().map(|p| (p.width, p.height)).collect();
     assert_eq!(sizes, [(200.0, 300.0), (300.0, 200.0)]);
+}
+
+#[test]
+fn a_page_is_drawn_turned_without_changing_the_file() {
+    let document = Document::open(sample::sheets(1, SHEET.0, SHEET.1, 0)).unwrap();
+    // A quarter turn: the 36" × 24" sheet is drawn 24" wide and 36" high.
+    let view = View {
+        page: 0,
+        zoom: 0.25,
+        origin: Point::new(0.0, 0.0),
+        width: 700,
+        height: 700,
+        turn: 1,
+    };
+    let bitmap = render(&document, view).unwrap();
+    let (w, h) = (SHEET.1 * 0.25, SHEET.0 * 0.25);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "pixels"
+    )]
+    let (w, h) = (w as u32, h as u32);
+    assert_eq!(bitmap.pixel(w / 2, h - 2), [0xff, 0xff, 0xff, 0xff]);
+    assert_eq!(bitmap.pixel(w + 4, h / 2), [0x80, 0x80, 0x80, 0xff]);
+    // The sheet number, near the bottom right corner unturned, is near
+    // the bottom left turned clockwise.
+    let dark = |x0: u32, x1: u32, y0: u32, y1: u32| {
+        // Small text drawn at a quarter size is gray, not black.
+        (x0..x1).any(|x| (y0..y1).any(|y| bitmap.pixel(x, y)[0] < 0xe0))
+    };
+    // 30 to 44 pt from the left (clear of the border at 18 pt), 2502 to
+    // 2570 pt down.
+    assert!(dark(6, 11, 620, 642), "the sheet number turned");
+    assert!(!dark(6, 11, 20, 600), "nothing else there");
+}
+
+#[test]
+fn pages_are_named_as_the_pdf_says_until_they_move() {
+    use lopdf::dictionary;
+    use opencabinet_pdf::pages::{Placed, arrange};
+    let mut document = lopdf::Document::load_mem(&sample::sheets(4, 612.0, 792.0, 0)).unwrap();
+    let labels = document.add_object(dictionary! {
+        "Nums" => vec![
+            0.into(),
+            Object::Dictionary(dictionary! { "S" => "r" }),
+            2.into(),
+            Object::Dictionary(dictionary! {
+                "S" => "D",
+                "P" => Object::string_literal("A-"),
+                "St" => 201,
+            }),
+        ],
+    });
+    document
+        .catalog_mut()
+        .unwrap()
+        .set("PageLabels", Object::Reference(labels));
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    assert_eq!(
+        opencabinet_pdf::labels::page_labels(&bytes).unwrap(),
+        ["i", "ii", "A-201", "A-202"]
+    );
+    // Moved, the pages no longer match their labels, which are dropped.
+    let moved = arrange(&bytes, &[Placed::here(3), Placed::here(0)], &[]).unwrap();
+    assert_eq!(
+        opencabinet_pdf::labels::page_labels(&moved).unwrap(),
+        Vec::<String>::new()
+    );
 }

@@ -204,10 +204,14 @@ export component ReviewWindow inherits Window {
     in property <int> width-index: 1;
     in property <bool> fill-shapes;
     in property <[string]> stamps;
+    // How many of the stamps are Review's; the rest are the person's own.
+    in property <int> built-in-stamps: 9;
     in property <int> stamp;
     in property <bool> stamping;
     in property <string> page-label;
     in property <string> zoom-label;
+    // How far the view is turned, or nothing when upright.
+    in property <string> turn-label;
     in property <string> scale-label;
     // What the mouse snaps to now, such as "Endpoint".
     in property <string> snap-label;
@@ -236,6 +240,8 @@ export component ReviewWindow inherits Window {
     in property <int> page-index;
     // The pages the page tools act on, by page.
     in property <[bool]> pages-chosen;
+    // Each page's name: the PDF's label, or its number.
+    in property <[string]> page-names;
     in property <string> pages-label;
     in property <bool> can-change-pages;
     // The open files, and which is shown.
@@ -297,6 +303,8 @@ export component ReviewWindow inherits Window {
     callback choose-width(int);
     callback set-fill(bool);
     callback choose-stamp(int);
+    callback add-stamp(string);
+    callback remove-stamp(int);
     callback author-edited(string);
     callback choose-units(int);
     callback pressed(length, length, int);
@@ -355,6 +363,7 @@ export component ReviewWindow inherits Window {
     callback close-this-tab();
     callback next-tab();
     callback open-recent(int);
+    callback turn-view(int);
     callback open-sheet(int);
     callback add-to-set();
     callback remove-from-set(int);
@@ -429,6 +438,8 @@ export component ReviewWindow inherits Window {
             title: "View";
             MenuItem { title: "Fit page"; enabled: root.has-document; activated => { root.fit(); } }
             MenuItem { title: "Fit width"; enabled: root.has-document; activated => { root.fit-width(); } }
+            MenuItem { title: "Turn view clockwise"; enabled: root.has-document; activated => { root.turn-view(1); } }
+            MenuItem { title: "Turn view counterclockwise"; enabled: root.has-document; activated => { root.turn-view(-1); } }
             MenuItem {
                 title: root.wheel-zooms ? "Leave one full page (wheel moves)" : "One full page (wheel zooms)";
                 activated => { root.set-wheel-zooms(!root.wheel-zooms); }
@@ -625,7 +636,7 @@ export component ReviewWindow inherits Window {
                                         y: 130px;
                                         width: parent.width;
                                         horizontal-alignment: center;
-                                        text: i + 1;
+                                        text: i < root.page-names.length ? root.page-names[i] : i + 1;
                                         font-size: 11px;
                                     }
                                     TouchArea {
@@ -1394,7 +1405,7 @@ export component ReviewWindow inherits Window {
                                 accessible-action-default => { root.choose-stamp(i); }
                                 Text {
                                     x: 6px;
-                                    width: parent.width - 12px;
+                                    width: parent.width - (i >= root.built-in-stamps ? 30px : 12px);
                                     height: parent.height;
                                     text: words;
                                     font-size: 10px;
@@ -1402,6 +1413,24 @@ export component ReviewWindow inherits Window {
                                     overflow: elide;
                                 }
                                 stamp-touch := TouchArea { clicked => { root.choose-stamp(i); } }
+                                if i >= root.built-in-stamps: Rectangle {
+                                    x: parent.width - 22px;
+                                    width: 20px;
+                                    accessible-role: button;
+                                    accessible-label: "Remove the stamp " + words;
+                                    accessible-action-default => { root.remove-stamp(i); }
+                                    Text { text: "×"; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                    TouchArea { clicked => { root.remove-stamp(i); } }
+                                }
+                            }
+                            if root.stamping: new-stamp := LineEdit {
+                                accessible-label: "A new stamp's words";
+                                placeholder-text: "New stamp: {name} {date}";
+                                font-size: 10px;
+                                accepted(text) => {
+                                    root.add-stamp(text);
+                                    self.text = "";
+                                }
                             }
                             Rectangle { height: 1px; background: Palette.border; }
                             Text { text: "My tools"; font-size: 10px; horizontal-alignment: center; }
@@ -1481,6 +1510,12 @@ export component ReviewWindow inherits Window {
                     Rectangle { width: 12px; }
                     BarButton { text: "−"; label: "Zoom out"; enabled: root.has-document; clicked => { root.zoom-out(); } }
                     Text { text: root.zoom-label; vertical-alignment: center; font-size: 12px; min-width: 48px; horizontal-alignment: center; }
+                    if root.turn-label != "": BarButton {
+                        text: root.turn-label;
+                        label: "The view is turned; press to turn it back a quarter turn";
+                        checked: true;
+                        clicked => { root.turn-view(-1); }
+                    }
                     BarButton { text: "+"; label: "Zoom in"; enabled: root.has-document; clicked => { root.zoom-in(); } }
                     BarButton { text: "Fit"; label: "Fit page"; enabled: root.has-document; clicked => { root.fit(); } }
                     BarButton { text: "Width"; label: "Fit width"; enabled: root.has-document; clicked => { root.fit-width(); } }

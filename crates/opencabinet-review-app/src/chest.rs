@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use opencabinet_review::{Color, Kind};
+use opencabinet_review::{Color, Kind, stamps};
 use serde_json::{Value as Json, json};
 
 /// A saved markup style.
@@ -80,6 +80,49 @@ pub fn store_settings(tools: &Path, settings: Settings) -> std::io::Result<()> {
     }))
     .map_err(std::io::Error::other)?;
     std::fs::write(tools.with_file_name("settings.json"), text)
+}
+
+/// The stamps of the person's own, kept beside the tools at `tools`: their
+/// words and color; none when there are none or they cannot be read.
+#[must_use]
+pub fn load_stamps(tools: &Path) -> Vec<(String, [f64; 3])> {
+    let Ok(text) = std::fs::read_to_string(tools.with_file_name("stamps.json")) else {
+        return Vec::new();
+    };
+    let Ok(Json::Array(items)) = serde_json::from_str::<Json>(&text) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let words = item.get("words")?.as_str()?.trim();
+            let color = item.get("color")?.as_array()?;
+            let channel =
+                |i: usize| -> Option<f64> { Some(color.get(i)?.as_f64()?.clamp(0.0, 1.0)) };
+            (!words.is_empty()).then(|| {
+                Some((
+                    words.chars().take(stamps::MAX_WORDS).collect(),
+                    [channel(0)?, channel(1)?, channel(2)?],
+                ))
+            })?
+        })
+        .collect()
+}
+
+/// Keeps `own` stamps beside the tools at `tools`.
+///
+/// # Errors
+/// When the file cannot be written.
+pub fn store_stamps(tools: &Path, own: &[(String, [f64; 3])]) -> std::io::Result<()> {
+    if let Some(folder) = tools.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    let items: Vec<Json> = own
+        .iter()
+        .map(|(words, color)| json!({ "words": words, "color": color }))
+        .collect();
+    let text = serde_json::to_string_pretty(&items).map_err(std::io::Error::other)?;
+    std::fs::write(tools.with_file_name("stamps.json"), text)
 }
 
 /// How many files Open recent remembers.
@@ -205,6 +248,23 @@ pub fn store(path: &Path, tools: &[SavedTool]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn own_stamps_are_kept_and_read_back() {
+        let folder = std::env::temp_dir().join(format!("oc-stamps-{}", std::process::id()));
+        let tools = folder.join("tools.json");
+        assert_eq!(load_stamps(&tools).len(), 0);
+        let own = vec![("CHECKED BY {name}".to_owned(), [0.1, 0.2, 0.3])];
+        store_stamps(&tools, &own).unwrap();
+        assert_eq!(load_stamps(&tools), own);
+        std::fs::write(
+            folder.join("stamps.json"),
+            "[{\"words\": \"  \", \"color\": [0,0,0]}]",
+        )
+        .unwrap();
+        assert_eq!(load_stamps(&tools).len(), 0);
+        std::fs::remove_dir_all(&folder).ok();
+    }
 
     #[test]
     fn recent_files_come_newest_first_once_and_are_kept() {

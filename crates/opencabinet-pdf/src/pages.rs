@@ -11,7 +11,8 @@
 //! inherited from the nodes in between (media box, crop box, resources,
 //! rotation) written into it, so moving it cannot change how it looks.
 //! A page's markups and Review's own entries live in the page itself, so
-//! they go wherever the page goes.
+//! they go wherever the page goes. Page labels, which name pages by their
+//! place, are dropped.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -155,9 +156,37 @@ pub fn arrange(bytes: &[u8], pages: &[Placed], others: &[&[u8]]) -> Result<Vec<u
     let count = i64::try_from(kids.len()).unwrap_or(i64::MAX);
     node.set("Kids", kids);
     node.set("Count", count);
+    drop_labels(&mut document)?;
     let mut out = Vec::with_capacity(bytes.len() + 4096);
     document.save_to(&mut out).map_err(fail)?;
     Ok(out)
+}
+
+/// Removes the document's page labels, which name pages by their place.
+fn drop_labels(document: &mut IncrementalDocument) -> Result<(), Error> {
+    let catalog = document
+        .get_prev_documents()
+        .trailer
+        .get(b"Root")
+        .and_then(Object::as_reference)
+        .map_err(fail)?;
+    let labelled = document
+        .get_prev_documents()
+        .get_dictionary(catalog)
+        .is_ok_and(|c| c.has(b"PageLabels"));
+    if labelled {
+        document
+            .opt_clone_object_to_new_document(catalog)
+            .map_err(fail)?;
+        if let Ok(catalog) = document
+            .new_document
+            .get_object_mut(catalog)
+            .and_then(Object::as_dict_mut)
+        {
+            catalog.remove(b"PageLabels");
+        }
+    }
+    Ok(())
 }
 
 /// A PDF of its own holding only `pages` of `bytes`, in that order, with
