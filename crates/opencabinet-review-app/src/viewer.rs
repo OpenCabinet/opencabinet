@@ -293,6 +293,47 @@ impl Default for Viewer {
 }
 
 impl Viewer {
+    /// A viewer with nothing open, drawing as this one does: same author,
+    /// units, tool, color, line, My tools and settings, for a new tab.
+    #[must_use]
+    pub fn new_tab(&self) -> Self {
+        let mut tab = Self::default();
+        self.share_preferences(&mut tab);
+        tab.size = self.size;
+        tab
+    }
+
+    /// Gives `other` this viewer's author, units, tool, color, line, My
+    /// tools and settings, so they follow from tab to tab.
+    pub fn share_preferences(&self, other: &mut Self) {
+        other.author.clone_from(&self.author);
+        other.units = self.units;
+        other.color = self.color;
+        other.width = self.width;
+        other.fill = self.fill;
+        other.stamp = self.stamp;
+        other.settings = self.settings;
+        other.saved.clone_from(&self.saved);
+        other.saved_path.clone_from(&self.saved_path);
+        other.style.clone_from(&self.style);
+        other.clipboard.clone_from(&self.clipboard);
+        if other.size != self.size && self.size != (0.0, 0.0) {
+            other.size = self.size;
+            other.fit();
+        }
+        if other.drag.is_none() && other.building.is_none() && other.calibrating.is_none() {
+            other.tool = self.tool;
+        }
+    }
+
+    /// The name of the tab: the file's name, or "New".
+    #[must_use]
+    pub fn tab_title(&self) -> String {
+        self.path
+            .as_deref()
+            .map_or_else(|| "New".to_owned(), file_name)
+    }
+
     /// Opens the PDF at `path`.
     ///
     /// # Errors

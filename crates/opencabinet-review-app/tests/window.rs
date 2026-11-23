@@ -179,9 +179,10 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     window.invoke_choose_scale(i32::try_from(quarter).unwrap(), true);
     assert_eq!(window.get_scale_label(), "Scale 1/4\" = 1'-0\"");
 
-    // Opening another drawing asks first; no keeps the markups.
+    // Opening the same drawing again stays in its tab, markups and all.
     window.invoke_open();
-    assert_eq!(answers.asked_to_discard.get(), 1);
+    assert_eq!(answers.asked_to_discard.get(), 0);
+    assert_eq!(window.get_tabs().row_count(), 1);
     assert_eq!(window.get_rows().row_count(), 2);
 
     // Saved where it was opened, then opened again.
@@ -226,6 +227,48 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     *answers.save.borrow_mut() = Some(dir.join("A-201 page 1.pdf"));
     window.invoke_extract_pages();
     assert!(dir.join("A-201 page 1.pdf").exists());
+
+    // Another drawing opens in a tab of its own, with the tool in use;
+    // the first keeps its changes, and closing it asks first.
+    let other = dir.join("A-301.pdf");
+    std::fs::write(
+        &other,
+        opencabinet_pdf::sample::sheets(3, 1728.0, 1296.0, 2),
+    )
+    .unwrap();
+    window.invoke_choose_tool(tool("Cloud"));
+    *answers.open.borrow_mut() = Some(other.clone());
+    window.invoke_open();
+    assert_eq!(window.get_tabs().row_count(), 2);
+    assert_eq!(window.get_active_tab(), 1);
+    assert_eq!(window.get_page_label(), "Page 1 of 3");
+    assert_eq!(window.get_window_title(), "A-301.pdf — OpenCabinet Review");
+    assert_eq!(window.get_tool(), tool("Cloud"));
+    let first = window.get_tabs().row_data(0).unwrap();
+    assert_eq!(first.title, "A-201.pdf");
+    assert!(first.modified);
+    // Open recent: the newest first, each once.
+    let recent = window.get_recent();
+    assert_eq!(recent.row_count(), 2);
+    assert!(recent.row_data(0).unwrap().ends_with("A-301.pdf"));
+    assert!(recent.row_data(1).unwrap().ends_with("A-201.pdf"));
+    window.invoke_next_tab();
+    assert_eq!(window.get_active_tab(), 0);
+    assert_eq!(window.get_page_label(), "Page 1 of 2");
+    answers.discard.set(false);
+    window.invoke_close_tab(0);
+    assert_eq!(answers.asked_to_discard.get(), 1);
+    assert_eq!(window.get_tabs().row_count(), 2);
+    window.invoke_close_tab(1);
+    assert_eq!(window.get_tabs().row_count(), 1);
+    assert_eq!(
+        window.get_window_title(),
+        "* A-201.pdf — OpenCabinet Review"
+    );
+    answers.discard.set(true);
+    window.invoke_close_this_tab();
+    assert_eq!(window.get_tabs().row_count(), 1);
+    assert!(!window.get_has_document());
 
     std::fs::remove_dir_all(&dir).ok();
 }

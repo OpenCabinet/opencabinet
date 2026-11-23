@@ -82,6 +82,53 @@ pub fn store_settings(tools: &Path, settings: Settings) -> std::io::Result<()> {
     std::fs::write(tools.with_file_name("settings.json"), text)
 }
 
+/// How many files Open recent remembers.
+pub const RECENT: usize = 10;
+
+/// The files opened last, newest first, kept beside the tools at `tools`;
+/// none when the list cannot be read.
+#[must_use]
+pub fn load_recent(tools: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(tools.with_file_name("recent.json")) else {
+        return Vec::new();
+    };
+    let Ok(Json::Array(items)) = serde_json::from_str::<Json>(&text) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(Json::as_str)
+        .map(PathBuf::from)
+        .take(RECENT)
+        .collect()
+}
+
+/// Keeps `recent` beside the tools at `tools`.
+///
+/// # Errors
+/// When the file cannot be written.
+pub fn store_recent(tools: &Path, recent: &[PathBuf]) -> std::io::Result<()> {
+    if let Some(folder) = tools.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    let items: Vec<String> = recent
+        .iter()
+        .take(RECENT)
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let text = serde_json::to_string_pretty(&items).map_err(std::io::Error::other)?;
+    std::fs::write(tools.with_file_name("recent.json"), text)
+}
+
+/// `recent` with `opened` first, once, and no more than [`RECENT`].
+#[must_use]
+pub fn remembered(recent: &[PathBuf], opened: &Path) -> Vec<PathBuf> {
+    let mut list = vec![opened.to_owned()];
+    list.extend(recent.iter().filter(|p| p.as_path() != opened).cloned());
+    list.truncate(RECENT);
+    list
+}
+
 /// Where the saved tools are kept: `%APPDATA%\OpenCabinet\Review` on
 /// Windows, `~/.config/opencabinet-review` elsewhere.
 #[must_use]
@@ -158,6 +205,25 @@ pub fn store(path: &Path, tools: &[SavedTool]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_files_come_newest_first_once_and_are_kept() {
+        let a = PathBuf::from("A-201.pdf");
+        let b = PathBuf::from("A-301.pdf");
+        let list = remembered(&remembered(&remembered(&[], &a), &b), &a);
+        assert_eq!(list, [a.clone(), b.clone()]);
+        let many: Vec<PathBuf> = (0..20).map(|n| PathBuf::from(format!("{n}.pdf"))).collect();
+        assert_eq!(remembered(&many, &a).len(), RECENT);
+
+        let folder = std::env::temp_dir().join(format!("oc-recent-{}", std::process::id()));
+        let tools = folder.join("tools.json");
+        assert_eq!(load_recent(&tools).len(), 0);
+        store_recent(&tools, &list).unwrap();
+        assert_eq!(load_recent(&tools), list);
+        std::fs::write(folder.join("recent.json"), "not json").unwrap();
+        assert_eq!(load_recent(&tools).len(), 0);
+        std::fs::remove_dir_all(&folder).ok();
+    }
 
     #[test]
     fn saved_tools_are_written_and_read_back() {

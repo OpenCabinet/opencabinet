@@ -13,7 +13,7 @@ pub mod dialogs;
 pub mod icons;
 pub mod viewer;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -35,7 +35,7 @@ mod ui {
     slint::include_modules!();
 }
 
-pub use ui::{BookmarkInfo, Label, ReplyInfo, ReviewWindow, SavedInfo, Shape, ToolInfo};
+pub use ui::{BookmarkInfo, Label, ReplyInfo, ReviewWindow, SavedInfo, Shape, TabInfo, ToolInfo};
 
 /// The most pages drawn as thumbnails.
 const MAX_THUMBNAILS: usize = 500;
@@ -73,11 +73,40 @@ pub const NAME_AND_VERSION: &str = concat!("OpenCabinet Review ", env!("CARGO_PK
 /// # Errors
 /// When the platform cannot create a window.
 pub fn create(path: Option<&Path>) -> Result<ReviewWindow, slint::PlatformError> {
-    build(Rc::new(SystemDialogs), path, chest::default_path())
+    let paths: Vec<PathBuf> = path.into_iter().map(Path::to_owned).collect();
+    create_all(&paths)
+}
+
+/// Creates the window, asking the user through the system's dialogs, with
+/// the PDFs at `paths` open, each in a tab.
+///
+/// # Errors
+/// When the platform cannot create a window.
+pub fn create_all(paths: &[PathBuf]) -> Result<ReviewWindow, slint::PlatformError> {
+    build(Rc::new(SystemDialogs), paths, chest::default_path())
+}
+
+/// As [`create_all`], but without the person's My tools, settings and
+/// recent files, which it neither reads nor changes: for pictures of the
+/// window made by tools.
+///
+/// # Errors
+/// When the platform cannot create a window.
+pub fn create_apart(paths: &[PathBuf]) -> Result<ReviewWindow, slint::PlatformError> {
+    build(Rc::new(SystemDialogs), paths, None)
 }
 
 struct App {
+    /// The tab shown.
     viewer: RefCell<Viewer>,
+    /// Every tab, in order; the one shown is `None` here, as it is in
+    /// `viewer`.
+    tabs: RefCell<Vec<Option<Viewer>>>,
+    /// Which of `tabs` is shown.
+    active: Cell<usize>,
+    /// The files opened last, newest first, and where they are kept.
+    recent: RefCell<Vec<PathBuf>>,
+    chest: Option<PathBuf>,
     dialogs: Rc<dyn Dialogs>,
     window: slint::Weak<ReviewWindow>,
     /// What the page image shows, so it is drawn again only when that
@@ -99,18 +128,24 @@ pub fn create_with(
     dialogs: Rc<dyn Dialogs>,
     path: Option<&Path>,
 ) -> Result<ReviewWindow, slint::PlatformError> {
-    build(dialogs, path, None)
+    let paths: Vec<PathBuf> = path.into_iter().map(Path::to_owned).collect();
+    build(dialogs, &paths, None)
 }
 
 /// The window, keeping My tools at `saved` when given.
 fn build(
     dialogs: Rc<dyn Dialogs>,
-    path: Option<&Path>,
+    paths: &[PathBuf],
     saved: Option<PathBuf>,
 ) -> Result<ReviewWindow, slint::PlatformError> {
     let window = ReviewWindow::new()?;
+    let recent = saved.as_deref().map(chest::load_recent).unwrap_or_default();
     let app = Rc::new(App {
         viewer: RefCell::new(Viewer::default()),
+        tabs: RefCell::new(vec![None]),
+        active: Cell::new(0),
+        recent: RefCell::new(recent),
+        chest: saved.clone(),
         dialogs,
         window: window.as_weak(),
         drawn: RefCell::new(None),
@@ -158,10 +193,10 @@ fn build(
     }
 
     connect(&window, &app);
-    match path {
-        Some(path) => app.open(path),
-        None => app.refresh(),
+    for path in paths {
+        app.open(path);
     }
+    app.refresh();
     Ok(window)
 }
 
@@ -252,6 +287,32 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     }));
     window.on_extract_pages(on(App::extract_pages));
+    let a = Rc::clone(app);
+    window.on_choose_tab(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.switch_to(i);
+        }
+    });
+    let a = Rc::clone(app);
+    window.on_close_tab(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            a.close_tab(i);
+        }
+    });
+    window.on_next_tab(on(|app| {
+        let count = app.tabs.borrow().len();
+        app.switch_to((app.active.get() + 1) % count.max(1));
+    }));
+    window.on_close_this_tab(on(|app| app.close_tab(app.active.get())));
+    let a = Rc::clone(app);
+    window.on_open_recent(move |i| {
+        let path = usize::try_from(i)
+            .ok()
+            .and_then(|i| a.recent.borrow().get(i).cloned());
+        if let Some(path) = path {
+            a.open(&path);
+        }
+    });
     let a = Rc::clone(app);
     window.on_go_to_bookmark(move |i| {
         if let Ok(i) = usize::try_from(i) {
@@ -485,7 +546,7 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     });
     let a = Rc::clone(app);
     window.window().on_close_requested(move || {
-        if a.viewer.borrow().modified() && !a.dialogs.discard_changes() {
+        if a.any_modified() && !a.dialogs.discard_changes() {
             CloseRequestResponse::KeepWindowShown
         } else {
             CloseRequestResponse::HideWindow
@@ -544,6 +605,12 @@ impl App {
 
     /// Takes in others' changes in a review session.
     fn poll(&self) {
+        // Tabs not shown keep up with their sessions too.
+        for tab in self.tabs.borrow_mut().iter_mut().flatten() {
+            if tab.in_session() {
+                tab.pull();
+            }
+        }
         let pulled = self.viewer.borrow_mut().pull();
         if pulled {
             self.refresh();
@@ -583,22 +650,140 @@ impl App {
     }
 
     fn choose_and_open(&self) {
-        if self.viewer.borrow().modified() && !self.dialogs.discard_changes() {
-            return;
-        }
-        if let Some(path) = self.dialogs.open_path() {
+        for path in self.dialogs.open_paths() {
             self.open(&path);
         }
     }
 
+    /// Opens the PDF at `path`: in its tab if it is open already, in the
+    /// tab shown if that has nothing open, else in a new tab.
     fn open(&self, path: &Path) {
+        if let Some(at) = self.tab_of(path) {
+            self.switch_to(at);
+            return;
+        }
+        let has_document = self.viewer.borrow().review().is_some();
+        if has_document {
+            let tab = self.viewer.borrow().new_tab();
+            let at = {
+                let mut tabs = self.tabs.borrow_mut();
+                tabs.insert(self.active.get() + 1, Some(tab));
+                self.active.get() + 1
+            };
+            self.switch_to(at);
+        }
         let result = self.viewer.borrow_mut().open(path);
+        if result.is_ok() {
+            self.remember(path);
+        } else if has_document {
+            // Nothing to show in the new tab: it goes again.
+            self.close_tab(self.active.get());
+        }
         *self.generation.borrow_mut() += 1;
         self.draw_thumbnails();
         self.refresh();
         if let Err(message) = result {
             self.status(&message);
         }
+    }
+
+    /// The tab where `path` is open, if any.
+    fn tab_of(&self, path: &Path) -> Option<usize> {
+        let same = |v: &Viewer| {
+            v.path().is_some_and(|p| {
+                p == path
+                    || std::fs::canonicalize(p)
+                        .is_ok_and(|p| std::fs::canonicalize(path).is_ok_and(|q| p == q))
+            })
+        };
+        if same(&self.viewer.borrow()) {
+            return Some(self.active.get());
+        }
+        self.tabs
+            .borrow()
+            .iter()
+            .position(|t| t.as_ref().is_some_and(same))
+    }
+
+    /// Puts `path` first in Open recent.
+    fn remember(&self, path: &Path) {
+        // Whole, but without the long-path prefix canonicalizing adds on
+        // Windows, so Open recent reads as the person wrote it.
+        let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+        let list = chest::remembered(&self.recent.borrow(), &path);
+        if let Some(chest) = &self.chest {
+            // Not remembering a file is no reason to stop.
+            let _ = chest::store_recent(chest, &list);
+        }
+        *self.recent.borrow_mut() = list;
+    }
+
+    /// Shows tab `at`, keeping the tool, color and line in use.
+    fn switch_to(&self, at: usize) {
+        let active = self.active.get();
+        if at == active {
+            return;
+        }
+        {
+            let mut tabs = self.tabs.borrow_mut();
+            let Some(mut next) = tabs.get_mut(at).and_then(Option::take) else {
+                return;
+            };
+            let mut viewer = self.viewer.borrow_mut();
+            viewer.share_preferences(&mut next);
+            let old = std::mem::replace(&mut *viewer, next);
+            tabs[active] = Some(old);
+            self.active.set(at);
+        }
+        *self.generation.borrow_mut() += 1;
+        self.draw_thumbnails();
+        self.refresh();
+    }
+
+    /// Closes tab `at`, asking first if it has changes not saved. The
+    /// last tab is emptied instead.
+    fn close_tab(&self, at: usize) {
+        let active = self.active.get();
+        let count = self.tabs.borrow().len();
+        if at >= count {
+            return;
+        }
+        let modified = if at == active {
+            self.viewer.borrow().modified()
+        } else {
+            self.tabs.borrow()[at]
+                .as_ref()
+                .is_some_and(Viewer::modified)
+        };
+        if modified && !self.dialogs.discard_changes() {
+            return;
+        }
+        if count == 1 {
+            let empty = self.viewer.borrow().new_tab();
+            *self.viewer.borrow_mut() = empty;
+        } else if at == active {
+            // The tab after it, or before it when it was the last.
+            let next = if at + 1 < count { at + 1 } else { at - 1 };
+            self.switch_to(next);
+            let mut tabs = self.tabs.borrow_mut();
+            tabs.remove(at);
+            if next > at {
+                self.active.set(next - 1);
+            }
+        } else {
+            self.tabs.borrow_mut().remove(at);
+            if at < active {
+                self.active.set(active - 1);
+            }
+        }
+        *self.generation.borrow_mut() += 1;
+        self.draw_thumbnails();
+        self.refresh();
+    }
+
+    /// Whether any tab has changes not saved.
+    fn any_modified(&self) -> bool {
+        self.viewer.borrow().modified() || self.tabs.borrow().iter().flatten().any(Viewer::modified)
     }
 
     fn save(&self, ask: bool) {
@@ -772,6 +957,31 @@ impl App {
         }
     }
 
+    /// Shows the tabs and Open recent.
+    fn refresh_tabs(&self, window: &ReviewWindow, viewer: &Viewer) {
+        let tabs: Vec<TabInfo> = self
+            .tabs
+            .borrow()
+            .iter()
+            .map(|t| {
+                let v = t.as_ref().unwrap_or(viewer);
+                TabInfo {
+                    title: v.tab_title().into(),
+                    modified: v.modified(),
+                }
+            })
+            .collect();
+        window.set_tabs(ModelRc::new(VecModel::from(tabs)));
+        window.set_active_tab(i32::try_from(self.active.get()).unwrap_or(0));
+        let recent: Vec<SharedString> = self
+            .recent
+            .borrow()
+            .iter()
+            .map(|p| p.to_string_lossy().as_ref().into())
+            .collect();
+        window.set_recent(strings(&recent));
+    }
+
     /// Shows the viewer's state in the window.
     fn refresh(&self) {
         let Some(window) = self.window.upgrade() else {
@@ -782,6 +992,7 @@ impl App {
         window.set_has_document(viewer.review().is_some());
         window.set_page_label(viewer.page_label().into());
         window.set_page_index(i32::try_from(viewer.page()).unwrap_or(0));
+        self.refresh_tabs(&window, &viewer);
         let count = viewer.review().map_or(0, |r| r.document().pages().len());
         let chosen = viewer.pages_chosen();
         let marks: Vec<bool> = (0..count.min(MAX_THUMBNAILS))
