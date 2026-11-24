@@ -120,7 +120,7 @@ fn main() {
 }
 
 /// Shows what the environment asks for: `REPLIES`, `SNAP`, `PAGES`,
-/// `TURN`, `QTY`, `FIND`, `SETS` or `EDITOR`.
+/// `TURN`, `QTY`, `FIND`, `SETS`, `EDITOR` or `CAPTURE`.
 fn show_features(review: &opencabinet_review_app::ReviewWindow) {
     // SETS=1 keeps two markups' styles in two tool sets.
     if std::env::var("SETS").is_ok() {
@@ -141,6 +141,16 @@ fn show_features(review: &opencabinet_review_app::ReviewWindow) {
         review.invoke_editor_add_line();
         review.invoke_editor_line(2, "{name} · sheet {sheet}".into(), 8, false);
         review.invoke_editor_color_to(2);
+    }
+    // CAPTURE=1 takes a part of the drawing and makes its black magenta.
+    if std::env::var("CAPTURE").is_ok() {
+        review.invoke_choose_tool(22);
+        review.invoke_pressed(300.0, 120.0, 0);
+        review.invoke_dragged(420.0, 220.0);
+        review.invoke_released(520.0, 300.0);
+        review.invoke_choose_tool(0);
+        review.set_editor_tab(2);
+        review.invoke_capture_color_to(0, 0);
     }
     // FIND=1 looks for a sheet number in every open drawing.
     if std::env::var("FIND").is_ok() {

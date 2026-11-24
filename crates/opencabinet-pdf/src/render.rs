@@ -70,6 +70,30 @@ impl Bitmap {
 /// When the page does not exist, the view is empty or too large, or the
 /// document can no longer be read.
 pub fn render(document: &Document, view: View) -> Result<Bitmap, Error> {
+    render_many(document, &[view])?.pop().ok_or(Error::Invalid)
+}
+
+/// Draws several views of `document` at once, such as the tiles of a
+/// window: the PDF is read and its fonts prepared once for all of them.
+///
+/// # Errors
+/// As [`render`], for any of them.
+pub fn render_many(document: &Document, views: &[View]) -> Result<Vec<Bitmap>, Error> {
+    let pdf = Pdf::new(document.shared_bytes()).map_err(|_| Error::Invalid)?;
+    let pages = pdf.pages();
+    let cache = RenderCache::new();
+    views
+        .iter()
+        .map(|&view| draw(document, pages, &cache, view))
+        .collect()
+}
+
+fn draw<'a>(
+    document: &Document,
+    pages: &'a hayro::hayro_syntax::page::Pages<'a>,
+    cache: &RenderCache<'a>,
+    view: View,
+) -> Result<Bitmap, Error> {
     if view.width == 0
         || view.height == 0
         || view.width > MAX_SIDE
@@ -82,8 +106,6 @@ pub fn render(document: &Document, view: View) -> Result<Bitmap, Error> {
     let page_size = unturned.turned(view.turn);
     // From the page as the PDF shows it to the page as seen.
     let turn = unturned.to_pdf().then(page_size.to_page).0;
-    let pdf = Pdf::new(document.shared_bytes()).map_err(|_| Error::Invalid)?;
-    let pages = pdf.pages();
     let page = pages.get(view.page).ok_or(Error::Invalid)?;
     // Checked above: both sides fit in u16.
     let (width, height) = (
@@ -99,10 +121,9 @@ pub fn render(document: &Document, view: View) -> Result<Bitmap, Error> {
         render_content: RenderContent::all(),
         ..InterpreterSettings::default()
     };
-    let cache = RenderCache::new();
     render_into(
         page,
-        &cache,
+        cache,
         &settings,
         &RenderSettings::default(),
         &mut ctx,

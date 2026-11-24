@@ -25,7 +25,7 @@ use slint::{
 };
 
 use crate::dialogs::{Dialogs, FileKind, SystemDialogs};
-use crate::viewer::{COLORS, Follow, Keys, TOOLS, Tool, Viewer, WIDTHS};
+use crate::viewer::{COLORS, COLUMNS, Follow, Keys, SheetName, TOOLS, Tool, Viewer, WIDTHS};
 use opencabinet_review::sets::{self, SheetSet};
 use opencabinet_review::stamps::{self, Design, Fields};
 use opencabinet_review::{Kind, Status};
@@ -177,6 +177,155 @@ fn connect_tool_sets(window: &ReviewWindow, app: &Rc<App>) {
     window.on_set_ask(move |question, answer| {
         a.viewer.borrow_mut().set_ask(&question, &answer);
     });
+}
+
+fn connect_batch(window: &ReviewWindow, app: &Rc<App>) {
+    window.on_set_open_all(on_app(app, |app| {
+        app.open_set_sheets();
+        app.refresh();
+    }));
+    window.on_set_link_sheets(on_app(app, |app| {
+        app.open_set_sheets();
+        let names = app.sheet_names();
+        let made = app.every_drawing(|v| v.link_sheets(&names));
+        app.refresh();
+        app.status(&format!(
+            "Linked {made} mention{} of {} sheets, in every drawing. Double-click a link to follow it.",
+            if made == 1 { "" } else { "s" },
+            names.len()
+        ));
+    }));
+    window.on_set_stamp_all(on_app(app, |app| {
+        app.open_set_sheets();
+        let stamp = app.viewer.borrow().current_design().name;
+        let drawings = app.tabs.borrow().len();
+        if !app.dialogs.confirm(
+            "Stamp every page",
+            &format!(
+                "Place {stamp} on every page of {drawings} drawings? Undo takes it back in each."
+            ),
+        ) {
+            return;
+        }
+        let placed = app.every_drawing(Viewer::stamp_every_page);
+        app.refresh();
+        app.status(&format!(
+            "Placed {stamp} on {placed} pages. Save all keeps them."
+        ));
+    }));
+    window.on_set_scale_all(on_app(app, |app| {
+        let Some(scale) = app.viewer.borrow().shown_scale() else {
+            app.status("Give this page a scale first, then press this again.");
+            return;
+        };
+        app.open_set_sheets();
+        app.every_drawing(|v| {
+            v.scale_everywhere(scale);
+            1
+        });
+        app.refresh();
+        app.status("Every page of every drawing has this page's scale now.");
+    }));
+    window.on_set_save_all(on_app(app, |app| {
+        let mut saved = 0;
+        let mut failed = Vec::new();
+        app.every_drawing(|v| {
+            if v.modified() && v.path().is_some() {
+                match v.save(None) {
+                    Ok(()) => saved += 1,
+                    Err(e) => failed.push(e),
+                }
+            }
+            0
+        });
+        app.refresh();
+        app.status(&match failed.first() {
+            None => format!("Saved {saved} drawings."),
+            Some(why) => format!("Saved {saved}; {} could not be: {why}", failed.len()),
+        });
+    }));
+    connect_batch_files(window, app);
+}
+
+/// Every drawing written out: flattened copies, one summary.
+fn connect_batch_files(window: &ReviewWindow, app: &Rc<App>) {
+    window.on_set_flatten_all(on_app(app, |app| {
+        let Some(folder) = app.dialogs.folder_path() else {
+            return;
+        };
+        app.open_set_sheets();
+        let mut written = 0;
+        let mut failed = Vec::new();
+        app.every_drawing(|v| {
+            let stem = v.path().and_then(Path::file_stem).map_or_else(
+                || "drawing".to_owned(),
+                |s| s.to_string_lossy().into_owned(),
+            );
+            match v.export_flattened(&folder.join(format!("{stem} (flattened).pdf"))) {
+                Ok(()) => written += 1,
+                Err(e) => failed.push(e),
+            }
+            0
+        });
+        app.refresh();
+        app.status(&match failed.first() {
+            None => format!("Wrote {written} flattened copies to {}.", folder.display()),
+            Some(why) => format!("Wrote {written}; {} could not be: {why}", failed.len()),
+        });
+    }));
+    window.on_set_summary(on_app(app, |app| {
+        app.open_set_sheets();
+        let name = app.set.borrow().name.clone();
+        let name = if name.is_empty() {
+            "Drawings".to_owned()
+        } else {
+            name
+        };
+        let Some(path) = app
+            .dialogs
+            .save_path(&format!("{name} summary.pdf"), FileKind::Pdf)
+        else {
+            return;
+        };
+        let mut rows = Vec::new();
+        app.every_drawing(|v| {
+            let sheet = v.tab_title();
+            for mut row in v.summary_rows() {
+                row.cells.insert(0, sheet.clone());
+                rows.push(row);
+            }
+            0
+        });
+        let count = rows.len();
+        let columns: Vec<(String, f64)> = std::iter::once(("Sheet".to_owned(), 1.4))
+            .chain(
+                COLUMNS
+                    .iter()
+                    .take(6)
+                    .zip([1.4, 0.5, 3.6, 1.1, 1.3, 0.9])
+                    .map(|(c, share)| ((*c).to_owned(), share)),
+            )
+            .collect();
+        let table = opencabinet_pdf::report::Table {
+            title: format!("Markup summary · {name}"),
+            subtitle: format!(
+                "{} · {count} markups",
+                chrono::Local::now().format("%Y-%m-%d %H:%M")
+            ),
+            columns,
+            rows,
+        };
+        let result = opencabinet_pdf::report::table(&table)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+        app.status(&match result {
+            Ok(()) => format!(
+                "Wrote one summary of {count} markups to {}.",
+                path.display()
+            ),
+            Err(why) => format!("Cannot write the summary: {why}"),
+        });
+    }));
 }
 
 /// A callback that calls `f` with the window's app.
@@ -393,8 +542,8 @@ mod ui {
 }
 
 pub use ui::{
-    AskInfo, BookmarkInfo, EditorLine, Label, QuantityInfo, ReplyInfo, ReviewWindow, SavedInfo,
-    Shape, SheetInfo, TabInfo, ToolInfo, ToolSetInfo,
+    AskInfo, BookmarkInfo, CaptureColor, EditorLine, Label, QuantityInfo, ReplyInfo, ReviewWindow,
+    SavedInfo, Shape, SheetInfo, TabInfo, ToolInfo, ToolSetInfo,
 };
 
 /// Opens `address`, a web or mail address a link goes to, in the
@@ -528,6 +677,126 @@ struct App {
     timer: slint::Timer,
     /// Bumped whenever another document opens, which may share a view.
     generation: RefCell<usize>,
+    /// Pieces of the page already drawn, so moving it draws only what
+    /// comes into view.
+    tiles: RefCell<Tiles>,
+}
+
+/// The side of a piece of the page drawn at once, in pixels.
+const TILE: u32 = 256;
+/// The most pieces kept: about 64 MB.
+const MAX_TILES: usize = 256;
+
+/// Pieces of a page drawn at one zoom, kept to be used again.
+#[derive(Default)]
+struct Tiles {
+    /// Which drawing, page, zoom and turn they belong to.
+    key: Option<(usize, u64, usize, u64, u8)>,
+    /// By column and row, with when each was last used.
+    pieces: std::collections::HashMap<(i64, i64), (opencabinet_pdf::Bitmap, u64)>,
+    clock: u64,
+}
+
+impl Tiles {
+    /// `view` of `document`, made of pieces drawn now or before; `which`
+    /// says which drawing and version it is.
+    fn view(
+        &mut self,
+        document: &opencabinet_pdf::Document,
+        view: View,
+        (generation, version): (usize, u64),
+    ) -> Result<opencabinet_pdf::Bitmap, opencabinet_pdf::Error> {
+        let key = (
+            generation,
+            version,
+            view.page,
+            view.zoom.to_bits(),
+            view.turn,
+        );
+        if self.key != Some(key) {
+            self.pieces.clear();
+            self.key = Some(key);
+        }
+        self.clock += 1;
+        let side = f64::from(TILE);
+        #[expect(clippy::cast_possible_truncation, reason = "tile numbers")]
+        let range = |from: f64, length: u32| {
+            let first = (from / side).floor() as i64;
+            let last = ((from + f64::from(length) - 1.0) / side).floor() as i64;
+            first..=last
+        };
+        let (columns, rows) = (
+            range(view.origin.x, view.width),
+            range(view.origin.y, view.height),
+        );
+        let wanted: Vec<(i64, i64)> = rows
+            .clone()
+            .flat_map(|r| columns.clone().map(move |c| (c, r)))
+            .collect();
+        let missing: Vec<(i64, i64)> = wanted
+            .iter()
+            .copied()
+            .filter(|at| !self.pieces.contains_key(at))
+            .collect();
+        if !missing.is_empty() {
+            #[expect(clippy::cast_precision_loss, reason = "tile numbers")]
+            let views: Vec<View> = missing
+                .iter()
+                .map(|&(c, r)| View {
+                    origin: opencabinet_pdf::Point::new(c as f64 * side, r as f64 * side),
+                    width: TILE,
+                    height: TILE,
+                    ..view
+                })
+                .collect();
+            let drawn = opencabinet_pdf::render_many(document, &views)?;
+            for (at, bitmap) in missing.into_iter().zip(drawn) {
+                self.pieces.insert(at, (bitmap, self.clock));
+            }
+        }
+        // The pieces of this view, put together.
+        let (w, h) = (view.width as usize, view.height as usize);
+        let mut pixels = vec![0u8; w * h * 4];
+        #[expect(clippy::cast_possible_truncation, reason = "pixels")]
+        let (ox, oy) = (view.origin.x.round() as i64, view.origin.y.round() as i64);
+        let tile = i64::from(TILE);
+        for at in &wanted {
+            let Some((bitmap, used)) = self.pieces.get_mut(at) else {
+                continue;
+            };
+            *used = self.clock;
+            let (tx, ty) = (at.0 * tile, at.1 * tile);
+            let x0 = tx.max(ox);
+            let x1 = (tx + tile).min(ox + i64::from(view.width));
+            if x1 <= x0 {
+                continue;
+            }
+            let bytes = usize::try_from(x1 - x0).unwrap_or(0) * 4;
+            for y in ty.max(oy)..(ty + tile).min(oy + i64::from(view.height)) {
+                let from = usize::try_from(((y - ty) * tile + (x0 - tx)) * 4).unwrap_or(0);
+                let to = usize::try_from(((y - oy) * i64::from(view.width) + (x0 - ox)) * 4)
+                    .unwrap_or(0);
+                pixels[to..to + bytes].copy_from_slice(&bitmap.pixels[from..from + bytes]);
+            }
+        }
+        // The least used go first.
+        while self.pieces.len() > MAX_TILES.max(wanted.len()) {
+            let Some(oldest) = self
+                .pieces
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            self.pieces.remove(&oldest);
+        }
+        Ok(opencabinet_pdf::Bitmap {
+            width: view.width,
+            height: view.height,
+            pixels,
+        })
+    }
 }
 
 /// Creates the window, asking the user through `dialogs`, with the PDF at
@@ -567,6 +836,7 @@ fn build(
         window: window.as_weak(),
         drawn: RefCell::new(None),
         generation: RefCell::new(0),
+        tiles: RefCell::new(Tiles::default()),
         timer: slint::Timer::default(),
     });
     let polling = Rc::downgrade(&app);
@@ -721,6 +991,17 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     });
     let a = Rc::clone(app);
+    window.on_capture_color_to(move |i, c| {
+        let Ok(i) = usize::try_from(i) else {
+            return;
+        };
+        let to = usize::try_from(c)
+            .ok()
+            .and_then(|c| COLORS.get(c))
+            .map(|&(_, rgb)| rgb);
+        a.change(|v| v.set_capture_color(i, to));
+    });
+    let a = Rc::clone(app);
     window.on_set_only_listed(move |on| a.change(|v| v.set_only_listed(on)));
     window.on_export_quantities(on(|app| {
         let stem = app
@@ -856,6 +1137,7 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
         }
     });
     connect_tool_sets(window, app);
+    connect_batch(window, app);
     connect_stamp_editor(window, app);
     let a = Rc::clone(app);
     window.on_sort_list(move |column, down| {
@@ -1221,6 +1503,71 @@ impl App {
         if let Err(message) = result {
             self.status(&message);
         }
+    }
+
+    /// Opens every drawing of the sheet set not open yet, each in a tab.
+    fn open_set_sheets(&self) {
+        let paths: Vec<PathBuf> = self
+            .set
+            .borrow()
+            .sheets
+            .iter()
+            .filter(|s| s.path.is_file())
+            .map(|s| s.path.clone())
+            .collect();
+        let shown = self.active.get();
+        for path in paths {
+            if self.tab_of(&path).is_none() {
+                self.open(&path);
+            }
+        }
+        self.switch_to(shown.min(self.tabs.borrow().len().saturating_sub(1)));
+    }
+
+    /// Does `f` to every open drawing; what the calls return, added up.
+    fn every_drawing(&self, mut f: impl FnMut(&mut Viewer) -> usize) -> usize {
+        let mut total = f(&mut self.viewer.borrow_mut());
+        for tab in self.tabs.borrow_mut().iter_mut().flatten() {
+            total += f(tab);
+        }
+        total
+    }
+
+    /// Every sheet's name the open drawings and the sheet set give, such
+    /// as `A-301`: the PDFs' page labels and the sheets' labels, those
+    /// with a digit in them.
+    fn sheet_names(&self) -> Vec<SheetName> {
+        let mut names: Vec<SheetName> = Vec::new();
+        let mut add = |name: &str, path: &Path, page: usize| {
+            let name = name.trim();
+            if name.chars().count() >= 3
+                && name.chars().any(|c| c.is_ascii_digit())
+                && name.chars().any(char::is_alphabetic)
+                && !names.iter().any(|n| n.name.eq_ignore_ascii_case(name))
+            {
+                names.push(SheetName {
+                    name: name.to_owned(),
+                    path: path.to_owned(),
+                    page,
+                });
+            }
+        };
+        {
+            let viewer = self.viewer.borrow();
+            let tabs = self.tabs.borrow();
+            for v in tabs.iter().map(|t| t.as_ref().unwrap_or(&viewer)) {
+                let Some(path) = v.path() else {
+                    continue;
+                };
+                for (page, label) in v.labels().iter().enumerate() {
+                    add(label, path, page);
+                }
+            }
+        }
+        for sheet in &self.set.borrow().sheets {
+            add(&sheet.label, &sheet.path, 0);
+        }
+        names
     }
 
     /// Opens the sheet set at `path`: each drawing in a tab, and the set
@@ -1803,6 +2150,16 @@ impl App {
         window.set_zoom_label(viewer.zoom_label().into());
         window.set_turn_label(viewer.turn_label().into());
         window.set_only_listed(viewer.only_listed());
+        let colors: Vec<CaptureColor> = viewer
+            .capture_colors()
+            .into_iter()
+            .map(|(from, to)| CaptureColor {
+                from: color(from),
+                to: color(to.unwrap_or(from)),
+                changed: to.is_some(),
+            })
+            .collect();
+        window.set_capture_colors(ModelRc::new(VecModel::from(colors)));
         refresh_quantities(&window, &viewer);
         window.set_scale_label(viewer.scale_label().into());
         window.set_snap_label(viewer.snap_label().into());
@@ -1920,7 +2277,11 @@ impl App {
                 let theirs = render(&other, View { page, ..view })?;
                 opencabinet_pdf::overlay(&mine, &theirs)
             }),
-            None => render(document, view),
+            None => {
+                self.tiles
+                    .borrow_mut()
+                    .view(document, view, (*self.generation.borrow(), version))
+            }
         };
         match drawn {
             Ok(bitmap) => {

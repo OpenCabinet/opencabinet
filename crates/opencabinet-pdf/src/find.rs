@@ -100,8 +100,27 @@ pub fn letters(document: &Document, page: usize) -> Result<Vec<Letter>, Error> {
 /// # Errors
 /// When the page does not exist or the PDF can no longer be read.
 pub fn find(document: &Document, page: usize, query: &str) -> Result<Vec<Found>, Error> {
-    let query: Vec<char> = squeeze(&query.to_lowercase());
-    if query.is_empty() {
+    Ok(find_all(document, page, &[query], false)?
+        .into_iter()
+        .map(|(_, found)| found)
+        .collect())
+}
+
+/// Where each of `queries` is on `page`, reading the page's text once;
+/// with `whole`, only where no letter or digit is right before or after,
+/// so `A-301` is not found in `A-3010`. Each place found comes with the
+/// query it matches.
+///
+/// # Errors
+/// When the page does not exist or the PDF can no longer be read.
+pub fn find_all(
+    document: &Document,
+    page: usize,
+    queries: &[&str],
+    whole: bool,
+) -> Result<Vec<(usize, Found)>, Error> {
+    let queries: Vec<Vec<char>> = queries.iter().map(|q| squeeze(&q.to_lowercase())).collect();
+    if queries.iter().all(Vec::is_empty) {
         return Ok(Vec::new());
     }
     let letters = letters(document, page)?;
@@ -121,23 +140,36 @@ pub fn find(document: &Document, page: usize, query: &str) -> Result<Vec<Found>,
         }
     }
     let text: Vec<(char, usize)> = squeeze_indexed(&chars);
+    let alone = |at: Option<&(char, usize)>| at.is_none_or(|&(c, _)| !c.is_alphanumeric());
     let mut found = Vec::new();
-    let mut start = 0;
-    while start + query.len() <= text.len() {
-        let matches = text[start..start + query.len()]
-            .iter()
-            .zip(&query)
-            .all(|(&(c, _), q)| c == *q);
-        if matches {
-            let first = text[start].1;
-            let last = text[start + query.len() - 1].1;
-            found.push(Found {
-                page,
-                rect: bounds(&letters[first..=last]),
-            });
-            start += query.len();
-        } else {
-            start += 1;
+    for (which, query) in queries.iter().enumerate() {
+        if query.is_empty() {
+            continue;
+        }
+        let mut start = 0;
+        while start + query.len() <= text.len() {
+            let end = start + query.len();
+            let matches = text[start..end]
+                .iter()
+                .zip(query)
+                .all(|(&(c, _), q)| c == *q)
+                && (!whole
+                    || (alone(start.checked_sub(1).and_then(|i| text.get(i)))
+                        && alone(text.get(end))));
+            if matches {
+                let first = text[start].1;
+                let last = text[end - 1].1;
+                found.push((
+                    which,
+                    Found {
+                        page,
+                        rect: bounds(&letters[first..=last]),
+                    },
+                ));
+                start = end;
+            } else {
+                start += 1;
+            }
         }
     }
     Ok(found)
@@ -224,5 +256,11 @@ mod tests {
         );
         assert_eq!(find(&document, 0, "a-202").unwrap().len(), 0);
         assert_eq!(find(&document, 0, "  ").unwrap().len(), 0);
+        // Whole names only: "A-20" is in "A-202", but not as a name.
+        assert_eq!(find_all(&document, 1, &["A-20"], false).unwrap().len(), 1);
+        assert_eq!(
+            find_all(&document, 1, &["A-20", "a-202"], true).unwrap()[0].0,
+            1
+        );
     }
 }

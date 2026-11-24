@@ -60,6 +60,11 @@ pub fn icon(tool: Tool) -> (&'static str, bool) {
                 true,
             ),
             Kind::Angle => ("M 20 19 L 4 19 L 15 5 M 10 19 A 6 6 0 0 0 7.6 14.4", false),
+            Kind::Capture => (
+                "M 3 7 L 3 3 L 7 3 M 17 3 L 21 3 L 21 7 M 21 17 L 21 21 L 17 21 M 7 21 L 3 21 L 3 17 \
+                 M 8 15 L 11 10 L 13 13 L 16 9",
+                false,
+            ),
             Kind::Link => (
                 "M 10 14 L 14 10 M 9 7 L 11 5 A 3.5 3.5 0 0 1 19 13 L 17 15 \
                  M 15 17 L 13 19 A 3.5 3.5 0 0 1 5 11 L 7 9",

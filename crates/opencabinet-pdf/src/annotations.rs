@@ -220,6 +220,23 @@ pub struct Annotation {
     pub replies: Vec<Reply>,
     /// Where a link goes, when it is one, to write its action.
     pub link: Option<crate::links::Target>,
+    /// The part of a page it shows, when it is a capture: drawn from the
+    /// page's own content instead of `appearance`.
+    pub capture: Option<Capture>,
+    /// The bounds and resources of its appearance when they are not the
+    /// usual ones, as for a capture.
+    pub form: Option<([f64; 4], Object)>,
+}
+
+/// The part of a page a capture shows, and its colors changed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Capture {
+    /// The page, from 0.
+    pub page: usize,
+    /// The part shown, in that page's PDF space: left, bottom, right, top.
+    pub region: [f64; 4],
+    /// Colors changed, from and to.
+    pub colors: Vec<(crate::capture::Rgb, crate::capture::Rgb)>,
 }
 
 impl Default for Annotation {
@@ -253,6 +270,8 @@ impl Default for Annotation {
             change: Change::New,
             replies: Vec::new(),
             link: None,
+            capture: None,
+            form: None,
         }
     }
 }
@@ -413,6 +432,8 @@ fn reply_dictionary(
 pub fn save(bytes: &[u8], markups: &Markups) -> Result<Vec<u8>, Error> {
     let fail = |e: lopdf::Error| Error::Annotations(e.to_string());
     let prev = lopdf::Document::load_mem(bytes).map_err(fail)?;
+    let prepared = with_captures(&prev, markups)?;
+    let markups = &prepared;
     let mut document = IncrementalDocument::create_from(bytes.to_vec(), prev);
     let pages: Vec<ObjectId> = document
         .get_prev_documents()
@@ -496,6 +517,31 @@ pub fn save(bytes: &[u8], markups: &Markups) -> Result<Vec<u8>, Error> {
         .save_to(&mut out)
         .map_err(|e| Error::Annotations(e.to_string()))?;
     Ok(out)
+}
+
+/// `markups` with each capture's appearance drawn from its page's content.
+fn with_captures(document: &lopdf::Document, markups: &Markups) -> Result<Markups, Error> {
+    let mut prepared = markups.clone();
+    if prepared.annotations.iter().all(|a| a.capture.is_none()) {
+        return Ok(prepared);
+    }
+    let pages: Vec<ObjectId> = document.get_pages().values().copied().collect();
+    for annotation in &mut prepared.annotations {
+        let Some(capture) = annotation.capture.as_ref() else {
+            continue;
+        };
+        let page = *pages.get(capture.page).ok_or_else(|| {
+            Error::Annotations(format!(
+                "a capture shows page {}, which the PDF does not have",
+                capture.page + 1
+            ))
+        })?;
+        let (content, resources) =
+            crate::capture::form(document, page, capture.region, &capture.colors)?;
+        annotation.appearance = content;
+        annotation.form = Some((capture.region, resources));
+    }
+    Ok(prepared)
 }
 
 /// Adds to `annots`, the entries of page `page`, the annotations in `new`
@@ -834,6 +880,8 @@ fn read_annotation(
         change: Change::Unchanged,
         replies: Vec::new(),
         link: None,
+        capture: None,
+        form: None,
     })
 }
 
@@ -956,7 +1004,15 @@ fn fill(
 ) {
     let [x0, y0, x1, y1] = annotation.rect;
     let opacity = annotation.opacity.clamp(0.0, 1.0);
-    let appearance = document.add_object(Stream::new(
+    // A capture: the part of the page, fitted to the annotation's box.
+    let form = if let Some((bbox, resources)) = &annotation.form {
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => reals(*bbox),
+            "Resources" => resources.clone(),
+        }
+    } else {
         dictionary! {
             "Type" => "XObject",
             "Subtype" => "Form",
@@ -970,9 +1026,9 @@ fn fill(
                     },
                 },
             },
-        },
-        annotation.appearance.clone(),
-    ));
+        }
+    };
+    let appearance = document.add_object(Stream::new(form, annotation.appearance.clone()));
     let [r, g, b] = annotation.color;
     dict.set("Subtype", Object::Name(annotation.subtype.name().into()));
     dict.set("Rect", reals(annotation.rect));
