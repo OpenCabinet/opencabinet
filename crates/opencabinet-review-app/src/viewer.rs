@@ -2787,7 +2787,7 @@ impl Viewer {
         self.session = Some(Session {
             member,
             firewall,
-            seen: 0,
+            seen: None,
         });
         Ok(())
     }
@@ -2811,7 +2811,7 @@ impl Viewer {
         self.session = Some(Session {
             member,
             firewall: Arc::default(),
-            seen: 0,
+            seen: None,
         });
         Ok(())
     }
@@ -2857,7 +2857,7 @@ impl Viewer {
         self.session = Some(Session {
             member,
             firewall: Arc::default(),
-            seen: 0,
+            seen: None,
         });
         self.pull();
         self.status = "Joined the session. Save as to keep a copy.".into();
@@ -2908,10 +2908,13 @@ impl Viewer {
             return false;
         };
         let changed = session.member.link().changed.load(Ordering::SeqCst);
-        if changed == session.seen && session.seen != 0 {
+        // The first time, what is there is taken whatever the count; after
+        // that, only when it moved. (Counting the first look as 1 lost the
+        // first change when it came after it.)
+        if session.seen == Some(changed) {
             return false;
         }
-        session.seen = changed.max(1);
+        session.seen = Some(changed);
         let Ok(shared) = session.member.link().shared.lock() else {
             return false;
         };
@@ -3855,8 +3858,9 @@ struct Session {
     /// What the firewall lets in, when hosting, once looked at; and the
     /// answer to allowing Review through it.
     firewall: Arc<std::sync::Mutex<(Option<Firewall>, String)>>,
-    /// How many changes from others were taken in.
-    seen: u64,
+    /// How many changes from others were taken in; `None` before the
+    /// first look.
+    seen: Option<u64>,
 }
 
 /// Looks at the firewall away from the window, after letting this
