@@ -8,7 +8,7 @@
 // everything else.
 
 import {
-    Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, StandardListView,
+    Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, SpinBox, StandardListView,
     StandardTableView, TextEdit,
 } from "std-widgets.slint";
 
@@ -28,6 +28,7 @@ export struct Label {
     text: string,
     color: color,
     size: length,
+    bold: bool,
 }
 
 // A tool: its name and its icon, SVG path commands on a 24 × 24 grid.
@@ -74,11 +75,34 @@ export struct QuantityInfo {
     detail: string,
 }
 
-// A saved tool in My tools: its name and color.
+// A line of the stamp being designed.
+export struct EditorLine {
+    text: string,
+    size: int,
+    bold: bool,
+}
+
+// A question a stamp asks when placed, and the answer so far.
+export struct AskInfo {
+    question: string,
+    answer: string,
+}
+
+// A saved tool: its name and color.
 export struct SavedInfo {
     name: string,
     color: color,
 }
+
+// A named set of saved tools, folded away or not, and whether new tools
+// are saved in it.
+export struct ToolSetInfo {
+    name: string,
+    collapsed: bool,
+    current: bool,
+    tools: [SavedInfo],
+}
+
 
 // The rails' colors, the same in light and dark themes.
 global Rail {
@@ -273,12 +297,28 @@ export component ReviewWindow inherits Window {
     in-out property <string> author;
     in property <int> units;
     // The left panel open: -1 none, 0 pages, 1 bookmarks, 2 find, 3 measure,
-    // 4 session, 5 sheet set, 6 quantities.
+    // 4 session, 5 sheet set, 6 quantities, 7 tool sets.
     in-out property <int> panel: 0;
     // Whether the markup list is open under the drawing.
     in-out property <bool> list-open: true;
     in property <[StandardListViewItem]> chat;
-    in property <[SavedInfo]> saved-tools;
+    in property <[ToolSetInfo]> tool-sets;
+    // The set and the tool in it in use, or -1.
+    in property <int> saved-set: -1;
+    // The questions the stamp placed next asks.
+    in property <[AskInfo]> stamp-asks;
+    in property <string> stamps-folder;
+    // The stamp editor: open in a tab, shown, and the stamp in it.
+    in property <bool> editor-open;
+    in property <bool> editor-shown;
+    in property <string> editor-name;
+    in property <[EditorLine]> editor-lines;
+    in property <int> editor-align;
+    in property <int> editor-border;
+    in property <int> editor-color;
+    in property <bool> editor-fill;
+    in property <image> editor-preview;
+    in property <string> editor-message;
     in property <[BookmarkInfo]> bookmarks;
     in property <int> saved-in-use: -1;
     in property <bool> in-session;
@@ -362,8 +402,31 @@ export component ReviewWindow inherits Window {
     callback quit();
     callback say(string);
     callback save-tool();
-    callback use-saved(int);
-    callback remove-saved(int);
+    callback use-saved(int, int);
+    callback remove-saved(int, int);
+    callback choose-set(int);
+    callback toggle-set(int);
+    callback add-set(string);
+    callback rename-set(int, string);
+    callback remove-set(int);
+    callback move-tool(int, int);
+    callback export-set(int);
+    callback import-sets();
+    callback set-ask(string, string);
+    callback new-stamp();
+    callback edit-stamp(int);
+    callback choose-stamps-folder();
+    callback show-editor();
+    callback editor-rename(string);
+    callback editor-line(int, string, int, bool);
+    callback editor-add-line();
+    callback editor-remove-line(int);
+    callback editor-align-to(int);
+    callback editor-border-to(int);
+    callback editor-color-to(int);
+    callback editor-fill-to(bool);
+    callback editor-save();
+    callback editor-close();
     callback sort-list(int, bool);
     callback go-to-bookmark(int);
     callback export-summary();
@@ -435,7 +498,7 @@ export component ReviewWindow inherits Window {
             MenuItem { title: "Delete"; enabled: root.has-selection; activated => { root.delete-selected(); } }
             MenuItem { title: "Select all on this page"; enabled: root.has-document; activated => { root.select-all(); } }
             MenuSeparator { }
-            MenuItem { title: "Save style in My tools"; enabled: root.has-selection; activated => { root.save-tool(); } }
+            MenuItem { title: "Save style in tool set"; enabled: root.has-selection; activated => { root.save-tool(); } }
         }
         Menu {
             title: "Pages";
@@ -586,6 +649,12 @@ export component ReviewWindow inherits Window {
                             icon: "M 4 6 L 14 6 L 14 20 L 4 20 Z M 7 3 L 17 3 L 17 17 M 10 0 L 20 0 L 20 14";
                             active: root.panel == 5;
                             clicked => { root.toggle(5); }
+                        }
+                        RailButton {
+                            name: "Tool sets";
+                            icon: "M 3 9 L 21 9 L 21 20 L 3 20 Z M 8 9 L 8 6 L 16 6 L 16 9 M 3 14 L 21 14 M 11 13 L 13 13 L 13 15 L 11 15 Z";
+                            active: root.panel == 7;
+                            clicked => { root.toggle(7); }
                         }
                     }
                 }
@@ -807,6 +876,167 @@ export component ReviewWindow inherits Window {
                             model: ["Feet and inches", "Millimeters"];
                             current-index: root.units;
                             selected => { root.choose-units(self.current-index); }
+                        }
+                    }
+
+                    if root.panel == 7: VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        PanelTitle { text: "Tool sets"; }
+                        Text {
+                            text: "Click a tool to draw with it. Click a set's name to choose it, then select a markup and press Save here to keep its style there.";
+                            wrap: word-wrap;
+                            font-size: 10px;
+                            color: Palette.foreground.transparentize(25%);
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            set-name := LineEdit {
+                                accessible-label: "New tool set's name";
+                                placeholder-text: "New set";
+                                accepted(text) => { root.add-set(text); self.text = ""; }
+                            }
+                            Button { text: "Add"; clicked => { root.add-set(set-name.text); set-name.text = ""; } }
+                            Button { text: "Import…"; clicked => { root.import-sets(); } }
+                        }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                spacing: 4px;
+                                for set[s] in root.tool-sets: VerticalLayout {
+                                    property <bool> renaming;
+                                    spacing: 2px;
+                                    Rectangle {
+                                        height: 28px;
+                                        border-radius: 3px;
+                                        background: set.current ? Palette.accent-background.transparentize(80%)
+                                            : Palette.foreground.transparentize(93%);
+                                        accessible-role: button;
+                                        accessible-label: set.name + (set.collapsed ? ", folded" : "");
+                                        accessible-action-default => { root.toggle-set(s); }
+                                        TouchArea {
+                                            clicked => { root.choose-set(s); }
+                                            double-clicked => { root.toggle-set(s); }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 4px;
+                                            padding-right: 2px;
+                                            spacing: 2px;
+                                            Rectangle {
+                                                width: 16px;
+                                                accessible-role: button;
+                                                accessible-label: (set.collapsed ? "Open " : "Fold ") + set.name;
+                                                accessible-action-default => { root.toggle-set(s); }
+                                                Path {
+                                                    width: 12px;
+                                                    height: 12px;
+                                                    viewbox-width: 10;
+                                                    viewbox-height: 10;
+                                                    commands: set.collapsed ? "M 3 1 L 8 5 L 3 9 Z" : "M 1 3 L 9 3 L 5 8 Z";
+                                                    fill: Palette.foreground;
+                                                }
+                                                TouchArea { clicked => { root.toggle-set(s); } }
+                                            }
+                                            if !renaming: Text {
+                                                text: set.name;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                                horizontal-stretch: 1;
+                                            }
+                                            if renaming: rename := LineEdit {
+                                                accessible-label: "Tool set's name";
+                                                text: set.name;
+                                                horizontal-stretch: 1;
+                                                accepted(text) => { root.rename-set(s, text); renaming = false; }
+                                            }
+                                            Text {
+                                                text: set.tools.length;
+                                                font-size: 10px;
+                                                vertical-alignment: center;
+                                                color: Palette.foreground.transparentize(40%);
+                                            }
+                                        }
+                                    }
+                                    // The chosen set's actions, on a row of their own.
+                                    if set.current: HorizontalLayout {
+                                        padding-left: 18px;
+                                        spacing: 2px;
+                                        alignment: start;
+                                        BarButton { text: "Save here"; label: "Save the selected markup's style in " + set.name; enabled: root.has-selection; clicked => { root.save-tool(); } }
+                                        BarButton { text: "Rename"; label: "Rename " + set.name; clicked => { renaming = !renaming; } }
+                                        BarButton { text: "Export…"; label: "Export " + set.name + " to share it"; clicked => { root.export-set(s); } }
+                                        BarButton { text: "Remove"; label: "Remove the tool set " + set.name; clicked => { root.remove-set(s); } }
+                                    }
+                                    if !set.collapsed && set.tools.length == 0: Text {
+                                        text: "No tools yet.";
+                                        font-size: 10px;
+                                        x: 22px;
+                                        color: Palette.foreground.transparentize(35%);
+                                    }
+                                    for tool[i] in set.collapsed ? [] : set.tools: Rectangle {
+                                        height: 24px;
+                                        border-radius: 3px;
+                                        background: s == root.saved-set && i == root.saved-in-use ? Rail.active.transparentize(70%)
+                                            : tool-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                                        accessible-role: button;
+                                        accessible-label: "Draw with " + tool.name;
+                                        accessible-action-default => { root.use-saved(s, i); }
+                                        tool-touch := TouchArea {
+                                            enabled: root.has-document;
+                                            clicked => { root.use-saved(s, i); }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 22px;
+                                            spacing: 4px;
+                                            Rectangle { width: 12px; height: 12px; y: 6px; border-radius: 6px; background: tool.color; }
+                                            Text { text: tool.name; font-size: 11px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                            if root.tool-sets.length > 1: BarButton {
+                                                text: "Move";
+                                                label: "Move " + tool.name + " to the next tool set";
+                                                clicked => { root.move-tool(s, i); }
+                                            }
+                                            BarButton { text: "×"; label: "Take " + tool.name + " out of " + set.name; clicked => { root.remove-saved(s, i); } }
+                                        }
+                                    }
+                                }
+                                Rectangle { height: 8px; }
+                                PanelTitle { text: "Stamps"; }
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Button { text: "New stamp…"; clicked => { root.new-stamp(); } }
+                                    Button { text: "Stamps folder…"; clicked => { root.choose-stamps-folder(); } }
+                                }
+                                if root.stamps-folder != "": Text {
+                                    text: "Kept in " + root.stamps-folder;
+                                    font-size: 10px;
+                                    wrap: word-wrap;
+                                    color: Palette.foreground.transparentize(35%);
+                                }
+                                for words[i] in root.stamps: Rectangle {
+                                    height: 24px;
+                                    border-radius: 3px;
+                                    background: i == root.stamp ? Rail.active.transparentize(70%)
+                                        : pick-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                                    accessible-role: button;
+                                    accessible-label: "Stamp " + words;
+                                    accessible-action-default => { root.choose-stamp(i); }
+                                    pick-touch := TouchArea { enabled: root.has-document; clicked => { root.choose-stamp(i); } }
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        spacing: 4px;
+                                        Text { text: words; font-size: 11px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                        BarButton {
+                                            text: i < root.built-in-stamps ? "Copy…" : "Edit…";
+                                            label: (i < root.built-in-stamps ? "Make a stamp from " : "Edit the stamp ") + words;
+                                            clicked => { root.edit-stamp(i); }
+                                        }
+                                        if i >= root.built-in-stamps: BarButton { text: "×"; label: "Remove the stamp " + words; clicked => { root.remove-stamp(i); } }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -1081,6 +1311,44 @@ export component ReviewWindow inherits Window {
                                 }
                             }
                         }
+                        if root.editor-open: Rectangle {
+                            min-width: 120px;
+                            max-width: 240px;
+                            border-radius: 4px;
+                            background: root.editor-shown ? Palette.background
+                                : editor-tab-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
+                            border-width: root.editor-shown ? 1px : 0px;
+                            border-color: Palette.border;
+                            accessible-role: tab;
+                            accessible-label: "Stamp " + root.editor-name;
+                            accessible-item-selected: root.editor-shown;
+                            accessible-action-default => { root.show-editor(); }
+                            editor-tab-touch := TouchArea { clicked => { root.show-editor(); } }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 4px;
+                                spacing: 4px;
+                                Text {
+                                    text: "Stamp · " + root.editor-name;
+                                    vertical-alignment: center;
+                                    font-size: 12px;
+                                    font-weight: root.editor-shown ? 600 : 400;
+                                    font-italic: true;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                Rectangle {
+                                    width: 20px;
+                                    border-radius: 3px;
+                                    background: editor-close-touch.has-hover ? Palette.foreground.transparentize(85%) : transparent;
+                                    accessible-role: button;
+                                    accessible-label: "Close the stamp editor";
+                                    accessible-action-default => { root.editor-close(); }
+                                    Text { text: "×"; horizontal-alignment: center; vertical-alignment: center; font-size: 14px; }
+                                    editor-close-touch := TouchArea { clicked => { root.editor-close(); } }
+                                }
+                            }
+                        }
                         Rectangle {
                             width: 26px;
                             border-radius: 4px;
@@ -1125,6 +1393,7 @@ export component ReviewWindow inherits Window {
                         text: label.text;
                         color: label.color;
                         font-size: label.size;
+                        font-weight: label.bold ? 700 : 400;
                     }
                     TouchArea {
                         pointer-event(event) => {
@@ -1162,6 +1431,130 @@ export component ReviewWindow inherits Window {
                             spacing: 8px;
                             Button { text: "Open…"; primary: true; clicked => { root.open(); } }
                             Button { text: "Join a session"; clicked => { root.panel = 4; } }
+                        }
+                    }
+                    if root.editor-shown: Rectangle {
+                        background: Palette.background;
+                        // Clicks stay in the editor, off the drawing.
+                        TouchArea { }
+                        HorizontalLayout {
+                            padding: 16px;
+                            spacing: 24px;
+                            VerticalLayout {
+                                width: 420px;
+                                spacing: 6px;
+                                alignment: start;
+                                PanelTitle { text: "Stamp"; }
+                                LineEdit {
+                                    accessible-label: "The stamp's name";
+                                    placeholder-text: "Name";
+                                    text: root.editor-name;
+                                    edited(text) => { root.editor-rename(text); }
+                                }
+                                Text { text: "Lines"; font-size: 11px; font-weight: 600; }
+                                for line[i] in root.editor-lines: HorizontalLayout {
+                                    spacing: 4px;
+                                    LineEdit {
+                                        accessible-label: "Line " + (i + 1);
+                                        text: line.text;
+                                        horizontal-stretch: 1;
+                                        edited(text) => { root.editor-line(i, text, line.size, line.bold); }
+                                    }
+                                    SpinBox {
+                                        width: 80px;
+                                        accessible-label: "Size of line " + (i + 1);
+                                        minimum: 4;
+                                        maximum: 96;
+                                        value: line.size;
+                                        edited(value) => { root.editor-line(i, line.text, value, line.bold); }
+                                    }
+                                    CheckBox {
+                                        text: "Bold";
+                                        checked: line.bold;
+                                        toggled => { root.editor-line(i, line.text, line.size, self.checked); }
+                                    }
+                                    BarButton { text: "×"; label: "Remove line " + (i + 1); enabled: root.editor-lines.length > 1; clicked => { root.editor-remove-line(i); } }
+                                }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    Button { text: "Add a line"; enabled: root.editor-lines.length < 8; clicked => { root.editor-add-line(); } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: "Align"; vertical-alignment: center; font-size: 11px; }
+                                    ComboBox {
+                                        accessible-label: "How the lines line up";
+                                        model: ["Left", "Center", "Right"];
+                                        current-index: root.editor-align;
+                                        selected => { root.editor-align-to(self.current-index); }
+                                    }
+                                    Text { text: "Border"; vertical-alignment: center; font-size: 11px; }
+                                    ComboBox {
+                                        accessible-label: "The stamp's border";
+                                        model: ["None", "Square", "Rounded"];
+                                        current-index: root.editor-border;
+                                        selected => { root.editor-border-to(self.current-index); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text { text: "Color"; vertical-alignment: center; font-size: 11px; }
+                                    for swatch[i] in root.colors: Rectangle {
+                                        width: 22px;
+                                        height: 22px;
+                                        border-radius: 11px;
+                                        background: swatch;
+                                        border-width: i == root.editor-color ? 3px : 1px;
+                                        border-color: i == root.editor-color ? Palette.accent-background : Palette.border;
+                                        accessible-role: button;
+                                        accessible-label: root.color-names[i];
+                                        accessible-action-default => { root.editor-color-to(i); }
+                                        TouchArea { clicked => { root.editor-color-to(i); } }
+                                    }
+                                    CheckBox {
+                                        text: "Filled";
+                                        checked: root.editor-fill;
+                                        toggled => { root.editor-fill-to(self.checked); }
+                                    }
+                                }
+                                Text {
+                                    text: "Fields, filled in when the stamp is placed: {name}, {date}, {date:dd/MM/yyyy}, {time}, {page}, {sheet}, {file}, and {ask:Job number} to be asked for the job number.";
+                                    wrap: word-wrap;
+                                    font-size: 10px;
+                                    color: Palette.foreground.transparentize(25%);
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: start;
+                                    Button { text: "Save"; primary: true; clicked => { root.editor-save(); } }
+                                    Button { text: "Close"; clicked => { root.editor-close(); } }
+                                }
+                                if root.editor-message != "": Text {
+                                    text: root.editor-message;
+                                    wrap: word-wrap;
+                                    font-size: 11px;
+                                    color: #c77700;
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                Text { text: "As it will be placed now"; font-size: 11px; }
+                                Rectangle {
+                                    height: 240px;
+                                    background: white;
+                                    border-width: 1px;
+                                    border-color: Palette.border;
+                                    Image {
+                                        width: parent.width - 16px;
+                                        height: parent.height - 16px;
+                                        source: root.editor-preview;
+                                        image-fit: contain;
+                                        accessible-role: image;
+                                        accessible-label: "The stamp, as it will be placed";
+                                    }
+                                }
+                            }
                         }
                     }
                     if root.building: Rectangle {
@@ -1356,7 +1749,7 @@ export component ReviewWindow inherits Window {
                                     BarButton { text: "Zoom to"; clicked => { root.zoom-to-selected(); } }
                                     BarButton { text: "Duplicate"; clicked => { root.duplicate(); } }
                                     BarButton { text: "Delete"; clicked => { root.delete-selected(); } }
-                                    BarButton { text: "Save tool"; label: "Save style in My tools"; clicked => { root.save-tool(); } }
+                                    BarButton { text: "Save tool"; label: "Save style in the tool set"; clicked => { root.save-tool(); } }
                                 }
                             }
                         }
@@ -1513,50 +1906,19 @@ export component ReviewWindow inherits Window {
                                     self.text = "";
                                 }
                             }
-                            Rectangle { height: 1px; background: Palette.border; }
-                            Text { text: "My tools"; font-size: 10px; horizontal-alignment: center; }
-                            for saved[i] in root.saved-tools: Rectangle {
-                                height: 26px;
-                                border-radius: 4px;
-                                background: i == root.saved-in-use ? Rail.active.transparentize(70%)
-                                    : use-touch.has-hover ? Palette.foreground.transparentize(90%) : transparent;
-                                accessible-role: button;
-                                accessible-label: "Draw with " + saved.name;
-                                accessible-action-default => { root.use-saved(i); }
-                                use-touch := TouchArea {
-                                    enabled: root.has-document;
-                                    clicked => { root.use-saved(i); }
-                                }
-                                HorizontalLayout {
-                                    padding-left: 4px;
-                                    spacing: 4px;
-                                    Rectangle {
-                                        width: 12px;
-                                        height: 12px;
-                                        y: 7px;
-                                        border-radius: 6px;
-                                        background: saved.color;
-                                    }
-                                    Text {
-                                        text: saved.name;
-                                        font-size: 11px;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                        horizontal-stretch: 1;
-                                    }
-                                    BarButton {
-                                        text: "×";
-                                        label: "Take " + saved.name + " out of My tools";
-                                        clicked => { root.remove-saved(i); }
-                                    }
+                            for ask in root.stamping ? root.stamp-asks : []: VerticalLayout {
+                                Text { text: ask.question; font-size: 10px; overflow: elide; }
+                                LineEdit {
+                                    accessible-label: ask.question;
+                                    text: ask.answer;
+                                    font-size: 10px;
+                                    edited(text) => { root.set-ask(ask.question, text); }
                                 }
                             }
-                            if root.saved-tools.length == 0: Text {
-                                text: "Select a markup and save its style here.";
-                                wrap: word-wrap;
-                                font-size: 10px;
-                                horizontal-alignment: center;
-                                color: Palette.foreground.transparentize(30%);
+                            Rectangle { height: 1px; background: Palette.border; }
+                            Button {
+                                text: "Tool sets";
+                                clicked => { root.panel = 7; }
                             }
                             Button {
                                 text: "Save selected";

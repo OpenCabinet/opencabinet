@@ -30,7 +30,7 @@ impl Dialogs for Answers {
     fn save_path(&self, _suggested_name: &str, kind: FileKind) -> Option<PathBuf> {
         let path = self.save.borrow().clone()?;
         Some(match kind {
-            FileKind::Pdf | FileKind::Set => path,
+            FileKind::Pdf | FileKind::Set | FileKind::Tools => path,
             FileKind::List => path.with_extension("csv"),
         })
     }
@@ -163,14 +163,45 @@ fn a_drawing_is_opened_marked_up_and_saved() {
     assert_eq!(first(&window), "Cloud");
     window.invoke_row_selected(0);
     window.invoke_save_tool();
-    assert_eq!(window.get_saved_tools().row_count(), 1);
-    assert_eq!(window.get_saved_tools().row_data(0).unwrap().name, "Cloud");
-    window.invoke_use_saved(0);
-    assert_eq!(window.get_saved_in_use(), 0);
+    let tools = |w: &ReviewWindow| w.get_tool_sets().row_data(0).unwrap().tools;
+    assert_eq!(tools(&window).row_count(), 1);
+    assert_eq!(tools(&window).row_data(0).unwrap().name, "Cloud");
+    window.invoke_use_saved(0, 0);
+    assert_eq!((window.get_saved_set(), window.get_saved_in_use()), (0, 0));
     assert_eq!(window.get_tool(), tool("Cloud"));
-    window.invoke_remove_saved(0);
-    assert_eq!(window.get_saved_tools().row_count(), 0);
+    window.invoke_add_set("Estimating".into());
+    assert_eq!(window.get_tool_sets().row_count(), 2);
+    assert!(window.get_tool_sets().row_data(1).unwrap().current);
+    window.invoke_move_tool(0, 0);
+    assert_eq!(tools(&window).row_count(), 0);
+    window.invoke_remove_saved(1, 0);
+    window.invoke_remove_set(1);
+    assert_eq!(window.get_tool_sets().row_count(), 1);
     window.invoke_escape();
+
+    // A stamp designed in its own tab, kept, and the tab closed.
+    window.invoke_new_stamp();
+    assert!(window.get_editor_open() && window.get_editor_shown());
+    assert_eq!(window.get_editor_name(), "New stamp");
+    window.invoke_editor_rename("Field check".into());
+    window.invoke_editor_line(0, "FIELD CHECK".into(), 24, true);
+    window.invoke_editor_add_line();
+    assert_eq!(window.get_editor_lines().row_count(), 3);
+    window.invoke_editor_border_to(1);
+    assert_eq!(window.get_editor_border(), 1);
+    assert!(
+        window.get_editor_preview().size().width > 0,
+        "a preview is drawn"
+    );
+    window.invoke_editor_save();
+    assert!(window.get_editor_message().starts_with("Saved."));
+    assert!(window.get_stamps().iter().any(|s| s == "Field check"));
+    window.invoke_choose_tab(0);
+    assert!(window.get_editor_open() && !window.get_editor_shown());
+    window.invoke_show_editor();
+    assert!(window.get_editor_shown());
+    window.invoke_editor_close();
+    assert!(!window.get_editor_open());
 
     // A common scale for every page.
     let quarter = (0..window.get_scales().row_count())

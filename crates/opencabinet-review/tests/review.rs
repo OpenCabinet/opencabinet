@@ -528,3 +528,30 @@ fn a_link_markup_is_saved_as_a_link_and_comes_back() {
     nowhere.text = "ask the architect".into();
     assert_eq!(nowhere.link(), None);
 }
+
+#[test]
+fn a_designed_stamp_keeps_its_look_through_saving() {
+    use opencabinet_review::stamps::{Align, Border, Design};
+    let design = Design {
+        align: Align::Left,
+        border: Border::None,
+        ..Design::default()
+    };
+    let mut stamp = markup(0, Kind::Stamp, &[(100.0, 100.0), (300.0, 160.0)]);
+    stamp.text = "CHECKED\nAndrés · 11/23/2026".into();
+    stamp.look = design.look();
+    let shown = stamp.design().unwrap();
+    assert_eq!(shown.lines[1].text, "Andrés · 11/23/2026");
+    // No border: nothing stroked; bold words outlined in their color.
+    assert!(!stamp.stroked());
+    let appearance = stamp.to_annotation(None).appearance;
+    let ops = String::from_utf8_lossy(&appearance);
+    assert!(ops.contains("2 Tr"), "{ops}");
+    assert!(ops.contains("n Q"));
+    let mut review = Review::open(sheets()).unwrap();
+    review.add(stamp, "Andrés");
+    let again = Review::open(review.save(Units::Imperial).unwrap()).unwrap();
+    let back = &again.markups()[0];
+    assert_eq!(back.look, design.look());
+    assert_eq!(back.design().unwrap().align, Align::Left);
+}
