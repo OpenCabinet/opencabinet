@@ -3,8 +3,11 @@
 
 //! Measures how long moving around a drawing takes, without a screen:
 //! `cargo run --release -p opencabinet-review-app --example pan_probe`.
-//! It opens a dense 36" × 24" sheet with markups and times dragging the
-//! page, turning the wheel and zooming, frame by frame.
+//! It opens the drawing given, or a dense 36" × 24" sheet, adds markups
+//! (`OC_MARKUPS`, 60) and times dragging the page, turning the wheel and
+//! zooming, frame by frame, painting the window each time. `OC_PAGE` says
+//! how big the page's part of the window is: `1400x800x1.25` is 1400 by
+//! 800 logical pixels on a screen at 125 %.
 
 use std::rc::Rc;
 use std::time::Instant;
@@ -23,6 +26,7 @@ impl Platform for Offscreen {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one measurement, step by step")]
 fn main() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(Offscreen {
@@ -31,22 +35,52 @@ fn main() {
     .expect("a platform was already set");
     let dir = std::env::temp_dir().join(format!("oc-pan-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let pdf = dir.join("dense.pdf");
-    std::fs::write(
-        &pdf,
-        opencabinet_pdf::sample::sheets(3, 2592.0, 1728.0, 3000),
-    )
-    .unwrap();
+    // A drawing given on the command line, or a dense sample sheet.
+    let pdf = std::env::args_os().nth(1).map_or_else(
+        || {
+            let pdf = dir.join("dense.pdf");
+            std::fs::write(
+                &pdf,
+                opencabinet_pdf::sample::sheets(3, 2592.0, 1728.0, 3000),
+            )
+            .unwrap();
+            pdf
+        },
+        std::path::PathBuf::from,
+    );
     let review = opencabinet_review_app::create_apart(&[pdf]).unwrap();
     review.show().unwrap();
-    window.set_size(PhysicalSize::new(1366, 768));
-    review.invoke_resized(820.0, 420.0);
+    // The page's part of the window, in logical pixels, and the screen's
+    // scale: `OC_PAGE=1400x800x1.25`, or a small screen.
+    let page: Vec<f32> = std::env::var("OC_PAGE")
+        .unwrap_or_else(|_| "820x420x1".into())
+        .split('x')
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    let [w, h, scale] = page[..] else {
+        panic!("OC_PAGE is width x height x scale");
+    };
+    window.dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+        scale_factor: scale,
+    });
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "pixels"
+    )]
+    let (pw, ph) = (((w + 540.0) * scale) as u32, ((h + 340.0) * scale) as u32);
+    window.set_size(PhysicalSize::new(pw, ph));
+    review.invoke_resized(w, h);
     review.invoke_fit();
     // Some markups, as a real review has.
-    for n in 0..60 {
+    for n in 0..std::env::var("OC_MARKUPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60)
+    {
         let x = 100.0 + f32::from(u8::try_from(n % 10).unwrap()) * 60.0;
         let y = 100.0 + f32::from(u8::try_from(n / 10).unwrap()) * 40.0;
-        review.invoke_choose_tool(2);
+        review.invoke_choose_tool(3);
         review.invoke_pressed(x, y, 0);
         review.invoke_dragged(x + 30.0, y + 20.0);
         review.invoke_released(x + 30.0, y + 20.0);
@@ -56,33 +90,25 @@ fn main() {
     for _ in 0..6 {
         review.invoke_zoom_in();
     }
-    {
-        let document = opencabinet_pdf::Document::open(opencabinet_pdf::sample::sheets(
-            1, 2592.0, 1728.0, 3000,
-        ))
-        .unwrap();
+    let mut screen = vec![
+        slint::platform::software_renderer::PremultipliedRgbaColor::default();
+        (pw * ph) as usize
+    ];
+    let mut time = |name: &str, frames: u32, mut step: Box<dyn FnMut(u32)>| {
         let start = Instant::now();
-        for i in 0..10 {
-            let view = opencabinet_pdf::View {
-                page: 0,
-                zoom: 1.0,
-                origin: opencabinet_pdf::Point::new(f64::from(i) * 20.0, 300.0),
-                width: 820,
-                height: 420,
-                turn: 0,
-            };
-            let _ = opencabinet_pdf::render(&document, view).unwrap();
-        }
-        let each = start.elapsed().as_secs_f64() * 100.0;
-        println!("draw the view alone: {each:.1} ms");
-    }
-    let time = |name: &str, frames: u32, mut step: Box<dyn FnMut(u32)>| {
-        let start = Instant::now();
+        let mut painting = std::time::Duration::ZERO;
         for i in 0..frames {
             step(i);
+            // And put on the screen, as the window does.
+            let painted = Instant::now();
+            window.draw_if_needed(|renderer| {
+                renderer.render(&mut screen, pw as usize);
+            });
+            painting += painted.elapsed();
         }
         let each = start.elapsed().as_secs_f64() * 1000.0 / f64::from(frames);
-        println!("{name}: {each:.1} ms a frame");
+        let paint = painting.as_secs_f64() * 1000.0 / f64::from(frames);
+        println!("{name}: {each:.1} ms a frame, {paint:.1} of them painting the window");
     };
     let r = review.clone_strong();
     time(

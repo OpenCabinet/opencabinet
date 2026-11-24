@@ -698,6 +698,61 @@ struct Tiles {
 }
 
 impl Tiles {
+    /// Draws the `missing` pieces of `view`.
+    fn draw_missing(
+        &mut self,
+        document: &opencabinet_pdf::Document,
+        view: View,
+        missing: Vec<(i64, i64)>,
+    ) -> Result<(), opencabinet_pdf::Error> {
+        let side = f64::from(TILE);
+        // Drawing goes through the whole page each time, however
+        // little is drawn: the missing pieces are drawn at once, as
+        // one, and cut.
+        let (c0, c1) = (
+            missing.iter().map(|m| m.0).min().unwrap_or(0),
+            missing.iter().map(|m| m.0).max().unwrap_or(0),
+        );
+        let (r0, r1) = (
+            missing.iter().map(|m| m.1).min().unwrap_or(0),
+            missing.iter().map(|m| m.1).max().unwrap_or(0),
+        );
+        let (across, down) = (
+            u32::try_from(c1 - c0 + 1).unwrap_or(1),
+            u32::try_from(r1 - r0 + 1).unwrap_or(1),
+        );
+        #[expect(clippy::cast_precision_loss, reason = "tile numbers")]
+        let whole = opencabinet_pdf::render(
+            document,
+            View {
+                origin: opencabinet_pdf::Point::new(c0 as f64 * side, r0 as f64 * side),
+                width: TILE * across,
+                height: TILE * down,
+                ..view
+            },
+        )?;
+        let stride = (TILE * across) as usize * 4;
+        let row = TILE as usize * 4;
+        for at in missing {
+            let (left, top) = (
+                usize::try_from(at.0 - c0).unwrap_or(0) * row,
+                usize::try_from(at.1 - r0).unwrap_or(0) * TILE as usize,
+            );
+            let mut pixels = Vec::with_capacity(row * TILE as usize);
+            for y in top..top + TILE as usize {
+                let from = y * stride + left;
+                pixels.extend_from_slice(&whole.pixels[from..from + row]);
+            }
+            let bitmap = opencabinet_pdf::Bitmap {
+                width: TILE,
+                height: TILE,
+                pixels,
+            };
+            self.pieces.insert(at, (bitmap, self.clock));
+        }
+        Ok(())
+    }
+
     /// `view` of `document`, made of pieces drawn now or before; `which`
     /// says which drawing and version it is.
     fn view(
@@ -739,20 +794,7 @@ impl Tiles {
             .filter(|at| !self.pieces.contains_key(at))
             .collect();
         if !missing.is_empty() {
-            #[expect(clippy::cast_precision_loss, reason = "tile numbers")]
-            let views: Vec<View> = missing
-                .iter()
-                .map(|&(c, r)| View {
-                    origin: opencabinet_pdf::Point::new(c as f64 * side, r as f64 * side),
-                    width: TILE,
-                    height: TILE,
-                    ..view
-                })
-                .collect();
-            let drawn = opencabinet_pdf::render_many(document, &views)?;
-            for (at, bitmap) in missing.into_iter().zip(drawn) {
-                self.pieces.insert(at, (bitmap, self.clock));
-            }
+            self.draw_missing(document, view, missing)?;
         }
         // The pieces of this view, put together.
         let (w, h) = (view.width as usize, view.height as usize);
@@ -2306,16 +2348,23 @@ impl App {
         let (shapes, labels) = self.viewer.borrow().overlay();
         let shapes: Vec<Shape> = shapes
             .into_iter()
-            .map(|s| Shape {
-                commands: s.commands.into(),
-                stroke: s.stroke.map_or(Color::from_argb_u8(0, 0, 0, 0), color),
-                fill: s
-                    .fill
-                    .map_or(Color::from_argb_u8(0, 0, 0, 0), |(rgb, alpha)| {
-                        color(rgb).with_alpha(alpha as f32)
-                    }),
-                width: s.width as f32,
-                selected: s.selected,
+            .map(|s| {
+                let [x, y, w, h] = s.bounds().unwrap_or_default();
+                Shape {
+                    x: x as f32,
+                    y: y as f32,
+                    w: w as f32,
+                    h: h as f32,
+                    commands: s.commands.into(),
+                    stroke: s.stroke.map_or(Color::from_argb_u8(0, 0, 0, 0), color),
+                    fill: s
+                        .fill
+                        .map_or(Color::from_argb_u8(0, 0, 0, 0), |(rgb, alpha)| {
+                            color(rgb).with_alpha(alpha as f32)
+                        }),
+                    width: s.width as f32,
+                    selected: s.selected,
+                }
             })
             .collect();
         let labels: Vec<Label> = labels

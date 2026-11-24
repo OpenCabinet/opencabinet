@@ -14,6 +14,11 @@ import {
 
 // A markup's outline over the page, in the view's pixels.
 export struct Shape {
+    // The box it is drawn in, so only that much is painted.
+    x: length,
+    y: length,
+    w: length,
+    h: length,
     commands: string,
     stroke: color,
     fill: color,
@@ -1422,10 +1427,14 @@ export component ReviewWindow inherits Window {
                         accessible-label: root.page-label;
                     }
                     for shape in root.shapes: Path {
-                        width: parent.width;
-                        height: parent.height;
-                        viewbox-width: parent.width / 1px;
-                        viewbox-height: parent.height / 1px;
+                        x: shape.x;
+                        y: shape.y;
+                        width: shape.w;
+                        height: shape.h;
+                        viewbox-x: shape.x / 1px;
+                        viewbox-y: shape.y / 1px;
+                        viewbox-width: shape.w / 1px;
+                        viewbox-height: shape.h / 1px;
                         commands: shape.commands;
                         fill: shape.fill;
                         stroke: shape.selected ? Palette.accent-background : shape.stroke;

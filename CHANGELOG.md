@@ -185,9 +185,11 @@ follow [Semantic Versioning](https://semver.org/).
     A stamp clicked in place takes its own size.
   - **Faster moving around:** the page is drawn in pieces kept for
     reuse, so dragging or scrolling a drawing draws only what comes into
-    view (on a dense test sheet, from about 19 ms a step to under 1 ms);
-    several pieces are drawn at once with the PDF read and its fonts
-    prepared once.
+    view, and the pieces missing are drawn together in one pass. Each
+    markup is painted only in its own box, and those out of sight not at
+    all. On a real sheet with 60 markups, in a full-screen window at
+    125 %, a step of dragging went from about 134 ms to 17 ms, and a step
+    of zooming from about 350 ms to 34 ms.
   - **Sheet links:** the Set panel's Link sheet numbers finds every
     mention of another sheet's name in every drawing, such as A-301 or
     4/A-301, and makes it a link to that sheet, as one step to undo;
@@ -197,7 +199,7 @@ follow [Semantic Versioning](https://semver.org/).
     drawings, stamp every page with the stamp in use, give every page
     this page's scale, save all, write flattened copies of all to a
     folder, or write one markup summary of all, with a Sheet column.
-  - **Capture:** the Capture tool takes a part of a drawing, its lines
+  - **Capture:** the Capture tool, second in the tools, takes a part of a drawing, its lines
     and words, not a picture, and puts it beside it to move where it is
     wanted. The Colors tab lists the colors found in that part and
     changes each, such as black to magenta. It is saved as a stamp

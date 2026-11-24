@@ -76,9 +76,9 @@ fn main() {
     review.invoke_fit();
     // A few markups, so the list and the drawing have something.
     for (tool, from, to) in [
-        (1, (300.0, 200.0), (420.0, 280.0)),
-        (2, (500.0, 220.0), (640.0, 300.0)),
-        (5, (300.0, 360.0), (480.0, 420.0)),
+        (2, (300.0, 200.0), (420.0, 280.0)),
+        (3, (500.0, 220.0), (640.0, 300.0)),
+        (6, (300.0, 360.0), (480.0, 420.0)),
     ] {
         review.invoke_choose_tool(tool);
         review.invoke_pressed(from.0, from.1, 0);
@@ -144,7 +144,7 @@ fn show_features(review: &opencabinet_review_app::ReviewWindow) {
     }
     // CAPTURE=1 takes a part of the drawing and makes its black magenta.
     if std::env::var("CAPTURE").is_ok() {
-        review.invoke_choose_tool(22);
+        review.invoke_choose_tool(1);
         review.invoke_pressed(300.0, 120.0, 0);
         review.invoke_dragged(420.0, 220.0);
         review.invoke_released(520.0, 300.0);
@@ -169,17 +169,17 @@ fn show_features(review: &opencabinet_review_app::ReviewWindow) {
             ((520.0, 380.0), (700.0, 380.0)),
             ((520.0, 420.0), (640.0, 420.0)),
         ] {
-            review.invoke_choose_tool(15);
+            review.invoke_choose_tool(16);
             review.invoke_pressed(from.0, from.1, 0);
             review.invoke_dragged(to.0, to.1);
             review.invoke_released(to.0, to.1);
         }
-        review.invoke_choose_tool(19);
+        review.invoke_choose_tool(20);
         for (x, y) in [(760.0, 300.0), (700.0, 300.0), (700.0, 240.0)] {
             review.invoke_pressed(x, y, 0);
             review.invoke_released(x, y);
         }
-        review.invoke_choose_tool(18);
+        review.invoke_choose_tool(19);
         for (x, y) in [(560.0, 250.0), (600.0, 250.0), (640.0, 250.0)] {
             review.invoke_pressed(x, y, 0);
             review.invoke_released(x, y);
@@ -196,7 +196,7 @@ fn show_features(review: &opencabinet_review_app::ReviewWindow) {
     // SNAP=1 shows a line placed by a first click, the mouse snapped to
     // where two grid lines cross.
     if std::env::var("SNAP").is_ok() {
-        review.invoke_choose_tool(6);
+        review.invoke_choose_tool(7);
         review.invoke_pressed(560.0, 140.0, 0);
         review.invoke_released(560.0, 140.0);
         for (x, y) in [(580.0, 180.0), (590.0, 221.0)] {
@@ -214,7 +214,7 @@ fn show_features(review: &opencabinet_review_app::ReviewWindow) {
     // one of the shop's own.
     if std::env::var("TURN").is_ok() {
         review.invoke_turn_view(1);
-        review.invoke_choose_tool(13);
+        review.invoke_choose_tool(14);
         review.invoke_add_stamp("SHOP CHECKED {date}".into());
     }
 }

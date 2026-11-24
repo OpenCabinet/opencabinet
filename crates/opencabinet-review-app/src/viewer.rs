@@ -49,6 +49,7 @@ pub enum Tool {
 /// The tools, in the order the window offers them.
 pub const TOOLS: [Tool; 23] = [
     Tool::Select,
+    Tool::Draw(Kind::Capture),
     Tool::Draw(Kind::Cloud),
     Tool::Draw(Kind::Rectangle),
     Tool::Draw(Kind::Ellipse),
@@ -70,7 +71,6 @@ pub const TOOLS: [Tool; 23] = [
     Tool::Draw(Kind::Angle),
     Tool::Draw(Kind::Perimeter),
     Tool::Draw(Kind::Link),
-    Tool::Draw(Kind::Capture),
 ];
 
 impl Tool {
@@ -140,6 +140,37 @@ pub struct Shape {
     pub width: f64,
     /// Whether it is the selected markup.
     pub selected: bool,
+}
+
+impl Shape {
+    /// The box it is drawn in, wide enough for its stroke: left, top,
+    /// width and height in screen pixels. `None` when it has no points.
+    #[must_use]
+    pub fn bounds(&self) -> Option<[f64; 4]> {
+        // Only M, L, C and Z are written, so the numbers come in pairs.
+        let numbers: Vec<f64> = self
+            .commands
+            .split_ascii_whitespace()
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for &[x, y] in numbers.as_chunks::<2>().0 {
+            x0 = x0.min(x);
+            x1 = x1.max(x);
+            y0 = y0.min(y);
+            y1 = y1.max(y);
+        }
+        if !x0.is_finite() {
+            return None;
+        }
+        let pad = self.width + 4.0;
+        Some([x0 - pad, y0 - pad, x1 - x0 + 2.0 * pad, y1 - y0 + 2.0 * pad])
+    }
 }
 
 /// Text to draw over the page, in screen pixels.
@@ -3697,7 +3728,19 @@ impl Viewer {
                 selected: false,
             });
         }
+        self.keep_in_sight(&mut shapes, &mut labels);
         (shapes, labels)
+    }
+
+    /// Keeps only what is in sight: each shape drawn costs, even off the
+    /// screen.
+    fn keep_in_sight(&self, shapes: &mut Vec<Shape>, labels: &mut Vec<Label>) {
+        let (w, h) = self.size;
+        shapes.retain(|s| {
+            s.bounds()
+                .is_some_and(|[x, y, bw, bh]| x < w && y < h && x + bw > 0.0 && y + bh > 0.0)
+        });
+        labels.retain(|l| l.x < w && l.y < h && l.y + l.size * 3.0 > 0.0);
     }
 
     /// What helps place and pick markups: the calibration line, what the
