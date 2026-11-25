@@ -222,6 +222,9 @@ enum Drag {
 /// The window's state.
 #[derive(Debug)]
 pub struct Viewer {
+    /// The kind of markup just made, for the window to follow up, as by
+    /// showing a capture's colors.
+    just_made: Option<Kind>,
     review: Option<Review>,
     path: Option<PathBuf>,
     page: usize,
@@ -308,6 +311,7 @@ pub struct Viewer {
 impl Default for Viewer {
     fn default() -> Self {
         Self {
+            just_made: None,
             review: None,
             path: None,
             page: 0,
@@ -1181,7 +1185,7 @@ impl Viewer {
             return None;
         }
         let markup = self.selected()?;
-        if markup.page != self.page {
+        if markup.page != self.page || markup.origin.is_some() {
             return None;
         }
         let reach = (GRIP + 2.0) / self.zoom;
@@ -1230,6 +1234,17 @@ impl Viewer {
             .look(),
             ..Markup::default()
         }
+    }
+
+    /// Whether a capture was just made; asking forgets it.
+    pub fn take_capture_made(&mut self) -> bool {
+        self.just_made.take() == Some(Kind::Capture)
+    }
+
+    /// Whether the one markup selected is a capture.
+    #[must_use]
+    pub fn capture_selected(&self) -> bool {
+        self.selected().is_some_and(|m| m.kind == Kind::Capture)
     }
 
     /// The selected capture's colors: each found in it, and what it
@@ -1436,9 +1451,17 @@ impl Viewer {
                         self.review
                             .as_ref()
                             .and_then(|r| r.markup(i))
-                            .is_some_and(|m| m.page == self.page)
+                            .is_some_and(|m| m.page == self.page && m.origin.is_none())
                     })
                     .collect();
+                if ids.is_empty() {
+                    // Markups another program put in the drawing, such as
+                    // its words for searching, stay where it put them.
+                    self.status =
+                        "Markups from the program that made the drawing are picked, not moved."
+                            .into();
+                    return None;
+                }
                 if let Some(review) = self.review.as_mut() {
                     review.checkpoint();
                 }
@@ -1598,6 +1621,10 @@ impl Viewer {
                         "Click where it ends. Shift keeps it straight or square; Esc stops.".into();
                 } else if let Some(points) = drawn(kind, points, click, self.stamp_size()) {
                     self.add(self.new_markup(kind, points));
+                    if kind == Kind::Capture {
+                        self.just_made = Some(Kind::Capture);
+                        self.status = "Move the capture where you want it; give its colors others in the Colors tab below.".into();
+                    }
                     if matches!(kind, Kind::Text | Kind::Callout) {
                         self.status = "Type the text on the right.".into();
                     }
@@ -3688,7 +3715,12 @@ impl Viewer {
         if let Some(Drag::Draw { kind, points, .. }) = &self.drag
             && let Some(points) = drawn(*kind, points.clone(), false, (0.0, 0.0))
         {
-            draw(&self.new_markup(*kind, points), false);
+            if *kind == Kind::Capture {
+                // The part being taken, as it is dragged.
+                outlines.push(self.drag_box(&page, points[0], points[points.len() - 1]));
+            } else {
+                draw(&self.new_markup(*kind, points), false);
+            }
         }
         if let Some((kind, points, cursor)) = &self.building {
             let mut points = points.clone();
@@ -3707,7 +3739,13 @@ impl Viewer {
         }
         shapes.extend(outlines);
         self.handles(&page, &chosen, &mut shapes);
-        // Where the search found the words on this page.
+        self.found_shapes(&page, &mut shapes);
+        self.keep_in_sight(&mut shapes, &mut labels);
+        (shapes, labels)
+    }
+
+    /// Where the search found the words on this page.
+    fn found_shapes(&self, page: &Page, shapes: &mut Vec<Shape>) {
         for (index, found) in self.found.iter().enumerate() {
             if found.page != self.page {
                 continue;
@@ -3716,7 +3754,7 @@ impl Viewer {
             let current = index == self.found_index;
             shapes.push(Shape {
                 commands: self.commands(
-                    &page,
+                    page,
                     &[
                         Segment::Move(Point::new(x0, y0)),
                         Segment::Line(Point::new(x1, y0)),
@@ -3731,8 +3769,26 @@ impl Viewer {
                 selected: false,
             });
         }
-        self.keep_in_sight(&mut shapes, &mut labels);
-        (shapes, labels)
+    }
+
+    /// The box from `a` to `b` being dragged, as to take a capture.
+    fn drag_box(&self, page: &Page, a: Point, b: Point) -> Shape {
+        Shape {
+            commands: self.commands(
+                page,
+                &[
+                    Segment::Move(a),
+                    Segment::Line(Point::new(b.x, a.y)),
+                    Segment::Line(b),
+                    Segment::Line(Point::new(a.x, b.y)),
+                    Segment::Close,
+                ],
+            ),
+            stroke: Some([0.1, 0.45, 0.95]),
+            fill: Some(([0.1, 0.45, 0.95], 0.08)),
+            width: 1.5,
+            selected: false,
+        }
     }
 
     /// Keeps only what is in sight: each shape drawn costs, even off the
@@ -3777,7 +3833,7 @@ impl Viewer {
         // The grips of the one markup selected.
         if let Some(markup) = self
             .selected()
-            .filter(|m| m.page == self.page && chosen.len() == 1)
+            .filter(|m| m.page == self.page && chosen.len() == 1 && m.origin.is_none())
         {
             for grip in markup.grips() {
                 let (x, y) = self.to_screen(page, grip);
@@ -4314,6 +4370,61 @@ mod tests {
         assert!(markups.iter().all(|m| m.kind == Kind::Stamp));
         viewer.undo();
         assert_eq!(viewer.review().unwrap().markups().len(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn markups_from_the_program_that_made_the_drawing_are_picked_not_moved() {
+        let (mut viewer, dir) = viewer();
+        let path = dir.join("foreign.pdf");
+        std::fs::write(&path, opencabinet_pdf::sample::foreign_markups()).unwrap();
+        viewer.open(&path).unwrap();
+        viewer.zoom = 1.0;
+        viewer.scroll = (0.0, 0.0);
+        viewer.settings.snap = false;
+        let theirs = viewer
+            .review()
+            .unwrap()
+            .markups()
+            .iter()
+            .find(|m| m.origin.is_some() && m.page == 0)
+            .unwrap()
+            .clone();
+        let page = viewer.page_size().unwrap();
+        let grips = theirs.grips();
+        let on = viewer.to_screen(&page, grips[0]);
+        // Pressed on it, it is picked; dragged, it stays.
+        drag(&mut viewer, on, (on.0 + 80.0, on.1 + 60.0));
+        assert_eq!(viewer.chosen(), std::slice::from_ref(&theirs.id));
+        let after = viewer.review().unwrap().markup(&theirs.id).unwrap().clone();
+        assert_eq!(after.points, theirs.points);
+        assert!(viewer.status().contains("not moved"), "{}", viewer.status());
+        // No grips to stretch it either.
+        assert_eq!(viewer.grip_at(grips[0]), None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_capture_is_dragged_as_a_box_and_its_colors_shown_once_made() {
+        let (mut viewer, dir) = viewer();
+        viewer.settings.snap = false;
+        viewer.choose_tool(Tool::Draw(Kind::Capture));
+        viewer.press((5.0, 5.0), 0);
+        viewer.drag((120.0, 90.0));
+        let (shapes, _) = viewer.overlay();
+        let shown = shapes
+            .iter()
+            .find(|s| s.fill.is_some_and(|(_, alpha)| alpha < 0.1))
+            .expect("the part being taken shows as a box");
+        let [x, y, w, h] = shown.bounds().unwrap();
+        assert!(
+            x < 6.0 && y < 6.0 && x + w > 119.0 && y + h > 89.0,
+            "{x} {y} {w} {h}"
+        );
+        viewer.release((120.0, 90.0));
+        assert!(viewer.take_capture_made());
+        assert!(!viewer.take_capture_made(), "asked once");
+        assert!(viewer.capture_selected());
         std::fs::remove_dir_all(dir).ok();
     }
 

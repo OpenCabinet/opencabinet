@@ -65,7 +65,11 @@ fn main() {
     window.set_size(PhysicalSize::new(width, height));
     let mut pixels = vec![Rgb565Pixel::default(); (width * height) as usize];
     let draw = |pixels: &mut [Rgb565Pixel]| {
-        slint::platform::update_timers_and_animations();
+        // The page is drawn apart: a moment for its pieces to come in.
+        for _ in 0..40 {
+            slint::platform::update_timers_and_animations();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         window.request_redraw();
         window.draw_if_needed(|renderer| {
             renderer.render(pixels, width as usize);

@@ -680,6 +680,8 @@ struct App {
     /// Pieces of the page already drawn, so moving it draws only what
     /// comes into view.
     tiles: RefCell<Tiles>,
+    /// Looks for pieces drawn apart while some are being drawn.
+    tile_timer: slint::Timer,
 }
 
 /// The side of a piece of the page drawn at once, in pixels.
@@ -687,53 +689,86 @@ const TILE: u32 = 256;
 /// The most pieces kept: about 64 MB.
 const MAX_TILES: usize = 256;
 
-/// Pieces of a page drawn at one zoom, kept to be used again.
+/// Which drawing, version, page, zoom and turn pieces belong to.
+type TileKey = (usize, u64, usize, u64, u8);
+
+/// Pieces drawn, by column and row.
+type Drawn = Vec<((i64, i64), opencabinet_pdf::Bitmap)>;
+
+/// Where pieces go to be drawn, and where they come back.
+type Worker = (
+    std::sync::mpsc::Sender<Job>,
+    std::sync::mpsc::Receiver<(TileKey, Drawn)>,
+);
+
+/// Pieces to draw: whose, of what, in which view, and which.
+struct Job {
+    key: TileKey,
+    document: opencabinet_pdf::Document,
+    view: View,
+    pieces: Vec<(i64, i64)>,
+}
+
+/// Pieces of a page drawn at one zoom, kept to be used again. Those not
+/// drawn yet are drawn apart from the window, so moving never waits:
+/// meanwhile the view drawn last shows in their place, moved and sized.
 #[derive(Default)]
 struct Tiles {
-    /// Which drawing, page, zoom and turn they belong to.
-    key: Option<(usize, u64, usize, u64, u8)>,
+    key: Option<TileKey>,
     /// By column and row, with when each was last used.
     pieces: std::collections::HashMap<(i64, i64), (opencabinet_pdf::Bitmap, u64)>,
     clock: u64,
+    /// Where pieces are sent to be drawn and come back, once started.
+    worker: Option<Worker>,
+    /// The drawing shown, for the worker to skip what is no longer
+    /// wanted.
+    current: std::sync::Arc<std::sync::Mutex<Option<TileKey>>>,
+    /// How many sendings are being drawn.
+    pending: usize,
+    /// The pieces sent and not back yet.
+    asked: std::collections::HashSet<(i64, i64)>,
+    /// The view put together last, and of which drawing.
+    last: Option<(View, TileKey, opencabinet_pdf::Bitmap)>,
+    /// Whether pieces are being drawn.
+    waiting: bool,
 }
 
-impl Tiles {
-    /// Draws the `missing` pieces of `view`.
-    fn draw_missing(
-        &mut self,
-        document: &opencabinet_pdf::Document,
-        view: View,
-        missing: Vec<(i64, i64)>,
-    ) -> Result<(), opencabinet_pdf::Error> {
-        let side = f64::from(TILE);
-        // Drawing goes through the whole page each time, however
-        // little is drawn: the missing pieces are drawn at once, as
-        // one, and cut.
-        let (c0, c1) = (
-            missing.iter().map(|m| m.0).min().unwrap_or(0),
-            missing.iter().map(|m| m.0).max().unwrap_or(0),
-        );
-        let (r0, r1) = (
-            missing.iter().map(|m| m.1).min().unwrap_or(0),
-            missing.iter().map(|m| m.1).max().unwrap_or(0),
-        );
-        let (across, down) = (
-            u32::try_from(c1 - c0 + 1).unwrap_or(1),
-            u32::try_from(r1 - r0 + 1).unwrap_or(1),
-        );
-        #[expect(clippy::cast_precision_loss, reason = "tile numbers")]
-        let whole = opencabinet_pdf::render(
-            document,
-            View {
-                origin: opencabinet_pdf::Point::new(c0 as f64 * side, r0 as f64 * side),
-                width: TILE * across,
-                height: TILE * down,
-                ..view
-            },
-        )?;
-        let stride = (TILE * across) as usize * 4;
-        let row = TILE as usize * 4;
-        for at in missing {
+/// The `pieces` (columns and rows) of `view`, drawn in one pass, since drawing goes through the whole page however little
+/// is drawn; then cut.
+fn draw_pieces(
+    document: &opencabinet_pdf::Document,
+    view: View,
+    pieces: &[(i64, i64)],
+) -> Result<Drawn, opencabinet_pdf::Error> {
+    let Some(&(c0, r0)) = pieces.first() else {
+        return Ok(Vec::new());
+    };
+    let (c0, r0) = pieces
+        .iter()
+        .fold((c0, r0), |(c, r), p| (c.min(p.0), r.min(p.1)));
+    let (c1, r1) = pieces
+        .iter()
+        .fold((c0, r0), |(c, r), p| (c.max(p.0), r.max(p.1)));
+    let (across, down) = (
+        u32::try_from(c1 - c0 + 1).unwrap_or(1),
+        u32::try_from(r1 - r0 + 1).unwrap_or(1),
+    );
+    let side = f64::from(TILE);
+    #[expect(clippy::cast_precision_loss, reason = "tile numbers")]
+    let whole = opencabinet_pdf::render(
+        document,
+        View {
+            origin: opencabinet_pdf::Point::new(c0 as f64 * side, r0 as f64 * side),
+            width: TILE * across,
+            height: TILE * down,
+            ..view
+        },
+    )?;
+    let stride = (TILE * across) as usize * 4;
+    let row = TILE as usize * 4;
+    Ok(pieces
+        .iter()
+        .map(|&at| {
             let (left, top) = (
                 usize::try_from(at.0 - c0).unwrap_or(0) * row,
                 usize::try_from(at.1 - r0).unwrap_or(0) * TILE as usize,
@@ -743,18 +778,128 @@ impl Tiles {
                 let from = y * stride + left;
                 pixels.extend_from_slice(&whole.pixels[from..from + row]);
             }
-            let bitmap = opencabinet_pdf::Bitmap {
-                width: TILE,
-                height: TILE,
-                pixels,
-            };
-            self.pieces.insert(at, (bitmap, self.clock));
+            (
+                at,
+                opencabinet_pdf::Bitmap {
+                    width: TILE,
+                    height: TILE,
+                    pixels,
+                },
+            )
+        })
+        .collect())
+}
+
+/// The pieces, by column and row, that cover `view`, and `around` more on
+/// every side.
+fn pieces_of(view: View, around: i64) -> Vec<(i64, i64)> {
+    let side = f64::from(TILE);
+    #[expect(clippy::cast_possible_truncation, reason = "tile numbers")]
+    let range = |from: f64, length: u32| {
+        let first = (from / side).floor() as i64;
+        let last = ((from + f64::from(length) - 1.0) / side).floor() as i64;
+        first - around..=last + around
+    };
+    let (columns, rows) = (
+        range(view.origin.x, view.width),
+        range(view.origin.y, view.height),
+    );
+    rows.flat_map(|r| columns.clone().map(move |c| (c, r)))
+        .collect()
+}
+
+/// `last`, a view of a page, as it would show in `view` of the same page
+/// at another zoom or place: each pixel taken from the nearest one.
+fn moved_and_sized(last: &(View, opencabinet_pdf::Bitmap), view: View) -> Vec<u8> {
+    let (old, bitmap) = last;
+    let (w, h) = (view.width as usize, view.height as usize);
+    let mut pixels = vec![0u8; w * h * 4];
+    let ratio = old.zoom / view.zoom;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "pixels, checked to be in the bitmap"
+    )]
+    let source = |at: usize, origin: f64, old_origin: f64, size: u32| -> Option<usize> {
+        let v = ((origin + at as f64 + 0.5) * ratio - old_origin).floor();
+        (v >= 0.0 && v < f64::from(size)).then_some(v as usize)
+    };
+    let columns: Vec<Option<usize>> = (0..w)
+        .map(|x| source(x, view.origin.x, old.origin.x, old.width))
+        .collect();
+    let stride = old.width as usize * 4;
+    for y in 0..h {
+        let Some(sy) = source(y, view.origin.y, old.origin.y, old.height) else {
+            continue;
+        };
+        let row = &bitmap.pixels[sy * stride..(sy + 1) * stride];
+        let out = &mut pixels[y * w * 4..(y + 1) * w * 4];
+        for (x, sx) in columns.iter().enumerate() {
+            if let Some(sx) = sx {
+                out[x * 4..x * 4 + 4].copy_from_slice(&row[sx * 4..sx * 4 + 4]);
+            }
         }
-        Ok(())
+    }
+    pixels
+}
+
+impl Tiles {
+    /// Takes in pieces drawn apart; whether any came for the drawing shown.
+    fn take_drawn(&mut self) -> bool {
+        let Some((_, done)) = &self.worker else {
+            return false;
+        };
+        let mut came = false;
+        while let Ok((key, drawn)) = done.try_recv() {
+            self.pending = self.pending.saturating_sub(1);
+            if Some(key) == self.key {
+                for (at, bitmap) in drawn {
+                    self.asked.remove(&at);
+                    self.pieces.insert(at, (bitmap, self.clock));
+                }
+                came = true;
+            }
+        }
+        self.waiting = self.pending > 0;
+        came
+    }
+
+    /// Sends pieces to be drawn apart, starting the worker the first time.
+    fn send(&mut self, job: Job) {
+        let current = std::sync::Arc::clone(&self.current);
+        let (jobs, _) = self.worker.get_or_insert_with(|| {
+            let (jobs, inbox) = std::sync::mpsc::channel::<Job>();
+            let (outbox, done) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for job in inbox {
+                    // No longer shown: skipped, but answered.
+                    let wanted = current.lock().is_ok_and(|c| *c == Some(job.key));
+                    let drawn = if wanted {
+                        draw_pieces(&job.document, job.view, &job.pieces).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    if outbox.send((job.key, drawn)).is_err() {
+                        break;
+                    }
+                }
+            });
+            (jobs, done)
+        });
+        let pieces = job.pieces.clone();
+        if jobs.send(job).is_ok() {
+            self.asked.extend(pieces);
+            self.pending += 1;
+            self.waiting = true;
+        }
     }
 
     /// `view` of `document`, made of pieces drawn now or before; `which`
-    /// says which drawing and version it is.
+    /// says which drawing and version it is. Pieces missing are drawn
+    /// apart, then a ring around the view, and meanwhile the view shown
+    /// last stands in for them. Only a page not shown before is drawn at
+    /// once.
     fn view(
         &mut self,
         document: &opencabinet_pdf::Document,
@@ -770,39 +915,81 @@ impl Tiles {
         );
         if self.key != Some(key) {
             self.pieces.clear();
+            self.asked.clear();
             self.key = Some(key);
+            if let Ok(mut current) = self.current.lock() {
+                *current = Some(key);
+            }
         }
         self.clock += 1;
-        let side = f64::from(TILE);
-        #[expect(clippy::cast_possible_truncation, reason = "tile numbers")]
-        let range = |from: f64, length: u32| {
-            let first = (from / side).floor() as i64;
-            let last = ((from + f64::from(length) - 1.0) / side).floor() as i64;
-            first..=last
-        };
-        let (columns, rows) = (
-            range(view.origin.x, view.width),
-            range(view.origin.y, view.height),
-        );
-        let wanted: Vec<(i64, i64)> = rows
-            .clone()
-            .flat_map(|r| columns.clone().map(move |c| (c, r)))
-            .collect();
+        self.take_drawn();
+        let wanted = pieces_of(view, 0);
         let missing: Vec<(i64, i64)> = wanted
             .iter()
             .copied()
             .filter(|at| !self.pieces.contains_key(at))
             .collect();
-        if !missing.is_empty() {
-            self.draw_missing(document, view, missing)?;
+        // The view shown last stands in while the same page is drawn.
+        let stand_in = self
+            .last
+            .as_ref()
+            .filter(|(_, k, _)| k.0 == key.0 && k.2 == key.2 && k.4 == key.4)
+            .map(|(v, _, b)| (*v, b.clone()));
+        if !missing.is_empty() && stand_in.is_none() {
+            for (at, bitmap) in draw_pieces(document, view, &missing)? {
+                self.pieces.insert(at, (bitmap, self.clock));
+            }
+        } else {
+            let ask: Vec<(i64, i64)> = missing
+                .iter()
+                .copied()
+                .filter(|at| !self.asked.contains(at))
+                .collect();
+            if !ask.is_empty() {
+                self.send(Job {
+                    key,
+                    document: document.clone(),
+                    view,
+                    pieces: ask,
+                });
+            }
         }
-        // The pieces of this view, put together.
-        let (w, h) = (view.width as usize, view.height as usize);
-        let mut pixels = vec![0u8; w * h * 4];
+        if self.pending == 0 {
+            // A ring around the view too, so moving finds it drawn.
+            let around: Vec<(i64, i64)> = pieces_of(view, 1)
+                .into_iter()
+                .filter(|at| !self.pieces.contains_key(at) && !self.asked.contains(at))
+                .collect();
+            if !around.is_empty() {
+                self.send(Job {
+                    key,
+                    document: document.clone(),
+                    view,
+                    pieces: around,
+                });
+            }
+        }
+        let still_missing = wanted.iter().any(|at| !self.pieces.contains_key(at));
+        let start = match stand_in {
+            Some(last) if still_missing => moved_and_sized(&last, view),
+            _ => vec![0u8; view.width as usize * view.height as usize * 4],
+        };
+        let bitmap = self.put_together(view, &wanted, start);
+        self.last = Some((view, key, bitmap.clone()));
+        Ok(bitmap)
+    }
+
+    /// The pieces `wanted` of `view` put together over `pixels`.
+    fn put_together(
+        &mut self,
+        view: View,
+        wanted: &[(i64, i64)],
+        mut pixels: Vec<u8>,
+    ) -> opencabinet_pdf::Bitmap {
         #[expect(clippy::cast_possible_truncation, reason = "pixels")]
         let (ox, oy) = (view.origin.x.round() as i64, view.origin.y.round() as i64);
         let tile = i64::from(TILE);
-        for at in &wanted {
+        for at in wanted {
             let Some((bitmap, used)) = self.pieces.get_mut(at) else {
                 continue;
             };
@@ -822,7 +1009,7 @@ impl Tiles {
             }
         }
         // The least used go first.
-        while self.pieces.len() > MAX_TILES.max(wanted.len()) {
+        while self.pieces.len() > MAX_TILES.max(wanted.len() * 3) {
             let Some(oldest) = self
                 .pieces
                 .iter()
@@ -833,11 +1020,11 @@ impl Tiles {
             };
             self.pieces.remove(&oldest);
         }
-        Ok(opencabinet_pdf::Bitmap {
+        opencabinet_pdf::Bitmap {
             width: view.width,
             height: view.height,
             pixels,
-        })
+        }
     }
 }
 
@@ -879,6 +1066,7 @@ fn build(
         drawn: RefCell::new(None),
         generation: RefCell::new(0),
         tiles: RefCell::new(Tiles::default()),
+        tile_timer: slint::Timer::default(),
         timer: slint::Timer::default(),
     });
     let polling = Rc::downgrade(&app);
@@ -891,6 +1079,28 @@ fn build(
             }
         },
     );
+    // Pieces of the page drawn apart come in here, while some are drawn.
+    let looking = Rc::downgrade(&app);
+    app.tile_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(15),
+        move || {
+            let Some(app) = looking.upgrade() else {
+                return;
+            };
+            let came = app.tiles.borrow_mut().take_drawn();
+            if came {
+                *app.drawn.borrow_mut() = None;
+                if let Some(window) = app.window.upgrade() {
+                    app.refresh_page(&window);
+                }
+            }
+            if !app.tiles.borrow().waiting {
+                app.tile_timer.stop();
+            }
+        },
+    );
+    app.tile_timer.stop();
 
     let tools: Vec<ToolInfo> = TOOLS
         .iter()
@@ -1340,7 +1550,17 @@ fn connect(window: &ReviewWindow, app: &Rc<App>) {
     let a = Rc::clone(app);
     window.on_dragged(move |x, y| a.change(|v| v.drag((f64::from(x), f64::from(y)))));
     let a = Rc::clone(app);
-    window.on_released(move |x, y| a.change(|v| v.release((f64::from(x), f64::from(y)))));
+    let w = window.as_weak();
+    window.on_released(move |x, y| {
+        a.change(|v| v.release((f64::from(x), f64::from(y))));
+        // A capture just made: its colors, to change.
+        if a.viewer.borrow_mut().take_capture_made()
+            && let Some(window) = w.upgrade()
+        {
+            window.set_list_open(true);
+            window.set_editor_tab(2);
+        }
+    });
     let a = Rc::clone(app);
     window.on_wheel(move |dx, dy, zoom, x, y| {
         a.change(|v| {
@@ -2202,6 +2422,7 @@ impl App {
             })
             .collect();
         window.set_capture_colors(ModelRc::new(VecModel::from(colors)));
+        window.set_capture_selected(viewer.capture_selected());
         refresh_quantities(&window, &viewer);
         window.set_scale_label(viewer.scale_label().into());
         window.set_snap_label(viewer.snap_label().into());
@@ -2327,6 +2548,9 @@ impl App {
         };
         match drawn {
             Ok(bitmap) => {
+                if self.tiles.borrow().waiting && !self.tile_timer.running() {
+                    self.tile_timer.restart();
+                }
                 let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
                     &bitmap.pixels,
                     bitmap.width,

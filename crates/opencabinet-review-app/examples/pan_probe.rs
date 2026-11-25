@@ -41,7 +41,15 @@ fn main() {
             let pdf = dir.join("dense.pdf");
             std::fs::write(
                 &pdf,
-                opencabinet_pdf::sample::sheets(3, 2592.0, 1728.0, 3000),
+                opencabinet_pdf::sample::sheets(
+                    3,
+                    2592.0,
+                    1728.0,
+                    std::env::var("OC_LINES")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(3000),
+                ),
             )
             .unwrap();
             pdf
@@ -95,9 +103,13 @@ fn main() {
         (pw * ph) as usize
     ];
     let mut time = |name: &str, frames: u32, mut step: Box<dyn FnMut(u32)>| {
-        let start = Instant::now();
         let mut painting = std::time::Duration::ZERO;
+        let mut worst = std::time::Duration::ZERO;
         for i in 0..frames {
+            let frame = Instant::now();
+            // What the window does between frames: pieces drawn apart
+            // come in.
+            slint::platform::update_timers_and_animations();
             step(i);
             // And put on the screen, as the window does.
             let painted = Instant::now();
@@ -105,10 +117,15 @@ fn main() {
                 renderer.render(&mut screen, pw as usize);
             });
             painting += painted.elapsed();
+            worst = worst.max(frame.elapsed());
+            // The screen shows about 60 frames a second.
+            std::thread::sleep(
+                std::time::Duration::from_millis(16).saturating_sub(frame.elapsed()),
+            );
         }
-        let each = start.elapsed().as_secs_f64() * 1000.0 / f64::from(frames);
         let paint = painting.as_secs_f64() * 1000.0 / f64::from(frames);
-        println!("{name}: {each:.1} ms a frame, {paint:.1} of them painting the window");
+        let worst = worst.as_secs_f64() * 1000.0;
+        println!("{name}: {paint:.1} ms painting a frame, the slowest frame {worst:.1} ms");
     };
     let r = review.clone_strong();
     time(
@@ -116,9 +133,10 @@ fn main() {
         40,
         Box::new(move |i| {
             if i == 0 {
-                r.invoke_pressed(700.0, 300.0, 2);
+                r.invoke_pressed(1200.0, 300.0, 2);
             }
-            let x = 700.0 - f32::from(u16::try_from(i).unwrap()) * 5.0;
+            // Fast, as when throwing the page across.
+            let x = 1200.0 - f32::from(u16::try_from(i).unwrap()) * 25.0;
             r.invoke_dragged(x, 300.0);
         }),
     );

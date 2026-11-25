@@ -225,7 +225,7 @@ pub struct Annotation {
     pub capture: Option<Capture>,
     /// The bounds and resources of its appearance when they are not the
     /// usual ones, as for a capture.
-    pub form: Option<([f64; 4], Object)>,
+    pub form: Option<([f64; 4], crate::capture::Recolored)>,
 }
 
 /// The part of a page a capture shows, and its colors changed.
@@ -542,6 +542,31 @@ fn with_captures(document: &lopdf::Document, markups: &Markups) -> Result<Markup
         annotation.form = Some((capture.region, resources));
     }
     Ok(prepared)
+}
+
+/// Puts the forms `recolored` changed in `document`; the resources that
+/// draw with them.
+fn add_recolored(
+    document: &mut lopdf::Document,
+    recolored: &crate::capture::Recolored,
+) -> Dictionary {
+    let mut resources = recolored.resources.clone();
+    if recolored.forms.is_empty() {
+        return resources;
+    }
+    let mut xobjects = resources
+        .get(b"XObject")
+        .and_then(Object::as_dict)
+        .cloned()
+        .unwrap_or_default();
+    for (name, form) in &recolored.forms {
+        let mut dict = form.dict.clone();
+        dict.set("Resources", add_recolored(document, &form.inner));
+        let id = document.add_object(Stream::new(dict, form.content.clone()));
+        xobjects.set(name.clone(), Object::Reference(id));
+    }
+    resources.set("XObject", xobjects);
+    resources
 }
 
 /// Adds to `annots`, the entries of page `page`, the annotations in `new`
@@ -1005,12 +1030,12 @@ fn fill(
     let [x0, y0, x1, y1] = annotation.rect;
     let opacity = annotation.opacity.clamp(0.0, 1.0);
     // A capture: the part of the page, fitted to the annotation's box.
-    let form = if let Some((bbox, resources)) = &annotation.form {
+    let form = if let Some((bbox, recolored)) = &annotation.form {
         dictionary! {
             "Type" => "XObject",
             "Subtype" => "Form",
             "BBox" => reals(*bbox),
-            "Resources" => resources.clone(),
+            "Resources" => add_recolored(document, recolored),
         }
     } else {
         dictionary! {
