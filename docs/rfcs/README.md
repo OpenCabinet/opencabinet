@@ -26,3 +26,5 @@ technical decisions go directly to an [ADR](../adr/).
 | --- | --- | --- |
 | [0001](0001-project-data-model.md) | Project data model | Accepted |
 | 0002 | Module and plugin architecture | Planned (phase 1b) |
+| 0003 | Material appearance | Planned (ADR-0016) |
+| [0004](0004-pdf-review.md) | PDF review and live review sessions | Draft |

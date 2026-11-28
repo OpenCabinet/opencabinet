@@ -50,8 +50,9 @@ Todos los cambios entran por rama y pull request, nunca directo a `main`.
 La Fase 0 está cerrada: el contrato laboral fue revisado por un abogado y se
 autorizó publicar.
 
-Antes de cada paso relevante, confirma con Andrés. Trabaja en pasos pequeños
-y haz un commit firmado (`git commit -s`) por paso.
+Antes de cada paso relevante, confirma con Andrés. Desde el 2026-11-21
+Andrés prefiere avanzar rápido: commits firmados (`git commit -s`) más
+grandes, uno por pieza de trabajo completa, en vez de uno por paso pequeño.
 
 ## Principio de tamaño
 
