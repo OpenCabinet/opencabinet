@@ -183,6 +183,36 @@ follow [Semantic Versioning](https://semver.org/).
     `{page}`, `{sheet}`, `{file}` are filled in when a stamp is placed;
     `{ask:Job number}` is answered under the stamp list before placing.
     A stamp clicked in place takes its own size.
+  - **Faster moving around:** the page is drawn in pieces kept for
+    reuse, so dragging or scrolling a drawing draws only what comes into
+    view, and the pieces missing are drawn together in one pass. Each
+    markup is painted only in its own box, and those out of sight not at
+    all. On a real sheet with 60 markups, in a full-screen window at
+    125 %, a step of dragging went from about 134 ms to 17 ms, and a step
+    of zooming from about 350 ms to 34 ms. The page is drawn apart from the window, a ring
+    around the view drawn ahead, and while pieces are drawn the view
+    drawn last stands in, moved and sized, so moving never waits: on a
+    heavy sheet the slowest frame went from about 300 ms to under 50.
+  - **Sheet links:** the Set panel's Link sheet numbers finds every
+    mention of another sheet's name in every drawing, such as A-301 or
+    4/A-301, and makes it a link to that sheet, as one step to undo;
+    the names come from the PDFs' page labels and the set's sheets, and
+    A-301 is not found in A-3010.
+  - **Every drawing at once:** from the Set panel, open all the set's
+    drawings, stamp every page with the stamp in use, give every page
+    this page's scale, save all, write flattened copies of all to a
+    folder, or write one markup summary of all, with a Sheet column.
+  - **Capture:** the Capture tool, second in the tools, takes a part of a drawing, its lines
+    and words, not a picture, and puts it beside it to move where it is
+    wanted. The Colors tab lists the colors found in that part and
+    changes each, such as black to magenta. It is saved as a stamp
+    drawn from the page's own content, so it stays sharp and looks the
+    same in other viewers. The part being taken shows as a box while
+    dragging; once taken, the markup list opens on its Colors tab.
+    Colors set inside the forms a page draws are found and changed too.
+  - **Markups from the program that made the drawing**, such as the
+    words AutoCAD adds for searching, can be picked but not moved or
+    stretched.
   - **Undo and redo** of every step, typing included.
   - **Saving:** one incremental update after the original bytes. Every
     markup is a standard annotation that other PDF viewers show, and

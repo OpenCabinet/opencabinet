@@ -46,6 +46,18 @@ const TICK: Duration = Duration::from_millis(40);
 /// The port a host listens on when it is free, so that a firewall rule
 /// or a router can name it; another one otherwise.
 pub const PORT: u16 = 47100;
+
+/// The port a host tries first: [`PORT`], or the one in the
+/// `OPENCABINET_SESSION_PORT` variable, where 0 is any free one. Tests run
+/// side by side set 0: on Windows two hosts can listen on one port, one
+/// on this computer's own address and one on every address, and a guest
+/// would reach the wrong one.
+fn first_port() -> u16 {
+    std::env::var("OPENCABINET_SESSION_PORT")
+        .ok()
+        .and_then(|p| p.trim().parse().ok())
+        .unwrap_or(PORT)
+}
 /// How long whoever joins waits for the host to answer at an address.
 const KNOCK: Duration = Duration::from_secs(6);
 /// How long joining may take before either side gives up.
@@ -306,7 +318,7 @@ impl Host {
             .with_single_cert(vec![certificate], key)
             .map_err(|e| e.to_string())?;
         let config = Arc::new(config);
-        let listener = TcpListener::bind((bind, PORT))
+        let listener = TcpListener::bind((bind, first_port()))
             .or_else(|_| TcpListener::bind((bind, 0)))
             .map_err(|e| format!("Cannot listen: {e}"))?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;

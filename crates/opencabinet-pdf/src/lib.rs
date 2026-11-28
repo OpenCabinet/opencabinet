@@ -18,6 +18,7 @@
 //! second.
 
 pub mod annotations;
+pub mod capture;
 pub mod find;
 mod flatten;
 pub mod labels;
@@ -37,7 +38,7 @@ use hayro::hayro_interpret::util::TransformExt;
 use hayro::hayro_syntax::Pdf;
 
 pub use flatten::{flatten, overlay};
-pub use render::{Bitmap, View, render};
+pub use render::{Bitmap, View, render, render_many};
 
 /// A point, in whichever space the context says.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

@@ -16,6 +16,7 @@
 //! others are written as standard annotations, keeping every key Review
 //! does not manage.
 
+pub mod captures;
 mod markup;
 mod scale;
 pub mod sets;
@@ -25,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use opencabinet_model::{Id, Length, Units};
-use opencabinet_pdf::annotations::{self, Change, Markups, ObjectRef};
+use opencabinet_pdf::annotations::{self, Annotation, Change, Markups, ObjectRef};
 use opencabinet_pdf::pages::{self, From, Placed};
 use opencabinet_pdf::{Document, Error, Point};
 
@@ -80,6 +81,8 @@ pub struct Review {
     /// The markups kept out of sight, by id: not drawn, even those drawn
     /// from their own look on the page. The file does not change.
     unseen: BTreeSet<String>,
+    /// The captures drawn into `shown`, as they were then.
+    shown_captures: Vec<Annotation>,
 }
 
 impl Review {
@@ -141,6 +144,7 @@ impl Review {
             after: None,
             pages_changed: false,
             unseen: BTreeSet::new(),
+            shown_captures: Vec::new(),
         })
     }
 
@@ -305,18 +309,32 @@ impl Review {
             .filter_map(|m| m.origin)
             .chain(self.state.removed.iter().copied())
             .collect();
-        if hidden != self.hidden {
-            self.shown = if hidden.is_empty() {
+        // Captures show a part of a page: drawn into the page, from its own
+        // content, not by the window.
+        let captures: Vec<Annotation> = self
+            .state
+            .markups
+            .iter()
+            .filter(|m| m.kind == Kind::Capture && self.draws(m) && !self.unseen.contains(&m.id))
+            .map(|m| {
+                let mut a = m.to_annotation(None);
+                a.origin = None;
+                a
+            })
+            .collect();
+        if hidden != self.hidden || captures != self.shown_captures {
+            self.shown = if hidden.is_empty() && captures.is_empty() {
                 self.original.clone()
             } else {
                 let without = Markups {
-                    annotations: Vec::new(),
+                    annotations: captures.clone(),
                     pages: self.read_pages.clone(),
                     removed: hidden.iter().copied().collect(),
                 };
                 Document::open(annotations::save(self.original.bytes(), &without)?)?
             };
             self.hidden = hidden;
+            self.shown_captures = captures;
             self.shown_version += 1;
         }
         Ok((&self.shown, self.shown_version))
@@ -412,6 +430,26 @@ impl Review {
         let id = markup.id.clone();
         self.state.markups.push(markup);
         id
+    }
+
+    /// Adds `markups` made by `author` as one step; their ids.
+    pub fn add_all(&mut self, markups: Vec<Markup>, author: &str) -> Vec<String> {
+        if markups.is_empty() {
+            return Vec::new();
+        }
+        self.checkpoint();
+        markups
+            .into_iter()
+            .map(|mut markup| {
+                markup.id = Id::new().to_string();
+                markup.origin = None;
+                author.clone_into(&mut markup.author);
+                markup.modified = now();
+                let id = markup.id.clone();
+                self.state.markups.push(markup);
+                id
+            })
+            .collect()
     }
 
     /// Removes the markup with `id`, and its replies.

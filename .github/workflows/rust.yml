@@ -72,6 +72,9 @@ jobs:
           # The 3D view is drawn on the processor (lavapipe, WARP); without
           # an adapter its test fails rather than skips.
           OPENCABINET_REQUIRE_3D: "1"
+          # Session tests run side by side, each host on a free port: on
+          # Windows two can listen on 47100 and a guest reach the wrong one.
+          OPENCABINET_SESSION_PORT: "0"
       # Pictures of the sample kitchen in 3D, to look at.
       - name: Keep the 3D pictures
         if: always()

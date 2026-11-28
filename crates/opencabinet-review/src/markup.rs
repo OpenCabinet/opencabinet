@@ -58,6 +58,9 @@ pub enum Kind {
     /// A box that goes to a page, another drawing or a web address when
     /// clicked; its text says where (see [`Markup::link`]).
     Link,
+    /// A part of a page, its lines and words, shown again where it is
+    /// put, its colors changed or not (see [`crate::captures`]).
+    Capture,
 }
 
 /// How a markup is drawn with the mouse.
@@ -73,7 +76,7 @@ pub enum Gesture {
 
 impl Kind {
     /// Every kind, in the order the window offers them.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Cloud,
         Self::Rectangle,
         Self::Ellipse,
@@ -94,6 +97,7 @@ impl Kind {
         Self::Angle,
         Self::Perimeter,
         Self::Link,
+        Self::Capture,
     ];
 
     /// What the window and the markup list call it.
@@ -120,6 +124,7 @@ impl Kind {
             Self::Angle => "Angle",
             Self::Perimeter => "Perimeter",
             Self::Link => "Link",
+            Self::Capture => "Capture",
         }
     }
 
@@ -147,6 +152,7 @@ impl Kind {
             Self::Angle => "angle",
             Self::Perimeter => "perimeter",
             Self::Link => "link",
+            Self::Capture => "capture",
         }
     }
 
@@ -183,6 +189,7 @@ impl Kind {
                 | Self::Text
                 | Self::Stamp
                 | Self::Link
+                | Self::Capture
         )
     }
 
@@ -567,7 +574,9 @@ impl Markup {
     pub fn outline(&self) -> Vec<Segment> {
         let (low, high) = self.bounds();
         match self.kind {
-            Kind::Rectangle | Kind::Highlight | Kind::Text | Kind::Link => rectangle(low, high),
+            Kind::Rectangle | Kind::Highlight | Kind::Text | Kind::Link | Kind::Capture => {
+                rectangle(low, high)
+            }
             Kind::Stamp if self.design().is_some() => match self.design().map(|d| d.border) {
                 Some(crate::stamps::Border::Rounded) => rounded(low, high),
                 _ => rectangle(low, high),
@@ -662,6 +671,7 @@ impl Markup {
     #[must_use]
     pub fn stroked(&self) -> bool {
         self.kind != Kind::Highlight
+            && self.kind != Kind::Capture
             && self.width > 0.0
             && self
                 .design()
@@ -741,6 +751,14 @@ impl Markup {
                 .collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// What a capture shows, when it is one.
+    #[must_use]
+    pub fn capture(&self) -> Option<crate::captures::CaptureLook> {
+        (self.kind == Kind::Capture)
+            .then(|| crate::captures::CaptureLook::from_look(&self.look))
+            .flatten()
     }
 
     /// A stamp's design, when it has one of its own.
@@ -867,7 +885,8 @@ impl Markup {
             Kind::Pen | Kind::Count => (Subtype::Ink, self.points.clone()),
             Kind::Text | Kind::Callout => (Subtype::FreeText, Vec::new()),
             Kind::Note => (Subtype::Text, Vec::new()),
-            Kind::Stamp => (Subtype::Stamp, Vec::new()),
+            // A capture shows a part of a page as a stamp shows its words.
+            Kind::Stamp | Kind::Capture => (Subtype::Stamp, Vec::new()),
         };
         let contents = match (self.kind.measures(), label) {
             (true, Some(label)) if self.text.is_empty() => label.to_owned(),
@@ -917,6 +936,14 @@ impl Markup {
             change: Change::New,
             replies: self.replies.clone(),
             link: self.link(),
+            capture: self
+                .capture()
+                .map(|c| opencabinet_pdf::annotations::Capture {
+                    page: c.page,
+                    region: c.region,
+                    colors: c.map,
+                }),
+            form: None,
         }
     }
 
@@ -1028,7 +1055,7 @@ impl Markup {
             look: annotation
                 .own
                 .get("Look")
-                .filter(|_| kind == Kind::Stamp)
+                .filter(|_| matches!(kind, Kind::Stamp | Kind::Capture))
                 .cloned()
                 .unwrap_or_default(),
         })

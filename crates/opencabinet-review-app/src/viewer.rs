@@ -29,6 +29,8 @@ use opencabinet_review::{
 use opencabinet_session::firewall::{self, Firewall};
 use opencabinet_session::{Participant, Shared};
 
+use opencabinet_pdf::capture::colors_in;
+use opencabinet_review::captures::CaptureLook;
 use opencabinet_review::stamps::{Design, Fields};
 
 use crate::chest::{self, SavedTool, Settings, ToolSet};
@@ -45,8 +47,9 @@ pub enum Tool {
 }
 
 /// The tools, in the order the window offers them.
-pub const TOOLS: [Tool; 22] = [
+pub const TOOLS: [Tool; 23] = [
     Tool::Select,
+    Tool::Draw(Kind::Capture),
     Tool::Draw(Kind::Cloud),
     Tool::Draw(Kind::Rectangle),
     Tool::Draw(Kind::Ellipse),
@@ -139,6 +142,37 @@ pub struct Shape {
     pub selected: bool,
 }
 
+impl Shape {
+    /// The box it is drawn in, wide enough for its stroke: left, top,
+    /// width and height in screen pixels. `None` when it has no points.
+    #[must_use]
+    pub fn bounds(&self) -> Option<[f64; 4]> {
+        // Only M, L, C and Z are written, so the numbers come in pairs.
+        let numbers: Vec<f64> = self
+            .commands
+            .split_ascii_whitespace()
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for &[x, y] in numbers.as_chunks::<2>().0 {
+            x0 = x0.min(x);
+            x1 = x1.max(x);
+            y0 = y0.min(y);
+            y1 = y1.max(y);
+        }
+        if !x0.is_finite() {
+            return None;
+        }
+        let pad = self.width + 4.0;
+        Some([x0 - pad, y0 - pad, x1 - x0 + 2.0 * pad, y1 - y0 + 2.0 * pad])
+    }
+}
+
 /// Text to draw over the page, in screen pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Label {
@@ -188,6 +222,9 @@ enum Drag {
 /// The window's state.
 #[derive(Debug)]
 pub struct Viewer {
+    /// The kind of markup just made, for the window to follow up, as by
+    /// showing a capture's colors.
+    just_made: Option<Kind>,
     review: Option<Review>,
     path: Option<PathBuf>,
     page: usize,
@@ -274,6 +311,7 @@ pub struct Viewer {
 impl Default for Viewer {
     fn default() -> Self {
         Self {
+            just_made: None,
             review: None,
             path: None,
             page: 0,
@@ -801,6 +839,7 @@ impl Viewer {
                 "Click each item to count; Enter or double click to finish.".into()
             }
             Tool::Draw(Kind::Link) => "Drag the link's box, then type where it goes on the right: a page number, a drawing such as A-301.pdf, or a web address. Double-click a link to follow it.".into(),
+            Tool::Draw(Kind::Capture) => "Drag around a part of the drawing: its lines and words are put beside it, to move where you want and give other colors on the right.".into(),
             Tool::Draw(Kind::Angle) => {
                 "Click a point on one side, the corner, then a point on the other side.".into()
             }
@@ -1146,7 +1185,7 @@ impl Viewer {
             return None;
         }
         let markup = self.selected()?;
-        if markup.page != self.page {
+        if markup.page != self.page || markup.origin.is_some() {
             return None;
         }
         let reach = (GRIP + 2.0) / self.zoom;
@@ -1157,8 +1196,91 @@ impl Viewer {
             .map(|index| (markup.id.clone(), index))
     }
 
+    /// A capture of the part of the page between `points`: its lines and
+    /// words, put a little below and to the right so both show.
+    fn new_capture(&self, points: &[Point]) -> Markup {
+        let (low, high) = (
+            Point::new(
+                points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min),
+                points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min),
+            ),
+            Point::new(
+                points.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max),
+                points.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max),
+            ),
+        );
+        let region = [low.x, low.y, high.x, high.y];
+        let found = self
+            .review
+            .as_ref()
+            .and_then(|r| colors_in(r.document().bytes(), self.page, region).ok())
+            .unwrap_or_default();
+        let shift = 24.0;
+        Markup {
+            page: self.page,
+            kind: Kind::Capture,
+            points: vec![
+                Point::new(low.x + shift, low.y - shift),
+                Point::new(high.x + shift, high.y - shift),
+            ],
+            color: [0.1, 0.3, 0.75],
+            width: 0.0,
+            look: CaptureLook {
+                page: self.page,
+                region,
+                found,
+                map: Vec::new(),
+            }
+            .look(),
+            ..Markup::default()
+        }
+    }
+
+    /// Whether a capture was just made; asking forgets it.
+    pub fn take_capture_made(&mut self) -> bool {
+        self.just_made.take() == Some(Kind::Capture)
+    }
+
+    /// Whether the one markup selected is a capture.
+    #[must_use]
+    pub fn capture_selected(&self) -> bool {
+        self.selected().is_some_and(|m| m.kind == Kind::Capture)
+    }
+
+    /// The selected capture's colors: each found in it, and what it
+    /// becomes, if it is changed.
+    #[must_use]
+    pub fn capture_colors(&self) -> Vec<(Color, Option<Color>)> {
+        self.selected()
+            .and_then(Markup::capture)
+            .map(|c| c.found.iter().map(|&f| (f, c.changed(f))).collect())
+            .unwrap_or_default()
+    }
+
+    /// Makes the selected capture's color `index` become `to`, or stay
+    /// as it is with `None`.
+    pub fn set_capture_color(&mut self, index: usize, to: Option<Color>) {
+        let Some(mut capture) = self.selected().and_then(Markup::capture) else {
+            return;
+        };
+        let Some(&from) = capture.found.get(index) else {
+            return;
+        };
+        capture.change(from, to);
+        let look = capture.look();
+        self.change_selected(|m| {
+            if m.kind == Kind::Capture {
+                m.look.clone_from(&look);
+            }
+        });
+        self.status = "Changed the capture's colors.".into();
+    }
+
     /// A new markup of `kind` through `points`, in the style in use.
     fn new_markup(&self, kind: Kind, points: Vec<Point>) -> Markup {
+        if kind == Kind::Capture {
+            return self.new_capture(&points);
+        }
         if kind == Kind::Stamp {
             let design = self.current_design();
             return Markup {
@@ -1329,9 +1451,17 @@ impl Viewer {
                         self.review
                             .as_ref()
                             .and_then(|r| r.markup(i))
-                            .is_some_and(|m| m.page == self.page)
+                            .is_some_and(|m| m.page == self.page && m.origin.is_none())
                     })
                     .collect();
+                if ids.is_empty() {
+                    // Markups another program put in the drawing, such as
+                    // its words for searching, stay where it put them.
+                    self.status =
+                        "Markups from the program that made the drawing are picked, not moved."
+                            .into();
+                    return None;
+                }
                 if let Some(review) = self.review.as_mut() {
                     review.checkpoint();
                 }
@@ -1491,6 +1621,10 @@ impl Viewer {
                         "Click where it ends. Shift keeps it straight or square; Esc stops.".into();
                 } else if let Some(points) = drawn(kind, points, click, self.stamp_size()) {
                     self.add(self.new_markup(kind, points));
+                    if kind == Kind::Capture {
+                        self.just_made = Some(Kind::Capture);
+                        self.status = "Move the capture where you want it; give its colors others in the Colors tab below.".into();
+                    }
                     if matches!(kind, Kind::Text | Kind::Callout) {
                         self.status = "Type the text on the right.".into();
                     }
@@ -1950,6 +2084,18 @@ impl Viewer {
         } else {
             BTreeSet::new()
         };
+        let mut unseen = unseen;
+        // A capture being moved is drawn as a box until it lands, so the
+        // page is not drawn again at every step.
+        if let Some(Drag::Move { ids, .. }) = &self.drag
+            && let Some(review) = self.review.as_ref()
+        {
+            for id in ids {
+                if review.markup(id).is_some_and(|m| m.kind == Kind::Capture) {
+                    unseen.insert(id.clone());
+                }
+            }
+        }
         if let Some(review) = self.review.as_mut() {
             review.set_unseen(unseen);
         }
@@ -2471,6 +2617,172 @@ impl Viewer {
         report::table(&table).map_err(|e| capitalize(&e.to_string()))
     }
 
+    /// The summary's rows: each shown markup's cells, with its color.
+    #[must_use]
+    pub fn summary_rows(&self) -> Vec<Row> {
+        let Some(review) = self.review.as_ref() else {
+            return Vec::new();
+        };
+        self.listed()
+            .iter()
+            .map(|m| Row {
+                color: Some(m.color),
+                cells: [0, 1, 2, 3, 4, 5]
+                    .iter()
+                    .map(|&c| self.cell(review, m, c))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// The names the PDF gives its pages, if it gives any.
+    #[must_use]
+    pub fn labels(&self) -> &[String] {
+        &self.labels
+    }
+
+    /// Turns every mention of another sheet's name on these pages, such
+    /// as `A-301` or `4/A-301`, into a link to that sheet, as one step;
+    /// how many were made. A name already linked there, or the sheet's
+    /// own name, is left alone.
+    pub fn link_sheets(&mut self, names: &[SheetName]) -> usize {
+        let Some(review) = self.review.as_ref() else {
+            return 0;
+        };
+        let document = review.document().clone();
+        let here = self.path.clone();
+        let queries: Vec<&str> = names.iter().map(|n| n.name.as_str()).collect();
+        let linked: Vec<(usize, Point)> = review
+            .markups()
+            .iter()
+            .filter(|m| m.kind == Kind::Link)
+            .map(|m| {
+                let (low, high) = m.bounds();
+                (
+                    m.page,
+                    Point::new(f64::midpoint(low.x, high.x), f64::midpoint(low.y, high.y)),
+                )
+            })
+            .collect();
+        let mut made: Vec<Markup> = Vec::new();
+        for page in 0..document.pages().len() {
+            let Ok(found) = opencabinet_pdf::find::find_all(&document, page, &queries, true) else {
+                continue;
+            };
+            for (which, place) in found {
+                let name = &names[which];
+                let same_file = here.as_deref() == Some(name.path.as_path());
+                if same_file && name.page == page {
+                    continue;
+                }
+                let [x0, y0, x1, y1] = place.rect;
+                let middle = Point::new(f64::midpoint(x0, x1), f64::midpoint(y0, y1));
+                let near = (y1 - y0).max(4.0);
+                let middle_of = |m: &Markup| {
+                    let (low, high) = m.bounds();
+                    Point::new(f64::midpoint(low.x, high.x), f64::midpoint(low.y, high.y))
+                };
+                if linked
+                    .iter()
+                    .any(|&(p, at)| p == page && at.distance(middle) < near)
+                    || made
+                        .iter()
+                        .any(|m: &Markup| m.page == page && middle_of(m).distance(middle) < near)
+                {
+                    continue;
+                }
+                let target = if same_file {
+                    format!("page {}", name.page + 1)
+                } else {
+                    let file = match (here.as_deref().and_then(Path::parent), name.path.parent()) {
+                        (Some(a), Some(b)) if a == b => file_name(&name.path),
+                        _ => name.path.to_string_lossy().into_owned(),
+                    };
+                    if name.page == 0 {
+                        file
+                    } else {
+                        format!("{file}#{}", name.page + 1)
+                    }
+                };
+                made.push(Markup {
+                    page,
+                    kind: Kind::Link,
+                    points: vec![
+                        Point::new(x0 - 1.0, y0 - 1.0),
+                        Point::new(x1 + 1.0, y1 + 1.0),
+                    ],
+                    color: [0.1, 0.3, 0.75],
+                    width: 0.75,
+                    text: target,
+                    subject: "Sheet link".into(),
+                    ..Markup::default()
+                });
+            }
+        }
+        let count = made.len();
+        let author = self.author.clone();
+        if let Some(review) = self.review.as_mut() {
+            review.add_all(made, &author);
+        }
+        self.status = format!(
+            "Linked {count} mention{} of other sheets.",
+            if count == 1 { "" } else { "s" }
+        );
+        count
+    }
+
+    /// Places the stamp in use on every page, in its bottom right corner,
+    /// as one step; how many were placed.
+    pub fn stamp_every_page(&mut self) -> usize {
+        let Some(count) = self.review.as_ref().map(|r| r.document().pages().len()) else {
+            return 0;
+        };
+        let shown = self.page;
+        let mut made = Vec::new();
+        for page in 0..count {
+            self.page = page;
+            let Some(size) = self.page_size() else {
+                continue;
+            };
+            let (w, h) = self.stamp_size();
+            // In page space, from the bottom right corner, a little in.
+            let margin = 36.0;
+            let to_pdf = size.to_pdf();
+            let a = to_pdf.apply(Point::new(
+                size.width - margin - w,
+                size.height - margin - h,
+            ));
+            let b = to_pdf.apply(Point::new(size.width - margin, size.height - margin));
+            let mut markup = self.new_markup(Kind::Stamp, vec![a, b]);
+            markup.points = vec![
+                Point::new(a.x.min(b.x), a.y.min(b.y)),
+                Point::new(a.x.max(b.x), a.y.max(b.y)),
+            ];
+            made.push(markup);
+        }
+        self.page = shown;
+        let placed = made.len();
+        let author = self.author.clone();
+        if let Some(review) = self.review.as_mut() {
+            review.add_all(made, &author);
+        }
+        self.status = format!("Stamped {placed} pages.");
+        placed
+    }
+
+    /// The scale of the page shown, if it has one.
+    #[must_use]
+    pub fn shown_scale(&self) -> Option<Scale> {
+        self.page_scale()
+    }
+
+    /// Gives every page `scale`.
+    pub fn scale_everywhere(&mut self, scale: Scale) {
+        if let Some(review) = self.review.as_mut() {
+            review.set_scale_everywhere(scale);
+        }
+    }
+
     /// Writes the markup summary to `path`.
     ///
     /// # Errors
@@ -2502,7 +2814,7 @@ impl Viewer {
         self.session = Some(Session {
             member,
             firewall,
-            seen: 0,
+            seen: None,
         });
         Ok(())
     }
@@ -2526,7 +2838,7 @@ impl Viewer {
         self.session = Some(Session {
             member,
             firewall: Arc::default(),
-            seen: 0,
+            seen: None,
         });
         Ok(())
     }
@@ -2572,7 +2884,7 @@ impl Viewer {
         self.session = Some(Session {
             member,
             firewall: Arc::default(),
-            seen: 0,
+            seen: None,
         });
         self.pull();
         self.status = "Joined the session. Save as to keep a copy.".into();
@@ -2623,10 +2935,13 @@ impl Viewer {
             return false;
         };
         let changed = session.member.link().changed.load(Ordering::SeqCst);
-        if changed == session.seen && session.seen != 0 {
+        // The first time, what is there is taken whatever the count; after
+        // that, only when it moved. (Counting the first look as 1 lost the
+        // first change when it came after it.)
+        if session.seen == Some(changed) {
             return false;
         }
-        session.seen = changed.max(1);
+        session.seen = Some(changed);
         let Ok(shared) = session.member.link().shared.lock() else {
             return false;
         };
@@ -3400,7 +3715,12 @@ impl Viewer {
         if let Some(Drag::Draw { kind, points, .. }) = &self.drag
             && let Some(points) = drawn(*kind, points.clone(), false, (0.0, 0.0))
         {
-            draw(&self.new_markup(*kind, points), false);
+            if *kind == Kind::Capture {
+                // The part being taken, as it is dragged.
+                outlines.push(self.drag_box(&page, points[0], points[points.len() - 1]));
+            } else {
+                draw(&self.new_markup(*kind, points), false);
+            }
         }
         if let Some((kind, points, cursor)) = &self.building {
             let mut points = points.clone();
@@ -3419,7 +3739,13 @@ impl Viewer {
         }
         shapes.extend(outlines);
         self.handles(&page, &chosen, &mut shapes);
-        // Where the search found the words on this page.
+        self.found_shapes(&page, &mut shapes);
+        self.keep_in_sight(&mut shapes, &mut labels);
+        (shapes, labels)
+    }
+
+    /// Where the search found the words on this page.
+    fn found_shapes(&self, page: &Page, shapes: &mut Vec<Shape>) {
         for (index, found) in self.found.iter().enumerate() {
             if found.page != self.page {
                 continue;
@@ -3428,7 +3754,7 @@ impl Viewer {
             let current = index == self.found_index;
             shapes.push(Shape {
                 commands: self.commands(
-                    &page,
+                    page,
                     &[
                         Segment::Move(Point::new(x0, y0)),
                         Segment::Line(Point::new(x1, y0)),
@@ -3443,7 +3769,37 @@ impl Viewer {
                 selected: false,
             });
         }
-        (shapes, labels)
+    }
+
+    /// The box from `a` to `b` being dragged, as to take a capture.
+    fn drag_box(&self, page: &Page, a: Point, b: Point) -> Shape {
+        Shape {
+            commands: self.commands(
+                page,
+                &[
+                    Segment::Move(a),
+                    Segment::Line(Point::new(b.x, a.y)),
+                    Segment::Line(b),
+                    Segment::Line(Point::new(a.x, b.y)),
+                    Segment::Close,
+                ],
+            ),
+            stroke: Some([0.1, 0.45, 0.95]),
+            fill: Some(([0.1, 0.45, 0.95], 0.08)),
+            width: 1.5,
+            selected: false,
+        }
+    }
+
+    /// Keeps only what is in sight: each shape drawn costs, even off the
+    /// screen.
+    fn keep_in_sight(&self, shapes: &mut Vec<Shape>, labels: &mut Vec<Label>) {
+        let (w, h) = self.size;
+        shapes.retain(|s| {
+            s.bounds()
+                .is_some_and(|[x, y, bw, bh]| x < w && y < h && x + bw > 0.0 && y + bh > 0.0)
+        });
+        labels.retain(|l| l.x < w && l.y < h && l.y + l.size * 3.0 > 0.0);
     }
 
     /// What helps place and pick markups: the calibration line, what the
@@ -3477,7 +3833,7 @@ impl Viewer {
         // The grips of the one markup selected.
         if let Some(markup) = self
             .selected()
-            .filter(|m| m.page == self.page && chosen.len() == 1)
+            .filter(|m| m.page == self.page && chosen.len() == 1 && m.origin.is_none())
         {
             for grip in markup.grips() {
                 let (x, y) = self.to_screen(page, grip);
@@ -3558,8 +3914,9 @@ struct Session {
     /// What the firewall lets in, when hosting, once looked at; and the
     /// answer to allowing Review through it.
     firewall: Arc<std::sync::Mutex<(Option<Firewall>, String)>>,
-    /// How many changes from others were taken in.
-    seen: u64,
+    /// How many changes from others were taken in; `None` before the
+    /// first look.
+    seen: Option<u64>,
 }
 
 /// Looks at the firewall away from the window, after letting this
@@ -3713,6 +4070,17 @@ fn marker((x, y): (f64, f64), kind: Snap) -> String {
             y
         ),
     }
+}
+
+/// A sheet's name, and where that sheet is: a file, and a page from 0.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SheetName {
+    /// Such as `A-301`.
+    pub name: String,
+    /// The PDF it is in.
+    pub path: PathBuf,
+    /// Its page.
+    pub page: usize,
 }
 
 /// What a followed link asks the window to open.
@@ -3918,6 +4286,192 @@ mod tests {
         viewer.release((500.0, 160.0));
         let (low, high) = viewer.selected().unwrap().bounds();
         assert_eq!((high.x - low.x, high.y - low.y), (100.0, 100.0));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A one-page PDF with `words` written on it, each at a place.
+    #[allow(clippy::format_push_string, reason = "a small PDF made for a test")]
+    fn worded(words: &[(&str, f64, f64)]) -> Vec<u8> {
+        let mut content = String::new();
+        for (text, x, y) in words {
+            content.push_str(&format!("BT /F1 12 Tf {x} {y} Td ({text}) Tj ET\n"));
+        }
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [4 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>".to_owned(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        let mut table = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
+        for offset in offsets {
+            table.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        table.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        pdf.extend_from_slice(table.as_bytes());
+        pdf
+    }
+
+    #[test]
+    fn sheet_names_become_links_and_every_page_is_stamped_at_once() {
+        let (mut viewer, dir) = viewer();
+        let plan = dir.join("A-101.pdf");
+        std::fs::write(
+            &plan,
+            worded(&[
+                ("SEE 4/A-301", 100.0, 500.0),
+                ("NOT A-2010", 100.0, 400.0),
+                ("A-101", 700.0, 30.0),
+            ]),
+        )
+        .unwrap();
+        viewer.open(&plan).unwrap();
+        let names = [
+            SheetName {
+                name: "A-301".into(),
+                path: dir.join("A-301.pdf"),
+                page: 0,
+            },
+            SheetName {
+                name: "A-201".into(),
+                path: dir.join("A-201.pdf"),
+                page: 1,
+            },
+            SheetName {
+                name: "A-101".into(),
+                path: plan.clone(),
+                page: 0,
+            },
+        ];
+        // Only A-301: A-2010 is another name, and A-101 is this sheet.
+        assert_eq!(viewer.link_sheets(&names), 1);
+        let link = viewer.review().unwrap().markups()[0].clone();
+        assert_eq!((link.kind, link.text.as_str()), (Kind::Link, "A-301.pdf"));
+        assert_eq!(link.link(), Some(Target::File("A-301.pdf".into(), 0)));
+        assert_eq!(viewer.link_sheets(&names), 0, "not linked twice");
+        viewer.undo();
+        assert_eq!(viewer.review().unwrap().markups().len(), 0, "one step");
+
+        // The two-page sheets: a stamp on each page, as one step.
+        viewer.open(&dir.join("sheets.pdf")).unwrap();
+        assert_eq!(viewer.stamp_every_page(), 2);
+        let markups = viewer.review().unwrap().markups();
+        assert_eq!(markups.iter().map(|m| m.page).collect::<Vec<_>>(), [0, 1]);
+        assert!(markups.iter().all(|m| m.kind == Kind::Stamp));
+        viewer.undo();
+        assert_eq!(viewer.review().unwrap().markups().len(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn markups_from_the_program_that_made_the_drawing_are_picked_not_moved() {
+        let (mut viewer, dir) = viewer();
+        let path = dir.join("foreign.pdf");
+        std::fs::write(&path, opencabinet_pdf::sample::foreign_markups()).unwrap();
+        viewer.open(&path).unwrap();
+        viewer.zoom = 1.0;
+        viewer.scroll = (0.0, 0.0);
+        viewer.settings.snap = false;
+        let theirs = viewer
+            .review()
+            .unwrap()
+            .markups()
+            .iter()
+            .find(|m| m.origin.is_some() && m.page == 0)
+            .unwrap()
+            .clone();
+        let page = viewer.page_size().unwrap();
+        let grips = theirs.grips();
+        let on = viewer.to_screen(&page, grips[0]);
+        // Pressed on it, it is picked; dragged, it stays.
+        drag(&mut viewer, on, (on.0 + 80.0, on.1 + 60.0));
+        assert_eq!(viewer.chosen(), std::slice::from_ref(&theirs.id));
+        let after = viewer.review().unwrap().markup(&theirs.id).unwrap().clone();
+        assert_eq!(after.points, theirs.points);
+        assert!(viewer.status().contains("not moved"), "{}", viewer.status());
+        // No grips to stretch it either.
+        assert_eq!(viewer.grip_at(grips[0]), None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_capture_is_dragged_as_a_box_and_its_colors_shown_once_made() {
+        let (mut viewer, dir) = viewer();
+        viewer.settings.snap = false;
+        viewer.choose_tool(Tool::Draw(Kind::Capture));
+        viewer.press((5.0, 5.0), 0);
+        viewer.drag((120.0, 90.0));
+        let (shapes, _) = viewer.overlay();
+        let shown = shapes
+            .iter()
+            .find(|s| s.fill.is_some_and(|(_, alpha)| alpha < 0.1))
+            .expect("the part being taken shows as a box");
+        let [x, y, w, h] = shown.bounds().unwrap();
+        assert!(
+            x < 6.0 && y < 6.0 && x + w > 119.0 && y + h > 89.0,
+            "{x} {y} {w} {h}"
+        );
+        viewer.release((120.0, 90.0));
+        assert!(viewer.take_capture_made());
+        assert!(!viewer.take_capture_made(), "asked once");
+        assert!(viewer.capture_selected());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_capture_shows_the_drawing_again_in_other_colors() {
+        let (mut viewer, dir) = viewer();
+        viewer.settings.snap = false;
+        // Around the page's top left corner: its black border.
+        viewer.choose_tool(Tool::Draw(Kind::Capture));
+        drag(&mut viewer, (5.0, 5.0), (120.0, 90.0));
+        let capture = viewer.review().unwrap().markups()[0].clone();
+        assert_eq!(capture.kind, Kind::Capture);
+        let colors = viewer.capture_colors();
+        assert_eq!(colors.first(), Some(&([0.0, 0.0, 0.0], None)), "{colors:?}");
+
+        // Black becomes magenta: the page drawn shows magenta where the
+        // capture was put, and nowhere else.
+        viewer.select_only(Some(capture.id.clone()));
+        let magenta = [1.0, 0.0, 1.0];
+        viewer.set_capture_color(0, Some(magenta));
+        assert_eq!(viewer.capture_colors()[0].1, Some(magenta));
+        let magenta_pixels = |v: &mut Viewer| {
+            let view = v.view(1.0).unwrap();
+            let (document, _) = v.review_mut().unwrap().page_document().unwrap();
+            let bitmap = opencabinet_pdf::render(document, view).unwrap();
+            bitmap
+                .pixels
+                .chunks(4)
+                .filter(|p| p[0] > 180 && p[1] < 90 && p[2] > 180)
+                .count()
+        };
+        assert!(magenta_pixels(&mut viewer) > 50);
+
+        // Saved, it is a stamp drawn from the page's own content.
+        let path = dir.join("captured.pdf");
+        viewer.save(Some(&path)).unwrap();
+        let again = Review::open(std::fs::read(&path).unwrap()).unwrap();
+        let back = &again.markups()[0];
+        assert_eq!(back.kind, Kind::Capture);
+        assert_eq!(back.capture().unwrap().map.len(), 1);
+        viewer.open(&path).unwrap();
+        viewer.zoom = 1.0;
+        viewer.scroll = (0.0, 0.0);
+        assert!(
+            magenta_pixels(&mut viewer) > 50,
+            "drawn from the saved file"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
